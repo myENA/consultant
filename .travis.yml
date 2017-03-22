@@ -8,7 +8,11 @@ branches:
   only:
     - master
 
-script:
-  - go test
-
 sudo: false
+
+before_script:
+  - go vet ./...
+
+install:
+  - go get -t ./...
+  - go get github.com/hashicorp/consul

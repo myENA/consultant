@@ -10,26 +10,8 @@ import (
 	"github.com/myENA/consultant"
 )
 
-func init() {
-	consultant.Debug()
-}
-
-func makeClient(t *testing.T) (*api.Client, *testutil.TestServer) {
-	conf := api.DefaultConfig()
-
-	server := testutil.NewTestServerConfig(t, nil)
-	conf.Address = server.HTTPAddr
-
-	client, err := api.NewClient(conf)
-	if err != nil {
-		t.Fatalf("err: %v", err)
-	}
-
-	return client, server
-}
-
 func makeCandidate(t *testing.T, num int, client *api.Client) *consultant.Candidate {
-	candidate, err := consultant.New(fmt.Sprintf("test-%d", num), "candidate/tests/lock", "5s", client)
+	candidate, err := consultant.NewCandidate(fmt.Sprintf("test-%d", num), "consultant/tests/candidate-lock", "5s", client)
 	if nil != err {
 		t.Fatalf("err: %v", err)
 	}
@@ -38,6 +20,8 @@ func makeCandidate(t *testing.T, num int, client *api.Client) *consultant.Candid
 }
 
 func TestSimpleElectionCycle(t *testing.T) {
+	t.Parallel()
+
 	var client *api.Client
 	var server *testutil.TestServer
 	var candidate1, candidate2, candidate3 *consultant.Candidate
@@ -72,7 +56,7 @@ func TestSimpleElectionCycle(t *testing.T) {
 	t.Run("locate leader", func(t *testing.T) {
 		leader, err = candidate1.Leader()
 		if nil != err {
-			t.Logf("Unable to locate leader session entry: %s", err.Error())
+			t.Logf("Unable to locate leader session entry: %v", err)
 			t.FailNow()
 		}
 	})

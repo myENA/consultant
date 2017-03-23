@@ -49,7 +49,7 @@ type Candidate struct {
 // - "ttl" is the duration to set on the kv session ttl, will default to 30s if not specified
 //
 // - "client" must be a valid api client
-func New(id, key, ttl string, client *api.Client) (*Candidate, error) {
+func NewCandidate(id, key, ttl string, client *api.Client) (*Candidate, error) {
 	var err error
 	var ttlSeconds float64
 

@@ -10,9 +10,19 @@ branches:
 
 sudo: false
 
-before_script:
-  - go vet ./...
-
 install:
-  - go get -t ./...
-  - go get github.com/hashicorp/consul
+  - mkdir -p $HOME/tmp
+  - mkdir -p $HOME/bin
+  - export PATH="$HOME/bin:$PATH"
+  - wget "https://github.com/Masterminds/glide/releases/download/v0.12.3/glide-v0.12.3-linux-amd64.tar.gz"
+  - tar -vxz -C $HOME/bin --strip=1 -f glide-v0.12.3-linux-amd64.tar.gz
+  - glide up
+  - ls -l ./vendor
+  - cd ./vendor/github.com/hashicorp/consul
+  - go build -o $HOME/bin/consul || exit 1
+
+before_script:
+  - go vet ./
+
+script:
+  - go test

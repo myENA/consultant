@@ -55,7 +55,7 @@ func (t *TagContainer) Add(tags ...string) (delta int) {
 	}
 
 	// build new tag list and find difference count
-	newList, delta = gohelpers.CombineStringSlices(t.list, tags)
+	newList, delta = helpers.CombineStringSlices(t.list, tags)
 
 	// if no difference, return
 	if 0 == delta {
@@ -83,7 +83,7 @@ func (t *TagContainer) Remove(tags ...string) (delta int) {
 	}
 
 	// build new list minus input
-	newList, delta = gohelpers.RemoveStringsFromSlice(t.list, tags)
+	newList, delta = helpers.RemoveStringsFromSlice(t.list, tags)
 
 	// if no different, return
 	if 0 == delta {

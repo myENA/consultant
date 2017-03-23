@@ -203,6 +203,7 @@ func NewEventPlan(c *api.Client, name string, queryOptions api.QueryOptions, han
 // The WatchPlan's Handler() is triggered when change is detected on the watched endpoint.
 func RunWatchPlan(wp *WatchPlan) error {
 
+	// check if plan has been stopped or is stopping
 	if wp.shouldStop() {
 		return getWatchPlanError(WatchPlanErrorAlreadyStopped)
 	}

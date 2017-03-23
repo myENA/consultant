@@ -18,6 +18,7 @@ const (
 )
 
 var validCandidateIDTest = regexp.MustCompile(validCandidateIDRegex)
+var candidateIDErrMsg = fmt.Sprintf("Candidate ID must obey \"%s\"", validCandidateIDRegex)
 
 type Candidate struct {
 	client *api.Client
@@ -56,7 +57,7 @@ func NewCandidate(client *api.Client, id, key, ttl string) (*Candidate, error) {
 	id = strings.TrimSpace(id)
 
 	if !validCandidateIDTest.MatchString(id) {
-		return nil, fmt.Errorf("ID value must obey \"%s\", \"%s\" does not.", validCandidateIDRegex, id)
+		return nil, getCandidateError(CandidateErrorInvalidID)
 	}
 
 	c := &Candidate{
@@ -89,7 +90,8 @@ func NewCandidate(client *api.Client, id, key, ttl string) (*Candidate, error) {
 	// validate ttl
 	c.sessionTTL, err = time.ParseDuration(ttl)
 	if nil != err {
-		return nil, err
+		c.logPrintf("Unable to parse provided TTL: %v", err)
+		return nil, getCandidateError(CandidateErrorInvalidTTL)
 	}
 
 	// stay within the limits...
@@ -191,7 +193,8 @@ func (c *Candidate) ForeignLeader(dc string) (*api.SessionEntry, error) {
 	}
 
 	if nil == kv {
-		return nil, fmt.Errorf("Unable to locate kv \"%s\" in datacenter \"%s\"", c.kv.Key, dc)
+		c.logPrintf("Unable to locate kv \"%s\" in datacenter \"%s\"", c.kv.Key, dc)
+		return nil, getCandidateError(CandidateErrorKeyNotFound)
 	}
 
 	if "" != kv.Session {
@@ -201,7 +204,8 @@ func (c *Candidate) ForeignLeader(dc string) (*api.SessionEntry, error) {
 		}
 	}
 
-	return nil, fmt.Errorf("No session associated with kv \"%s\" in datacenter \"%s\"", c.kv.Key, dc)
+	c.logPrintf("No session associated with kv \"%s\" in datacenter \"%s\"", c.kv.Key, dc)
+	return nil, getCandidateError(CandidateErrorNoSession)
 }
 
 // Wait will block until a leader has been elected, regardless of candidate.

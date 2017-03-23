@@ -20,8 +20,6 @@ func makeCandidate(t *testing.T, num int, client *api.Client) *consultant.Candid
 }
 
 func TestSimpleElectionCycle(t *testing.T) {
-	t.Parallel()
-
 	var client *api.Client
 	var server *testutil.TestServer
 	var candidate1, candidate2, candidate3 *consultant.Candidate
@@ -55,6 +53,7 @@ func TestSimpleElectionCycle(t *testing.T) {
 
 	t.Run("locate leader", func(t *testing.T) {
 		leader, err = candidate1.Leader()
+		fmt.Printf("\n\n%v\n\n", err)
 		if nil != err {
 			t.Logf("Unable to locate leader session entry: %v", err)
 			t.FailNow()

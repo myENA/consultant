@@ -119,3 +119,53 @@ func getCandidateError(code CandidateErrorCode) error {
 		return &candidateError{code}
 	}
 }
+
+type ServiceSiblingErrorCode int
+
+const (
+	ServiceSiblingErrorNone ServiceSiblingErrorCode = iota
+	ServiceSiblingErrorNameEmpty
+	ServiceSiblingErrorAlreadyRunning
+)
+
+type serviceSiblingError struct {
+	code ServiceSiblingErrorCode
+}
+
+func (e serviceSiblingError) Error() string {
+	switch e.code {
+	case ServiceSiblingErrorNone:
+		return "None"
+	case ServiceSiblingErrorNameEmpty:
+		return "Service name cannot be empty"
+	case ServiceSiblingErrorAlreadyRunning:
+		return "Service Sibling watcher is already running"
+
+	default:
+		return fmt.Sprintf("An unknown error occurred: \"%d\"", e.code)
+	}
+}
+
+func (e serviceSiblingError) String() string                { return e.Error() }
+func (e serviceSiblingError) Code() ServiceSiblingErrorCode { return e.code }
+
+func (e serviceSiblingError) None() bool           { return e.code == ServiceSiblingErrorNone }
+func (e serviceSiblingError) NameEmpty() bool      { return e.code == ServiceSiblingErrorNameEmpty }
+func (e serviceSiblingError) AlreadyRunning() bool { return e.code == ServiceSiblingErrorAlreadyRunning }
+
+var (
+	ErrServiceSiblingNameEmpty      error = &serviceSiblingError{ServiceSiblingErrorNameEmpty}
+	ErrServiceSiblingAlreadyRunning error = &serviceSiblingError{ServiceSiblingErrorAlreadyRunning}
+)
+
+func getServiceSiblingError(code ServiceSiblingErrorCode) error {
+	switch code {
+	case ServiceSiblingErrorNameEmpty:
+		return ErrServiceSiblingNameEmpty
+	case ServiceSiblingErrorAlreadyRunning:
+		return ErrServiceSiblingAlreadyRunning
+
+	default:
+		return &serviceSiblingError{code}
+	}
+}

@@ -15,8 +15,6 @@ const (
 )
 
 func TestKeyWatchPlan(t *testing.T) {
-	t.Parallel()
-
 	var wp *consultant.WatchPlan
 
 	client, server := makeClient(t)
@@ -120,5 +118,3 @@ func TestKeyWatchPlan(t *testing.T) {
 		}
 	})
 }
-
-

@@ -1,4 +1,4 @@
-package: github.com/myENA/consul-candidate
+package: github.com/myENA/consultant
 import:
   - package: github.com/myENA/go-helpers
   - package: github.com/myENA/go-stdlogger

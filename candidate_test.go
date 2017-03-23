@@ -1,4 +1,4 @@
-package consulCandidate_test
+package consultant_test
 
 import (
 	"fmt"
@@ -10,7 +10,7 @@ import (
 )
 
 func init() {
-	consulCandidate.Debug()
+	consultant.Debug()
 }
 
 func makeClient(t *testing.T) (*api.Client, *testutil.TestServer) {
@@ -27,8 +27,8 @@ func makeClient(t *testing.T) (*api.Client, *testutil.TestServer) {
 	return client, server
 }
 
-func makeCandidate(t *testing.T, num int, client *api.Client) *consulCandidate.Candidate {
-	candidate, err := consulCandidate.New(fmt.Sprintf("test-%d", num), "candidate/tests/lock", "5s", client)
+func makeCandidate(t *testing.T, num int, client *api.Client) *consultant.Candidate {
+	candidate, err := consultant.New(fmt.Sprintf("test-%d", num), "candidate/tests/lock", "5s", client)
 	if nil != err {
 		t.Fatalf("err: %v", err)
 	}
@@ -39,7 +39,7 @@ func makeCandidate(t *testing.T, num int, client *api.Client) *consulCandidate.C
 func TestSimpleElectionCycle(t *testing.T) {
 	var client *api.Client
 	var server *testutil.TestServer
-	var candidate1, candidate2, candidate3 *consulCandidate.Candidate
+	var candidate1, candidate2, candidate3 *consultant.Candidate
 	var leader *api.SessionEntry
 	var err error
 

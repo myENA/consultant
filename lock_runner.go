@@ -1,4 +1,4 @@
-package consulCandidate
+package consultant
 
 import (
 	"github.com/hashicorp/consul/api"

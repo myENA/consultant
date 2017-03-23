@@ -2,25 +2,31 @@ package consultant
 
 import (
 	"fmt"
-	"github.com/hashicorp/consul/api"
-	"github.com/renstrom/shortuuid"
+	"math/rand"
 	"regexp"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/hashicorp/consul/api"
+	"github.com/renstrom/shortuuid"
 )
 
-// only allow certain characters in an ID
-const validIDRegex = `[a-zA-Z0-9:._-]+`
+const (
+	validCandidateIDRegex = `[a-zA-Z0-9:._-]+` // only allow certain characters in an ID
+	CandidateMaxWait      = 10                 // specifies the maximum wait after failed lock checks
+)
 
-var validIDTest = regexp.MustCompile(validIDRegex)
+var validCandidateIDTest = regexp.MustCompile(validCandidateIDRegex)
 
 type Candidate struct {
 	client *api.Client
 
 	lock *sync.RWMutex
 
-	id string
+	id           string
+	logSlug      string
+	logSlugSlice []interface{}
 
 	kv           *api.KVPair
 	sessionTTL   time.Duration
@@ -49,8 +55,8 @@ func New(id, key, ttl string, client *api.Client) (*Candidate, error) {
 
 	id = strings.TrimSpace(id)
 
-	if !validIDTest.MatchString(id) {
-		return nil, fmt.Errorf("ID value must obey \"%s\", \"%s\" does not.", validIDRegex, id)
+	if !validCandidateIDTest.MatchString(id) {
+		return nil, fmt.Errorf("ID value must obey \"%s\", \"%s\" does not.", validCandidateIDRegex, id)
 	}
 
 	c := &Candidate{
@@ -61,6 +67,10 @@ func New(id, key, ttl string, client *api.Client) (*Candidate, error) {
 		update: make(map[string]chan bool),
 	}
 
+	// create some slugs for log output
+	c.logSlug = fmt.Sprintf("[candidate-%s]", id)
+	c.logSlugSlice = []interface{}{c.logSlug}
+
 	// begin session entry construction
 	c.sessionEntry = &api.SessionEntry{
 		Name:     fmt.Sprintf("leader-session-%s-%s", id, shortuuid.New()),
@@ -68,7 +78,7 @@ func New(id, key, ttl string, client *api.Client) (*Candidate, error) {
 	}
 
 	if debug {
-		logPrintf(c, "Session name \"%s\"", c.sessionEntry.Name)
+		c.logPrintf("Session name \"%s\"", c.sessionEntry.Name)
 	}
 
 	// if ttl empty, default to 30 seconds
@@ -93,7 +103,7 @@ func New(id, key, ttl string, client *api.Client) (*Candidate, error) {
 	}
 
 	if debug {
-		logPrintf(c, "Setting TTL to \"%d\" seconds", int64(ttlSeconds))
+		c.logPrintf("Setting TTL to \"%d\" seconds", int64(ttlSeconds))
 	}
 
 	// create new session
@@ -103,7 +113,7 @@ func New(id, key, ttl string, client *api.Client) (*Candidate, error) {
 	}
 
 	if debug {
-		logPrintf(c, "Session created with id \"%s\"", c.sessionID)
+		c.logPrintf("Session created with id \"%s\"", c.sessionID)
 	}
 
 	// store session id
@@ -150,12 +160,12 @@ func (c *Candidate) Resign() {
 	c.lock.Unlock()
 
 	if debug {
-		logPrintln(c, "Resigning candidacy ... waiting for routines to exit ...")
+		c.logPrintln("Resigning candidacy ... waiting for routines to exit ...")
 	}
 
 	c.wait.Wait()
 
-	logPrintln(c, "Candidacy resigned.  We're no longer in the running")
+	c.logPrintln("Candidacy resigned.  We're no longer in the running")
 }
 
 // Leader will attempt to locate the leader's session entry in your local agent's datacenter
@@ -207,4 +217,291 @@ func (c *Candidate) Wait() {
 		// if session empty, assume no leader elected yet and try again
 		time.Sleep(time.Second * 1)
 	}
+}
+
+// Register returns a channel for updates in leader status -
+// only one message per candidate instance will be sent
+func (c *Candidate) RegisterUpdate(id string) (string, chan bool) {
+	c.lock.Lock()
+	defer c.lock.Unlock()
+	if id == "" {
+		id = randToken()
+	}
+	cup, ok := c.update[id]
+	if ok {
+		return id, cup
+	} else {
+		cup = make(chan bool, 1)
+		c.update[id] = cup
+		return id, cup
+	}
+}
+
+func (c *Candidate) DeregisterUpdate(id string) {
+	c.lock.Lock()
+	defer c.lock.Unlock()
+	_, ok := c.update[id]
+	if ok {
+		delete(c.update, id)
+	}
+}
+
+// updateLeader is a thread safe update of leader status
+func (c *Candidate) updateLeader(v bool) {
+	c.lock.Lock()
+	defer c.lock.Unlock()
+
+	// Send out updates if leader status changed
+	if v != c.leader {
+		for _, cup := range c.update {
+			cup <- v
+		}
+	}
+
+	// Update the leader flag
+	c.leader = v
+}
+
+func randToken() string {
+	b := make([]byte, 8)
+	rand.Read(b)
+	return fmt.Sprintf("%x", b)
+}
+
+// lockRunner runs the lock
+func (c *Candidate) lockRunner() {
+	var se *api.SessionEntry // session entry
+	var kv *api.KVPair       // retrieved key
+	var qm *api.QueryMeta    // metadata
+	var qo *api.QueryOptions // options
+	var err error            // error holder
+	var ok bool              // lock status
+	var checkWait int        // fail retry
+
+	// build options
+	qo = new(api.QueryOptions)
+	qo.WaitIndex = uint64(0)
+	qo.WaitTime = c.sessionTTL
+
+	// increment wait group
+	c.wait.Add(1)
+
+	// cleanup on exit
+	defer c.wait.Done()
+
+	// main loop
+	for {
+		// attempt to get the key
+		if kv, qm, err = c.client.KV().Get(c.kv.Key, qo); err != nil {
+			// log warning
+			c.logPrintf("lockRunner() error checking lock: %s", err)
+			// increment counter up to maximum value
+			if checkWait < CandidateMaxWait {
+				checkWait++
+			}
+			// log sleep
+			if debug {
+				c.logPrintf("lockRunner() sleeping for %d seconds before retry ...", checkWait)
+			}
+			// sleep before retry
+			time.Sleep(time.Duration(checkWait) * time.Second)
+			/// next interation
+			continue
+		}
+
+		// reset wait on success
+		checkWait = 0
+
+		// check closing
+		if c.closing {
+			if debug {
+				c.logPrintln("lockRunner() exiting")
+			}
+			return
+		}
+
+		// update index
+		qo.WaitIndex = qm.LastIndex
+
+		// check kv
+		if kv != nil {
+			if kv.Session == c.sessionID {
+				// we are the leader
+				c.updateLeader(true)
+				continue
+			}
+
+			// still going ... check session
+			if kv.Session != "" {
+				// lock (probably) held by someone else...try to find out who it is
+				se, _, err = c.client.Session().Info(kv.Session, nil)
+				// check error
+				if err != nil {
+					// failed to get session - log error
+					c.logPrintf("lockRuner() error fetching session: %s", err)
+					// renew/rebuild session
+					c.sessionValidate()
+					// wait for next iteration
+					continue
+				}
+				// check returned session entry
+				if se == nil {
+					// nil session entry - nil kv and attempt to get the lock below
+					kv = nil
+				}
+			} else {
+				// missing session - nil kv and attempt to get the lock below
+				kv = nil
+			}
+		}
+
+		// not the leader
+		c.updateLeader(false)
+
+		// check for nil key
+		if kv == nil {
+			if debug {
+				c.logPrintln("lockRunner() nil lock or empty session detected - attempting to get lock ...")
+			}
+			// attempt to get the lock and check for error
+			if ok, _, err = c.client.KV().Acquire(c.kv, nil); err != nil {
+				c.logPrintf("lockRunner() error failed to aquire lock: %s", err)
+				// renew/rebuild session
+				c.sessionValidate()
+				// wait for next iteration
+				continue
+			}
+			// we might have the lock
+			if ok && err == nil {
+				c.logPrintf("lockRunner() acquired lock with session %s", c.sessionID)
+				// yep .. we're the leader
+				c.updateLeader(true)
+				continue
+			}
+		}
+	}
+}
+
+// sessionValidate renews/recreates the session as needed
+func (c *Candidate) sessionValidate() {
+	var se *api.SessionEntry // session object
+	var sid string           // temp session id
+	var err error            // error holder
+
+	// attempt to renew session
+	if se, _, err = c.client.Session().Renew(c.sessionID, nil); err != nil || se == nil {
+		// check error
+		if err != nil {
+			// log error
+			c.logPrintf("sessionValidate() failed to renew session: %s", err)
+			// destroy sesion
+			c.client.Session().Destroy(c.sessionID, nil)
+		}
+		// check session
+		if se == nil {
+			// log error
+			c.logPrintln("sessionValidate() failed to renew session: not found")
+		}
+		// recreate the session
+		if sid, _, err = c.client.Session().Create(c.sessionEntry, nil); err != nil {
+			c.logPrintf("sessionValidate() failed to rebuild session: %s", err)
+			return
+		}
+		// update session and lock pair
+		c.lock.Lock()
+		c.sessionID = sid
+		c.kv.Session = sid
+		c.lock.Unlock()
+		// log session rebuild
+		if debug {
+			c.logPrintf("sessionValidate() registered new session %s", sid)
+		}
+		// all done
+		return
+	}
+	// renew okay
+	// log.Debug("sessionValidate() renewed session: %s", c.sid)
+}
+
+// sessionKeepAlive keeps session and ttl check alive
+func (c *Candidate) sessionKeepAlive() {
+	var sleepDuration time.Duration // sleep duration
+	var sleepTicker *time.Ticker    // sleep timer
+	var err error                   // error holder
+
+	// increment wait group
+	c.wait.Add(1)
+
+	// cleanup on exit
+	defer c.wait.Done()
+
+	// ensure sleep always at least one second
+	if sleepDuration = c.sessionTTL / 2; sleepDuration < time.Second {
+		sleepDuration = time.Second
+	}
+
+	// init ticker channel
+	sleepTicker = time.NewTicker(sleepDuration)
+
+	// loop every "sleep" seconds
+	for range sleepTicker.C {
+		// check closing
+		if c.closing {
+			if debug {
+				c.logPrintln("sessionKeepAlive() exiting")
+			}
+			// destroy session
+			if _, err = c.client.Session().Destroy(c.sessionID, nil); err != nil {
+				c.logPrintf("sessionKeepAlive() failed to destroy session (%s) %s",
+					c.sessionID,
+					err)
+			}
+			// stop ticker and exit
+			sleepTicker.Stop()
+			return
+		}
+		// renew/rebuild session
+		c.sessionValidate()
+	}
+
+	// shouldn't ever happen
+	if !c.closing {
+		c.logPrintln("sessionKeepAlive() exiting unexpectedly")
+	}
+}
+
+func (c *Candidate) logPrintf(format string, v ...interface{}) {
+	log.Printf(fmt.Sprintf("%s %s", c.logSlug, format), v...)
+}
+
+func (c *Candidate) logPrint(v ...interface{}) {
+	log.Print(append(c.logSlugSlice, v...)...)
+}
+
+func (c *Candidate) logPrintln(v ...interface{}) {
+	log.Println(append(c.logSlugSlice, v...)...)
+}
+
+func (c *Candidate) logFatalf(format string, v ...interface{}) {
+	log.Fatalf(fmt.Sprintf("%s %s", c.logSlug, format), v...)
+}
+
+func (c *Candidate) logFatal(v ...interface{}) {
+	log.Fatal(append(c.logSlugSlice, v...)...)
+}
+
+func (c *Candidate) logFatalln(v ...interface{}) {
+	log.Fatalln(append(c.logSlugSlice, v...)...)
+}
+
+func (c *Candidate) logPanicf(format string, v ...interface{}) {
+	log.Panicf(fmt.Sprintf("%s %s", c.logSlug, format), v...)
+}
+
+func (c *Candidate) logPanic(v ...interface{}) {
+	log.Panic(append(c.logSlugSlice, v...)...)
+}
+
+func (c *Candidate) logPanicln(v ...interface{}) {
+	log.Panicln(append(c.logSlugSlice, v...)...)
 }

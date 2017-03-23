@@ -2,11 +2,12 @@ package consultant_test
 
 import (
 	"fmt"
-	"github.com/hashicorp/consul/api"
-	"github.com/hashicorp/consul/testutil"
-	"github.com/myENA/consul-candidate"
 	"sync"
 	"testing"
+
+	"github.com/hashicorp/consul/api"
+	"github.com/hashicorp/consul/testutil"
+	"github.com/myENA/consultant"
 )
 
 func init() {

@@ -20,7 +20,9 @@ func makeClient(t *testing.T) (*api.Client, *testutil.TestServer) {
 
 	client, err := api.NewClient(conf)
 	if err != nil {
-		t.Fatalf("err: %v", err)
+		server.Stop()
+		t.Logf("err: %v", err)
+		t.FailNow()
 	}
 
 	return client, server

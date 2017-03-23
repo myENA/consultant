@@ -11,7 +11,7 @@ import (
 )
 
 func makeCandidate(t *testing.T, num int, client *api.Client) *consultant.Candidate {
-	candidate, err := consultant.NewCandidate(fmt.Sprintf("test-%d", num), "consultant/tests/candidate-lock", "5s", client)
+	candidate, err := consultant.NewCandidate(client, fmt.Sprintf("test-%d", num), "consultant/tests/candidate-lock", "5s")
 	if nil != err {
 		t.Fatalf("err: %v", err)
 	}
@@ -72,7 +72,6 @@ func TestSimpleElectionCycle(t *testing.T) {
 	})
 
 	t.Run("resign leadership", func(t *testing.T) {
-		wg = new(sync.WaitGroup)
 		wg.Add(3)
 
 		go func() {

@@ -40,16 +40,16 @@ type Candidate struct {
 	update map[string]chan bool
 }
 
-// New creates a new Candidate
+// NewCandidate creates a new Candidate
+//
+// - "client" must be a valid api client
 //
 // - "id" should be an implementation-relevant unique identifier
 //
 // - "key" must be the full path to a KV, it will be created if it doesn't already exist
 //
 // - "ttl" is the duration to set on the kv session ttl, will default to 30s if not specified
-//
-// - "client" must be a valid api client
-func NewCandidate(id, key, ttl string, client *api.Client) (*Candidate, error) {
+func NewCandidate(client *api.Client, id, key, ttl string) (*Candidate, error) {
 	var err error
 	var ttlSeconds float64
 
@@ -103,7 +103,7 @@ func NewCandidate(id, key, ttl string, client *api.Client) (*Candidate, error) {
 	}
 
 	if debug {
-		c.logPrintf("Setting TTL to \"%d\" seconds", int64(ttlSeconds))
+		c.logPrintf("Setting TTL to \"%s\"", c.sessionEntry.TTL)
 	}
 
 	// create new session

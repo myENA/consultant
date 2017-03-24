@@ -52,7 +52,6 @@ func TestSimpleElectionCycle(t *testing.T) {
 	wg.Wait()
 
 	t.Run("locate leader", func(t *testing.T) {
-		leader, err = candidate1.Leader()
 		fmt.Printf("\n\n%v\n\n", err)
 		if nil != err {
 			t.Logf("Unable to locate leader session entry: %v", err)

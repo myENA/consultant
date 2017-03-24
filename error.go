@@ -120,52 +120,79 @@ func getCandidateError(code CandidateErrorCode) error {
 	}
 }
 
-type ServiceSiblingErrorCode int
+type SiblingLocatorErrorCode int
 
 const (
-	ServiceSiblingErrorNone ServiceSiblingErrorCode = iota
-	ServiceSiblingErrorNameEmpty
-	ServiceSiblingErrorAlreadyRunning
+	SiblingLocatorErrorNone SiblingLocatorErrorCode = iota
+	SiblingLocatorErrorNameEmpty
+	SiblingLocatorErrorLocalIDEmpty
+	SiblingLocatorErrorWatcherAlreadyRunning
+	SiblingLocatorErrorWatcherCreateFailed
+	SiblingLocatorErrorCurrentCallFailed
 )
 
-type serviceSiblingError struct {
-	code ServiceSiblingErrorCode
+type siblingLocatorError struct {
+	code SiblingLocatorErrorCode
 }
 
-func (e serviceSiblingError) Error() string {
+func (e siblingLocatorError) Error() string {
 	switch e.code {
-	case ServiceSiblingErrorNone:
+	case SiblingLocatorErrorNone:
 		return "None"
-	case ServiceSiblingErrorNameEmpty:
+	case SiblingLocatorErrorNameEmpty:
 		return "Service name cannot be empty"
-	case ServiceSiblingErrorAlreadyRunning:
+	case SiblingLocatorErrorLocalIDEmpty:
+		return "Local Service ID cannot be empty"
+	case SiblingLocatorErrorWatcherAlreadyRunning:
 		return "Service Sibling watcher is already running"
+	case SiblingLocatorErrorWatcherCreateFailed:
+		return "Unable to construct service WatchPlan"
+	case SiblingLocatorErrorCurrentCallFailed:
+		return "Unable to locate current siblings"
 
 	default:
 		return fmt.Sprintf("An unknown error occurred: \"%d\"", e.code)
 	}
 }
 
-func (e serviceSiblingError) String() string                { return e.Error() }
-func (e serviceSiblingError) Code() ServiceSiblingErrorCode { return e.code }
+func (e siblingLocatorError) String() string                { return e.Error() }
+func (e siblingLocatorError) Code() SiblingLocatorErrorCode { return e.code }
 
-func (e serviceSiblingError) None() bool           { return e.code == ServiceSiblingErrorNone }
-func (e serviceSiblingError) NameEmpty() bool      { return e.code == ServiceSiblingErrorNameEmpty }
-func (e serviceSiblingError) AlreadyRunning() bool { return e.code == ServiceSiblingErrorAlreadyRunning }
+func (e siblingLocatorError) None() bool         { return e.code == SiblingLocatorErrorNone }
+func (e siblingLocatorError) NameEmpty() bool    { return e.code == SiblingLocatorErrorNameEmpty }
+func (e siblingLocatorError) LocalIDEmpty() bool { return e.code == SiblingLocatorErrorLocalIDEmpty }
+func (e siblingLocatorError) WatcherAlreadyRunning() bool {
+	return e.code == SiblingLocatorErrorWatcherAlreadyRunning
+}
+func (e siblingLocatorError) WatcherCreateFailed() bool {
+	return e.code == SiblingLocatorErrorWatcherCreateFailed
+}
+func (e siblingLocatorError) CurrentCallFailed() bool {
+	return e.code == SiblingLocatorErrorCurrentCallFailed
+}
 
 var (
-	ErrServiceSiblingNameEmpty      error = &serviceSiblingError{ServiceSiblingErrorNameEmpty}
-	ErrServiceSiblingAlreadyRunning error = &serviceSiblingError{ServiceSiblingErrorAlreadyRunning}
+	ErrSiblingLocatorNameEmpty           error = &siblingLocatorError{SiblingLocatorErrorNameEmpty}
+	ErrSiblingLocatorLocalIDEmpty        error = &siblingLocatorError{SiblingLocatorErrorLocalIDEmpty}
+	ErrSiblingLocatorAlreadyRunning      error = &siblingLocatorError{SiblingLocatorErrorWatcherAlreadyRunning}
+	ErrSiblingLocatorWatcherCreateFailed error = &siblingLocatorError{SiblingLocatorErrorWatcherCreateFailed}
+	ErrSiblingLocatorCurrentCallFailed   error = &siblingLocatorError{SiblingLocatorErrorCurrentCallFailed}
 )
 
-func getServiceSiblingError(code ServiceSiblingErrorCode) error {
+func getSiblingLocatorError(code SiblingLocatorErrorCode) error {
 	switch code {
-	case ServiceSiblingErrorNameEmpty:
-		return ErrServiceSiblingNameEmpty
-	case ServiceSiblingErrorAlreadyRunning:
-		return ErrServiceSiblingAlreadyRunning
+	case SiblingLocatorErrorNameEmpty:
+		return ErrSiblingLocatorNameEmpty
+	case SiblingLocatorErrorLocalIDEmpty:
+		return ErrSiblingLocatorLocalIDEmpty
+	case SiblingLocatorErrorWatcherAlreadyRunning:
+		return ErrSiblingLocatorAlreadyRunning
+	case SiblingLocatorErrorWatcherCreateFailed:
+		return ErrSiblingLocatorWatcherCreateFailed
+	case SiblingLocatorErrorCurrentCallFailed:
+		return ErrSiblingLocatorCurrentCallFailed
 
 	default:
-		return &serviceSiblingError{code}
+		return &siblingLocatorError{code}
 	}
 }

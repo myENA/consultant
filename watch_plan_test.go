@@ -17,7 +17,7 @@ const (
 func TestKeyWatchPlan(t *testing.T) {
 	var wp *consultant.WatchPlan
 
-	client, server := makeClient(t)
+	client, server := makeClientAndServer(t)
 	defer server.Stop()
 
 	t.Run("setup", func(t *testing.T) {

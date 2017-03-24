@@ -26,7 +26,7 @@ func TestSimpleElectionCycle(t *testing.T) {
 	var leader *api.SessionEntry
 	var err error
 
-	client, server = makeClient(t)
+	client, server = makeClientAndServer(t)
 	defer server.Stop()
 
 	wg := new(sync.WaitGroup)

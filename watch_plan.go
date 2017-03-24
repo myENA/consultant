@@ -87,7 +87,7 @@ func (p *WatchPlan) shouldStop() bool {
 }
 
 // NewServiceWatchPlan builds a WatchPlan for a specific service
-func NewServiceWatchPlan(c *api.Client, name string, tag string, passingOnly bool, queryOptions api.QueryOptions, handler WatchHandler) (*WatchPlan, error) {
+func NewServiceWatchPlan(c *api.Client, name, tag string, passingOnly bool, queryOptions api.QueryOptions, handler WatchHandler) (*WatchPlan, error) {
 	wp := NewWatchPlan()
 	wp.Type = WatchPlanTypeService
 	wp.Handler = handler

@@ -18,6 +18,7 @@ install:
   - glide up
   - cd ./vendor/github.com/hashicorp/consul
   - go build -o $HOME/bin/consul || exit 1
+  - cd ../../../../
 
 before_script:
   - go vet ./

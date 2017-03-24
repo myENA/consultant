@@ -54,7 +54,8 @@ type WatchPlan struct {
 // create the watch plan
 func NewWatchPlan() *WatchPlan {
 	return &WatchPlan{
-		stopCh: make(chan struct{}, 1),
+		stopCh:   make(chan struct{}, 1),
+		stopLock: sync.RWMutex{},
 	}
 }
 

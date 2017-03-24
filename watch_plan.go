@@ -279,6 +279,4 @@ OUTER:
 			}
 		}
 	}
-
-	return err
 }

@@ -10,12 +10,11 @@ import (
 )
 
 const (
+	quorumWaitDuration = 5 * time.Second
+
 	siblingLocatorClusterCount = 3
-
-	quorumWaitDuration = 10 * time.Second
-
-	siblingLocatorServiceName = "locator-test-service"
-	siblingLocatorServiceAddr = "127.0.0.1"
+	siblingLocatorServiceName  = "locator-test-service"
+	siblingLocatorServiceAddr  = "127.0.0.1"
 )
 
 func TestSiblingLocator(t *testing.T) {
@@ -23,6 +22,7 @@ func TestSiblingLocator(t *testing.T) {
 	defer c.shutdown()
 
 	locators := make([]*consultant.SiblingLocator, siblingLocatorClusterCount)
+	results := make([][]consultant.Siblings, siblingLocatorClusterCount)
 
 	t.Run("register services", func(t *testing.T) {
 		for i := 0; i < siblingLocatorClusterCount; i++ {
@@ -64,6 +64,16 @@ func TestSiblingLocator(t *testing.T) {
 						t.Logf("Unable to create locator for node \"%d\": %v", i, err)
 						t.FailNow()
 					}
+
+					results[i] = make([]consultant.Siblings, 0)
+
+					// :|
+					func(i int, locator *consultant.SiblingLocator) {
+						locator.AddCallback("", func(_ uint64, siblings consultant.Siblings) {
+							results[i] = append(results[i], siblings)
+						})
+					}(i, locators[i])
+
 				}
 			}
 
@@ -74,5 +84,32 @@ func TestSiblingLocator(t *testing.T) {
 		}
 	})
 
+	t.Run("fetch current", func(t *testing.T) {
+		// spread the word
+		for i := 0; i < siblingLocatorClusterCount; i++ {
+			locators[i].Current(false, true, nil)
+		}
 
+		// wait for receiver threads to finish...
+		time.Sleep(1 * time.Second)
+
+		// Should only have 1 entry
+		for i := 0; i < siblingLocatorClusterCount; i++ {
+			if 1 != len(results[i]) {
+				t.Logf("Expected \"results[%d]\" to be length 1, saw \"%d\"", i, len(results[i]))
+				t.FailNow()
+			}
+		}
+
+		for i := 0; i < siblingLocatorClusterCount; i++ {
+			if siblingLocatorClusterCount-1 != len(results[i][0]) {
+				t.Logf(
+					"Expected node \"%d\" result \"0\" length \"%d\", saw \"%d\"",
+					i,
+					siblingLocatorClusterCount-1,
+					len(results[i][0]))
+				t.FailNow()
+			}
+		}
+	})
 }

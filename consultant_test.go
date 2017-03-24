@@ -31,7 +31,7 @@ func makeClientAndServer(t *testing.T, cb testutil.ServerConfigCallback) (*api.C
 	return client, server
 }
 
-type cluster struct {
+type testConsulCluster struct {
 	lock sync.RWMutex
 
 	size    int
@@ -39,19 +39,19 @@ type cluster struct {
 	clients []*api.Client
 }
 
-func (c *cluster) client(i int) *api.Client {
+func (c *testConsulCluster) client(node int) *api.Client {
 	c.lock.RLock()
 	defer c.lock.RUnlock()
-	return c.clients[i]
+	return c.clients[node]
 }
 
-func (c *cluster) server(i int) *testutil.TestServer {
+func (c *testConsulCluster) server(node int) *testutil.TestServer {
 	c.lock.RLock()
 	defer c.lock.RUnlock()
-	return c.servers[i]
+	return c.servers[node]
 }
 
-func (c *cluster) shutdown() {
+func (c *testConsulCluster) shutdown() {
 	c.lock.Lock()
 	defer c.lock.Unlock()
 
@@ -64,12 +64,12 @@ func (c *cluster) shutdown() {
 	c.clients = nil
 }
 
-func makeCluster(t *testing.T, nodeCount int) *cluster {
+func makeCluster(t *testing.T, nodeCount int) *testConsulCluster {
 	if 0 > nodeCount {
 		t.Fatalf("nodeCount must be >= 0, \"%d\" provided", nodeCount)
 	}
 
-	c := &cluster{
+	c := &testConsulCluster{
 		size:    nodeCount,
 		servers: make([]*testutil.TestServer, nodeCount),
 		clients: make([]*api.Client, nodeCount),
@@ -77,7 +77,8 @@ func makeCluster(t *testing.T, nodeCount int) *cluster {
 
 	for i := 0; i < nodeCount; i++ {
 		c.clients[i], c.servers[i] = makeClientAndServer(t, func(c *testutil.TestServerConfig) {
-			c.Performance.RaftMultiplier = 3
+			c.Performance.RaftMultiplier = 5
+			c.DisableCheckpoint = false
 			if 0 < i {
 				c.Bootstrap = false
 			}
@@ -89,7 +90,7 @@ func makeCluster(t *testing.T, nodeCount int) *cluster {
 	}
 
 	for i := 1; i < nodeCount; i++ {
-		c.servers[i].JoinLAN(c.servers[0].LANAddr)
+		c.servers[0].JoinLAN(c.servers[i].LANAddr)
 	}
 
 	return c

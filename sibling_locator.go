@@ -142,7 +142,7 @@ func (sl *SiblingLocator) RemoveCallback(name string) {
 	delete(sl.callbacks, name)
 }
 
-func (sl *SiblingLocator) StartWatcher(passingOnly bool, options api.QueryOptions) error {
+func (sl *SiblingLocator) StartWatcher(passingOnly, stopOnError bool, options api.QueryOptions) error {
 	sl.wpLock.Lock()
 	defer sl.wpLock.Unlock()
 
@@ -163,16 +163,18 @@ func (sl *SiblingLocator) StartWatcher(passingOnly bool, options api.QueryOption
 		return getSiblingLocatorError(SiblingLocatorErrorWatcherCreateFailed)
 	}
 
-	go func() {
+	sl.wp.StopOnError = stopOnError
+
+	go func(sl *SiblingLocator) {
 		err := RunWatchPlan(sl.wp)
 		if nil != err {
 			sl.wpLock.Lock()
-			sl.logPrintf("Error seen while running WatchPlan: %v", err)
+			sl.logPrintf("WatchPlan stopped with error: %v", err)
 			sl.wpRunning = false
 			sl.wp = nil
 			sl.wpLock.Unlock()
 		}
-	}()
+	}(sl)
 
 	return nil
 }

@@ -48,13 +48,13 @@ type WatchPlan struct {
 
 	stop     bool
 	stopCh   chan struct{}
-	stopLock sync.Mutex
+	stopLock sync.RWMutex
 }
 
 // create the watch plan
 func NewWatchPlan() *WatchPlan {
 	return &WatchPlan{
-		stopCh: make(chan struct{}),
+		stopCh: make(chan struct{}, 1),
 	}
 }
 
@@ -76,16 +76,6 @@ func (p *WatchPlan) Stop() error {
 	return getWatchPlanError(code)
 }
 
-// shouldStop indicates a watcher should be stopped
-func (p *WatchPlan) shouldStop() bool {
-	select {
-	case <-p.stopCh:
-		return true
-	default:
-		return false
-	}
-}
-
 // NewServiceWatchPlan builds a WatchPlan for a specific service
 func NewServiceWatchPlan(c *api.Client, name, tag string, passingOnly bool, queryOptions api.QueryOptions, handler WatchHandler) (*WatchPlan, error) {
 	wp := NewWatchPlan()
@@ -97,9 +87,6 @@ func NewServiceWatchPlan(c *api.Client, name, tag string, passingOnly bool, quer
 	wp.Action = func(p *WatchPlan) (uint64, interface{}, error) {
 		options.WaitIndex = p.lastIndex
 		nodes, meta, err := c.Health().Service(name, tag, passingOnly, options)
-		if debug {
-			log.Printf("[watchplan] In ServiceWatch/Action: service=%s, li=%d, err=%s", name, meta.LastIndex, err)
-		}
 		if err != nil {
 			return 0, nil, err
 		}
@@ -202,75 +189,96 @@ func NewEventPlan(c *api.Client, name string, queryOptions api.QueryOptions, han
 // RunWatchPlan is used to run a watch plan - the instance should have a valid client.
 // The WatchPlan's Handler() is triggered when change is detected on the watched endpoint.
 func RunWatchPlan(wp *WatchPlan) error {
+	var err error
+	var index uint64
+	var result interface{}
 
 	// check if plan has been stopped or is stopping
-	if wp.shouldStop() {
+	wp.stopLock.RLock()
+	if wp.stop {
+		wp.stopLock.RUnlock()
 		return getWatchPlanError(WatchPlanErrorAlreadyStopped)
 	}
+	wp.stopLock.RUnlock()
 
 	// Loop until we are canceled
 	failures := 0
 OUTER:
-	for !wp.shouldStop() {
-		// Invoke the handler
-		index, result, err := wp.Action(wp)
 
-		// Check if we should terminate since the function
-		// could have blocked for a while
-		if wp.shouldStop() {
-			return nil
-		}
+	for {
+		select {
+		case <-wp.stopCh:
+			return err
+		default:
+			// Invoke the handler
+			index, result, err = wp.Action(wp)
 
-		// Handle an error in the watch function
-		if err != nil {
-			if wp.StopOnError {
+			// Check if we should terminate since the function
+			// could have blocked for a while
+			wp.stopLock.RLock()
+			if wp.stop {
+				wp.stopLock.RUnlock()
 				return err
 			}
+			wp.stopLock.RUnlock()
 
-			// Perform an quadratic backoff
-			failures++
-			retry := retryInterval * time.Duration(failures*failures)
-			if retry > maxBackOffTime {
-				retry = maxBackOffTime
+			// Handle an error in the watch function
+			if err != nil {
+				if wp.StopOnError {
+					wp.Stop()
+					continue OUTER
+				}
+
+				// Perform an quadratic backoff
+				failures++
+				retry := retryInterval * time.Duration(failures*failures)
+				if retry > maxBackOffTime {
+					retry = maxBackOffTime
+				}
+				log.Printf("[watchplan] Watch (type: %s) errored: %v, retry in %v",
+					wp.Type, err, retry)
+
+				select {
+				case <-time.After(retry):
+					wp.stopLock.RLock()
+					if wp.stop {
+						wp.stopLock.RUnlock()
+						return err
+					}
+					wp.stopLock.RUnlock()
+					continue OUTER
+				}
 			}
-			log.Printf("[watchplan] Watch (type: %s) errored: %v, retry in %v",
-				wp.Type, err, retry)
-			select {
-			case <-time.After(retry):
-				continue OUTER
-			case <-wp.stopCh:
-				return err
+
+			// Clear the failures
+			failures = 0
+
+			// If the index is unchanged do nothing
+			if index == wp.lastIndex {
+				continue
 			}
-		}
 
-		// Clear the failures
-		failures = 0
+			// Update the index, look for change
+			oldIndex := wp.lastIndex
+			wp.lastIndex = index
 
-		// If the index is unchanged do nothing
-		if index == wp.lastIndex {
-			continue
-		}
+			// discard the first change (from an unknown state)
+			if oldIndex == 0 {
+				continue
+			}
 
-		// Update the index, look for change
-		oldIndex := wp.lastIndex
-		wp.lastIndex = index
+			// make damn sure we have a change
+			if reflect.DeepEqual(wp.lastResult, result) {
+				continue
+			}
 
-		// discard the first change (from an unknown state)
-		if oldIndex == 0 {
-			continue
-		}
-
-		// make damn sure we have a change
-		if reflect.DeepEqual(wp.lastResult, result) {
-			continue
-		}
-
-		// Handle the updated result
-		wp.lastResult = result
-		if wp.Handler != nil {
-			wp.Handler(index, result)
+			// Handle the updated result
+			wp.lastResult = result
+			if wp.Handler != nil {
+				wp.Handler(index, result)
+			}
 		}
 	}
 
-	return nil
+	return err
 }

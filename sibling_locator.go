@@ -36,44 +36,6 @@ type SiblingLocatorConfig struct {
 	ServiceTags    []string    // OPTIONAL tags to require when looking for siblings
 }
 
-// SiblingConfigFromCatalogService will construct a SiblingLocatorConfig struct from a consul api catalog service struct
-func SiblingConfigFromCatalogService(c *api.Client, cs *api.CatalogService) *SiblingLocatorConfig {
-	m := &SiblingLocatorConfig{
-		Client:         c,
-		LocalNodeName:  cs.Node,
-		LocalServiceID: cs.ServiceID,
-		ServiceName:    cs.ServiceName,
-	}
-
-	if nil == cs.ServiceTags {
-		m.ServiceTags = make([]string, 0)
-	} else {
-		m.ServiceTags = make([]string, len(cs.ServiceTags))
-		copy(m.ServiceTags, cs.ServiceTags)
-	}
-
-	return m
-}
-
-// SiblingConfigFromAgentService will construct a SiblingLocatorConfig struct from a consul api node and agent service struct
-func SiblingConfigFromAgentService(c *api.Client, n *api.Node, as *api.AgentService) *SiblingLocatorConfig {
-	m := &SiblingLocatorConfig{
-		Client:         c,
-		LocalNodeName:  n.Node,
-		LocalServiceID: as.ID,
-		ServiceName:    as.Service,
-	}
-
-	if nil == as.Tags {
-		m.ServiceTags = make([]string, 0)
-	} else {
-		m.ServiceTags = make([]string, len(as.Tags))
-		copy(m.ServiceTags, as.Tags)
-	}
-
-	return m
-}
-
 // SiblingLocator provides a way for a local service to find other services registered in Consul that share it's name
 // and tags (if any).
 type SiblingLocator struct {
@@ -119,6 +81,44 @@ func NewSiblingLocator(config SiblingLocatorConfig) (*SiblingLocator, error) {
 	sl.logSlugSlice = []interface{}{sl.logSlug}
 
 	return sl, nil
+}
+
+// NewSiblingLocatorWithCatalogService will construct a SiblingLocator from a consul api catalog service struct
+func NewSiblingLocatorWithCatalogService(c *api.Client, cs *api.CatalogService) (*SiblingLocator, error) {
+	conf := &SiblingLocatorConfig{
+		Client:         c,
+		LocalNodeName:  cs.Node,
+		LocalServiceID: cs.ServiceID,
+		ServiceName:    cs.ServiceName,
+	}
+
+	if nil == cs.ServiceTags {
+		conf.ServiceTags = make([]string, 0)
+	} else {
+		conf.ServiceTags = make([]string, len(cs.ServiceTags))
+		copy(conf.ServiceTags, cs.ServiceTags)
+	}
+
+	return NewSiblingLocator(*conf)
+}
+
+// NewSiblingLocatorWithAgentService will construct a SiblingLocator from a consul api node and agent service struct
+func NewSiblingLocatorWithAgentService(c *api.Client, n *api.Node, as *api.AgentService) (*SiblingLocator, error) {
+	conf := &SiblingLocatorConfig{
+		Client:         c,
+		LocalNodeName:  n.Node,
+		LocalServiceID: as.ID,
+		ServiceName:    as.Service,
+	}
+
+	if nil == as.Tags {
+		conf.ServiceTags = make([]string, 0)
+	} else {
+		conf.ServiceTags = make([]string, len(as.Tags))
+		copy(conf.ServiceTags, as.Tags)
+	}
+
+	return NewSiblingLocator(*conf)
 }
 
 func (sl *SiblingLocator) AddCallback(name string, cb SiblingCallback) string {

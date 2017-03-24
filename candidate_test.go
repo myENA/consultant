@@ -26,7 +26,7 @@ func TestSimpleElectionCycle(t *testing.T) {
 	var leader *api.SessionEntry
 	var err error
 
-	client, server = makeClientAndServer(t)
+	client, server = makeClientAndServer(t, nil)
 	defer server.Stop()
 
 	wg := new(sync.WaitGroup)
@@ -52,7 +52,7 @@ func TestSimpleElectionCycle(t *testing.T) {
 	wg.Wait()
 
 	t.Run("locate leader", func(t *testing.T) {
-		fmt.Printf("\n\n%v\n\n", err)
+		leader, err = candidate1.Leader()
 		if nil != err {
 			t.Logf("Unable to locate leader session entry: %v", err)
 			t.FailNow()

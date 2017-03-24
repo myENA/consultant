@@ -3,6 +3,9 @@ package consultant_test
 import (
 	"testing"
 
+	"net"
+	"sync"
+
 	"github.com/hashicorp/consul/api"
 	"github.com/hashicorp/consul/testutil"
 	"github.com/myENA/consultant"
@@ -12,10 +15,10 @@ func init() {
 	consultant.Debug()
 }
 
-func makeClientAndServer(t *testing.T) (*api.Client, *testutil.TestServer) {
+func makeClientAndServer(t *testing.T, cb testutil.ServerConfigCallback) (*api.Client, *testutil.TestServer) {
 	apiConf := api.DefaultConfig()
 
-	server := testutil.NewTestServerConfig(t, nil)
+	server := testutil.NewTestServerConfig(t, cb)
 	apiConf.Address = server.HTTPAddr
 
 	client, err := api.NewClient(apiConf)
@@ -29,16 +32,36 @@ func makeClientAndServer(t *testing.T) (*api.Client, *testutil.TestServer) {
 }
 
 type cluster struct {
+	lock sync.RWMutex
+
+	size    int
 	servers []*testutil.TestServer
 	clients []*api.Client
 }
 
 func (c *cluster) client(i int) *api.Client {
+	c.lock.RLock()
+	defer c.lock.RUnlock()
 	return c.clients[i]
 }
 
 func (c *cluster) server(i int) *testutil.TestServer {
+	c.lock.RLock()
+	defer c.lock.RUnlock()
 	return c.servers[i]
+}
+
+func (c *cluster) shutdown() {
+	c.lock.Lock()
+	defer c.lock.Unlock()
+
+	for i := 0; i < c.size; i++ {
+		c.servers[i].Stop()
+	}
+
+	c.size = 0
+	c.servers = nil
+	c.clients = nil
 }
 
 func makeCluster(t *testing.T, nodeCount int) *cluster {
@@ -47,12 +70,18 @@ func makeCluster(t *testing.T, nodeCount int) *cluster {
 	}
 
 	c := &cluster{
+		size:    nodeCount,
 		servers: make([]*testutil.TestServer, nodeCount),
 		clients: make([]*api.Client, nodeCount),
 	}
 
 	for i := 0; i < nodeCount; i++ {
-		c.clients[i], c.servers[i] = makeClientAndServer(t)
+		c.clients[i], c.servers[i] = makeClientAndServer(t, func(c *testutil.TestServerConfig) {
+			c.Performance.RaftMultiplier = 3
+			if 0 < i {
+				c.Bootstrap = false
+			}
+		})
 	}
 
 	if 1 == nodeCount {
@@ -64,4 +93,15 @@ func makeCluster(t *testing.T, nodeCount int) *cluster {
 	}
 
 	return c
+}
+
+// shamelessly copy-pasted from https://github.com/hashicorp/consul/blob/master/testutil/server.go#L107
+// randomPort asks the kernel for a random port to use.
+func randomPort() int {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		panic(err)
+	}
+	defer l.Close()
+	return l.Addr().(*net.TCPAddr).Port
 }

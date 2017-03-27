@@ -3,6 +3,7 @@ package consultant_test
 import (
 	"testing"
 
+	"fmt"
 	"time"
 
 	"github.com/hashicorp/consul/api"
@@ -143,7 +144,6 @@ func TestSiblingLocator_Watchers(t *testing.T) {
 	})
 
 	// TODO: Don't use a sleep...?
-	t.Logf("\nWaiting around \"%d\" for quorum....\n", int64(quorumWaitDuration))
 	time.Sleep(quorumWaitDuration)
 
 	t.Run("create locators", func(t *testing.T) {
@@ -189,7 +189,11 @@ func TestSiblingLocator_Watchers(t *testing.T) {
 
 	t.Run("start watchers", func(t *testing.T) {
 		for i := 0; i < siblingLocatorClusterCount; i++ {
-			err := locators[i].StartWatcher(false)
+			err := locators[i].StartWatcher(
+				false,
+				fmt.Sprintf("%s:%d",
+					localCluster.server(i).Config.Addresses.HTTP,
+					localCluster.server(i).Config.Ports.HTTP))
 			if nil != err {
 				t.Logf("Failed to start node \"%d\" watcher; %v", i, err)
 				t.FailNow()
@@ -197,9 +201,12 @@ func TestSiblingLocator_Watchers(t *testing.T) {
 		}
 	})
 
+	// TODO: Don't use a sleep...?
+	time.Sleep(quorumWaitDuration)
+
 	t.Run("change services", func(t *testing.T) {
-		locators[1].StopWatcher()
-		err := localCluster.client(1).Agent().ServiceDeregister(siblingLocatorServiceName)
+		locators[0].StopWatcher()
+		err := localCluster.client(0).Agent().ServiceDeregister(siblingLocatorServiceName)
 		if nil != err {
 			t.Logf("Unable to deregister service on node \"1\": %v", err)
 			t.FailNow()
@@ -208,19 +215,19 @@ func TestSiblingLocator_Watchers(t *testing.T) {
 		// wait for callback routines to finish
 		time.Sleep(5 * time.Second)
 
-		if len(results[0]) != len(results[2]) {
+		if len(results[1]) != len(results[2]) {
 			t.Logf(
-				"Expected node 0 and 2 to have same result length, saw: \"%d\" \"%d\"",
+				"Expected node 1 and 2 to have same result length, saw: \"%d\" \"%d\"",
 				len(results[0]),
 				len(results[2]))
 			t.FailNow()
 		}
 
-		if len(results[1]) != len(results[0])-1 {
+		if len(results[0]) != len(results[1])-1 {
 			t.Logf(
-				"Expected node 1 results to be 0 less than node 1, saw: \"%d\" \"%d\"",
-				len(results[1]),
-				len(results[0]))
+				"Expected node 0 results to be 1 less than node 1, saw: \"%d\" \"%d\"",
+				len(results[0]),
+				len(results[1]))
 			t.FailNow()
 		}
 	})

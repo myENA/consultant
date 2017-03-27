@@ -43,11 +43,11 @@ type SiblingLocator struct {
 	config *SiblingLocatorConfig
 
 	callbacks        map[string]SiblingCallback
-	callbacksLock    sync.RWMutex
+	callbacksLock    *sync.RWMutex
 	lazyCallbackName uint64
 
 	wp        *watch.WatchPlan
-	wpLock    sync.Mutex
+	wpLock    *sync.Mutex
 	wpRunning bool
 
 	logSlug      string
@@ -56,8 +56,10 @@ type SiblingLocator struct {
 
 func NewSiblingLocator(config SiblingLocatorConfig) (*SiblingLocator, error) {
 	sl := &SiblingLocator{
-		config:    &config,
-		callbacks: make(map[string]SiblingCallback),
+		config:        &config,
+		callbacks:     make(map[string]SiblingCallback),
+		callbacksLock: new(sync.RWMutex),
+		wpLock:        new(sync.Mutex),
 	}
 
 	sl.config.LocalServiceID = strings.TrimSpace(sl.config.LocalServiceID)
@@ -143,7 +145,12 @@ func (sl *SiblingLocator) RemoveCallback(name string) {
 	delete(sl.callbacks, name)
 }
 
-func (sl *SiblingLocator) StartWatcher(passingOnly bool) error {
+// StartWatcher will spin up a Consul WatchPlan that watches for other registered services with the same name
+// and set of tags.
+//
+// - passingOnly will limit the response to only registrations deemed "healthy"
+// - address allows you to specify an agent to connect to.  If left empty, it will default to CONSUL_HTTP_ADDR envvar
+func (sl *SiblingLocator) StartWatcher(passingOnly bool, address string) error {
 	sl.wpLock.Lock()
 	defer sl.wpLock.Unlock()
 
@@ -174,16 +181,16 @@ func (sl *SiblingLocator) StartWatcher(passingOnly bool) error {
 
 	sl.wp.Handler = sl.watchHandler
 
-	go func() {
-		err := sl.wp.Run("")
+	go func(sl *SiblingLocator) {
+		err := sl.wp.Run(address)
+		sl.wpLock.Lock()
 		if nil != err {
-			sl.wpLock.Lock()
 			sl.logPrintf("WatchPlan stopped with error: %v", err)
-			sl.wpRunning = false
-			sl.wp = nil
-			sl.wpLock.Unlock()
 		}
-	}()
+		sl.wpRunning = false
+		sl.wp = nil
+		sl.wpLock.Unlock()
+	}(sl)
 
 	return nil
 }
@@ -194,8 +201,6 @@ func (sl *SiblingLocator) StopWatcher() {
 
 	if nil != sl.wp {
 		sl.wp.Stop()
-		sl.wpRunning = false
-		sl.wp = nil
 	}
 }
 

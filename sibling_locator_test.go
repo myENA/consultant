@@ -189,7 +189,7 @@ func TestSiblingLocator_Watchers(t *testing.T) {
 
 	t.Run("start watchers", func(t *testing.T) {
 		for i := 0; i < siblingLocatorClusterCount; i++ {
-			err := locators[i].StartWatcher(false, true, api.QueryOptions{})
+			err := locators[i].StartWatcher(false)
 			if nil != err {
 				t.Logf("Failed to start node \"%d\" watcher; %v", i, err)
 				t.FailNow()

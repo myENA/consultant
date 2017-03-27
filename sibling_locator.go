@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/hashicorp/consul/api"
+	"github.com/hashicorp/consul/watch"
 )
 
 // SiblingCallback is the prototype for a callback that can be registered in a SiblingLocator.  It will be called
@@ -45,7 +46,7 @@ type SiblingLocator struct {
 	callbacksLock    sync.RWMutex
 	lazyCallbackName uint64
 
-	wp        *WatchPlan
+	wp        *watch.WatchPlan
 	wpLock    sync.Mutex
 	wpRunning bool
 
@@ -142,7 +143,7 @@ func (sl *SiblingLocator) RemoveCallback(name string) {
 	delete(sl.callbacks, name)
 }
 
-func (sl *SiblingLocator) StartWatcher(passingOnly, stopOnError bool, options api.QueryOptions) error {
+func (sl *SiblingLocator) StartWatcher(passingOnly bool) error {
 	sl.wpLock.Lock()
 	defer sl.wpLock.Unlock()
 
@@ -157,16 +158,24 @@ func (sl *SiblingLocator) StartWatcher(passingOnly, stopOnError bool, options ap
 		tag = sl.config.ServiceTags[0]
 	}
 
-	sl.wp, err = NewServiceWatchPlan(sl.config.Client, sl.config.ServiceName, tag, passingOnly, options, sl.watchHandler)
+	params := map[string]interface{}{
+		"type":        "service",
+		"stale":       false,
+		"service":     sl.config.ServiceName,
+		"tag":         tag,
+		"passingonly": passingOnly,
+	}
+
+	sl.wp, err = watch.Parse(params)
 	if nil != err {
 		sl.logPrintf("Unable to create watch plan: %v", err)
 		return getSiblingLocatorError(SiblingLocatorErrorWatcherCreateFailed)
 	}
 
-	sl.wp.StopOnError = stopOnError
+	sl.wp.Handler = sl.watchHandler
 
-	go func(sl *SiblingLocator) {
-		err := RunWatchPlan(sl.wp)
+	go func() {
+		err := sl.wp.Run("")
 		if nil != err {
 			sl.wpLock.Lock()
 			sl.logPrintf("WatchPlan stopped with error: %v", err)
@@ -174,7 +183,7 @@ func (sl *SiblingLocator) StartWatcher(passingOnly, stopOnError bool, options ap
 			sl.wp = nil
 			sl.wpLock.Unlock()
 		}
-	}(sl)
+	}()
 
 	return nil
 }

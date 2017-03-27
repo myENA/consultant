@@ -35,6 +35,10 @@ type SiblingLocatorConfig struct {
 	LocalNodeName  string      // REQUIRED name of local node where service was registered.  Used to exclude local service from responses
 	ServiceName    string      // REQUIRED name of service
 	ServiceTags    []string    // OPTIONAL tags to require when looking for siblings
+
+	AllowStale bool   // OPTIONAL allow "Stale" values
+	Datacenter string // OPTIONAL // consul Datacenter
+	Token      string // OPTIONAL consul acl token
 }
 
 // SiblingLocator provides a way for a local service to find other services registered in Consul that share it's name
@@ -149,6 +153,7 @@ func (sl *SiblingLocator) RemoveCallback(name string) {
 // and set of tags.
 //
 // - passingOnly will limit the response to only registrations deemed "healthy"
+//
 // - address allows you to specify an agent to connect to.  If left empty, it will default to CONSUL_HTTP_ADDR envvar
 func (sl *SiblingLocator) StartWatcher(passingOnly bool, address string) error {
 	sl.wpLock.Lock()
@@ -165,36 +170,34 @@ func (sl *SiblingLocator) StartWatcher(passingOnly bool, address string) error {
 		tag = sl.config.ServiceTags[0]
 	}
 
+	// create param map
 	params := map[string]interface{}{
-		"type":        "service",
-		"stale":       false,
-		"service":     sl.config.ServiceName,
-		"tag":         tag,
+		// non-modifiable values
+		"type":    "service",
+		"service": sl.config.ServiceName,
+		"tag":     tag,
+
+		// modifiable values
 		"passingonly": passingOnly,
+		"stale":       sl.config.AllowStale,
+		"datacenter":  sl.config.Datacenter,
+		"token":       sl.config.Token,
 	}
 
+	// try to build watchplan
 	sl.wp, err = watch.Parse(params)
 	if nil != err {
 		sl.logPrintf("Unable to create watch plan: %v", err)
 		return getSiblingLocatorError(SiblingLocatorErrorWatcherCreateFailed)
 	}
 
-	sl.wp.Handler = sl.watchHandler
-
-	go func(sl *SiblingLocator) {
-		err := sl.wp.Run(address)
-		sl.wpLock.Lock()
-		if nil != err {
-			sl.logPrintf("WatchPlan stopped with error: %v", err)
-		}
-		sl.wpRunning = false
-		sl.wp = nil
-		sl.wpLock.Unlock()
-	}(sl)
+	// run watchplan until it returns something
+	go sl.runWatcher(address)
 
 	return nil
 }
 
+// StopWatcher will stop the sibling watchplan.  If the plan was previously stopped, this is a noop.
 func (sl *SiblingLocator) StopWatcher() {
 	sl.wpLock.Lock()
 	defer sl.wpLock.Unlock()
@@ -204,13 +207,24 @@ func (sl *SiblingLocator) StopWatcher() {
 	}
 }
 
-func (sl *SiblingLocator) Current(passingOnly, sendToCallbacks bool, options *api.QueryOptions) (Siblings, error) {
+// Current will immediately execute a Health().Service() call, returning and optionally sending the result to
+// any registered callbacks
+//
+// - passingOnly will limit the response to only registrations deemed "healthy"
+//
+// - sendToCallbacks will send the results to any callbacks registered at time of execution.  Your callbacks can
+// determine the difference between a watcher update and a "Current" call by looking for math.MaxUint64 as the index value
+func (sl *SiblingLocator) Current(passingOnly, sendToCallbacks bool) (Siblings, error) {
 	var tag string
 	if nil != sl.config.ServiceTags && 1 == len(sl.config.ServiceTags) {
 		tag = sl.config.ServiceTags[0]
 	}
 
-	svcs, _, err := sl.config.Client.Health().Service(sl.config.ServiceName, tag, passingOnly, options)
+	svcs, _, err := sl.config.Client.Health().Service(sl.config.ServiceName, tag, passingOnly, &api.QueryOptions{
+		Datacenter: sl.config.Datacenter,
+		Token:      sl.config.Token,
+		AllowStale: sl.config.AllowStale,
+	})
 	if nil != err {
 		sl.logPrintf("Unable to locate current siblings: %v", err)
 		return nil, getSiblingLocatorError(SiblingLocatorErrorCurrentCallFailed)
@@ -221,6 +235,29 @@ func (sl *SiblingLocator) Current(passingOnly, sendToCallbacks bool, options *ap
 	}
 
 	return buildSiblingList(sl.config.LocalNodeName, sl.config.LocalServiceID, sl.config.ServiceTags, svcs), nil
+}
+
+func (sl *SiblingLocator) runWatcher(address string) {
+	// set handler
+	sl.wp.Handler = sl.watchHandler
+
+	// blocks until error or closed
+	err := sl.wp.Run(address)
+
+	// lock
+	sl.wpLock.Lock()
+	defer sl.wpLock.Unlock()
+
+	// record error
+	if nil != err {
+		sl.logPrintf("WatchPlan stopped with error: %v", err)
+	}
+
+	// set running to false
+	sl.wpRunning = false
+
+	// nil out watchplan
+	sl.wp = nil
 }
 
 func (sl *SiblingLocator) watchHandler(index uint64, data interface{}) {

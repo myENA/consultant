@@ -88,7 +88,7 @@ func TestSiblingLocator_Current(t *testing.T) {
 	t.Run("fetch current", func(t *testing.T) {
 		// spread the word
 		for i := 0; i < siblingLocatorClusterCount; i++ {
-			locators[i].Current(false, true, nil)
+			locators[i].Current(false, true)
 		}
 
 		// wait for callback routines to finish...

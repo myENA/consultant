@@ -201,7 +201,7 @@ func TestSiblingLocator_Watchers(t *testing.T) {
 		}
 	})
 
-	// TODO: Don't use a sleep...?
+	// wait for watcher routines to start up
 	time.Sleep(quorumWaitDuration)
 
 	t.Run("change services", func(t *testing.T) {
@@ -212,8 +212,8 @@ func TestSiblingLocator_Watchers(t *testing.T) {
 			t.FailNow()
 		}
 
-		// wait for callback routines to finish
-		time.Sleep(5 * time.Second)
+		// wait for quorum service deregistration and watcher callbacks to finish
+		time.Sleep(quorumWaitDuration)
 
 		if len(results[1]) != len(results[2]) {
 			t.Logf(

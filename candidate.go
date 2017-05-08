@@ -308,7 +308,7 @@ func (c *Candidate) lockRunner() {
 			}
 			// sleep before retry
 			time.Sleep(time.Duration(checkWait) * time.Second)
-			/// next interation
+
 			continue
 		}
 

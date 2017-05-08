@@ -184,7 +184,7 @@ func (sl *SiblingLocator) StartWatcher(passingOnly bool, address string) error {
 	}
 
 	// try to build watchplan
-	sl.wp, err = watch.Parse(params)
+	sl.wp, err = watch.ParseExempt(params, nil)
 	if nil != err {
 		sl.logPrintf("Unable to create watch plan: %v", err)
 		return getSiblingLocatorError(SiblingLocatorErrorWatcherCreateFailed)

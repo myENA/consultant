@@ -1,10 +1,9 @@
 package consultant
 
 import (
+	"github.com/myENA/go-helpers"
 	"strings"
 	"sync"
-
-	"github.com/myENA/go-helpers"
 )
 
 type TagContainer struct {

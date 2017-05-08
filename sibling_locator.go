@@ -2,14 +2,13 @@ package consultant
 
 import (
 	"fmt"
+	"github.com/hashicorp/consul/api"
+	"github.com/hashicorp/consul/watch"
 	"math"
 	"reflect"
 	"strconv"
 	"strings"
 	"sync"
-
-	"github.com/hashicorp/consul/api"
-	"github.com/hashicorp/consul/watch"
 )
 
 // SiblingCallback is the prototype for a callback that can be registered in a SiblingLocator.  It will be called

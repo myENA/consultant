@@ -2,14 +2,13 @@ package consultant
 
 import (
 	"fmt"
+	"github.com/hashicorp/consul/api"
+	"github.com/renstrom/shortuuid"
 	"math/rand"
 	"regexp"
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/hashicorp/consul/api"
-	"github.com/renstrom/shortuuid"
 )
 
 const (

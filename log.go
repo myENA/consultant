@@ -1,10 +1,9 @@
 package consultant
 
 import (
+	"github.com/myENA/go-stdlogger"
 	stdLog "log"
 	"os"
-
-	"github.com/myENA/go-stdlogger"
 )
 
 // Accept any logger that implements the core log functions

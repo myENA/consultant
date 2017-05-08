@@ -1,24 +1,25 @@
 package consultant_test
 
 import (
-	"testing"
-
-	"net"
-	"sync"
-
 	"github.com/hashicorp/consul/api"
 	"github.com/hashicorp/consul/testutil"
 	"github.com/myENA/consultant"
+	"net"
+	"sync"
+	"testing"
 )
 
 func init() {
 	consultant.Debug()
 }
 
-func makeClientAndServer(t *testing.T, cb testutil.ServerConfigCallback) (*api.Client, *testutil.TestServer) {
+func makeClientAndServer(t *testing.T, cb testutil.ServerConfigCallback) (*api.Client, *testutil.TestServer, error) {
 	apiConf := api.DefaultConfig()
 
-	server := testutil.NewTestServerConfig(t, cb)
+	server, err := testutil.NewTestServerConfig(cb)
+	if nil != err {
+
+	}
 	apiConf.Address = server.HTTPAddr
 
 	client, err := api.NewClient(apiConf)
@@ -28,7 +29,7 @@ func makeClientAndServer(t *testing.T, cb testutil.ServerConfigCallback) (*api.C
 		t.FailNow()
 	}
 
-	return client, server
+	return client, server, nil
 }
 
 type testConsulCluster struct {
@@ -64,7 +65,8 @@ func (c *testConsulCluster) shutdown() {
 	c.clients = nil
 }
 
-func makeCluster(t *testing.T, nodeCount int) *testConsulCluster {
+func makeCluster(t *testing.T, nodeCount int) (*testConsulCluster, error) {
+	var err error
 	if 0 > nodeCount {
 		t.Fatalf("nodeCount must be >= 0, \"%d\" provided", nodeCount)
 	}
@@ -76,24 +78,27 @@ func makeCluster(t *testing.T, nodeCount int) *testConsulCluster {
 	}
 
 	for i := 0; i < nodeCount; i++ {
-		c.clients[i], c.servers[i] = makeClientAndServer(t, func(c *testutil.TestServerConfig) {
+		c.clients[i], c.servers[i], err = makeClientAndServer(t, func(c *testutil.TestServerConfig) {
 			c.Performance.RaftMultiplier = 5
 			c.DisableCheckpoint = false
 			if 0 < i {
 				c.Bootstrap = false
 			}
 		})
+		if nil != err {
+			return nil, err
+		}
 	}
 
 	if 1 == nodeCount {
-		return c
+		return c, nil
 	}
 
 	for i := 1; i < nodeCount; i++ {
-		c.servers[0].JoinLAN(c.servers[i].LANAddr)
+		c.servers[0].JoinLAN(t, c.servers[i].LANAddr)
 	}
 
-	return c
+	return c, nil
 }
 
 // shamelessly copy-pasted from https://github.com/hashicorp/consul/blob/master/testutil/server.go#L107

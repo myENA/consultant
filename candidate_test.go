@@ -11,6 +11,11 @@ import (
 	"testing"
 )
 
+const (
+	candidateLockKey = "consultant/tests/candidate-lock"
+	candidateLockTTL = "5s"
+)
+
 type CandidateTestSuite struct {
 	suite.Suite
 
@@ -24,40 +29,36 @@ func TestCandidate(t *testing.T) {
 }
 
 // SetupTest is called before each method is run.
-func (cts *CandidateTestSuite) SetupTest() {
-	var err error
-	cts.client, cts.server, err = makeClientAndServer(cts.T(), nil)
-	if nil != err {
-		cts.FailNow(fmt.Sprintf("Unable to set up Consul Client and Server: %v", err))
-	}
+func (cs *CandidateTestSuite) SetupTest() {
+	cs.client, cs.server = makeServerAndAPIClient(cs.T(), nil)
 }
 
 // TearDownTest is called after each method has been run.
-func (cts *CandidateTestSuite) TearDownTest() {
-	if nil != cts.client {
-		cts.client = nil
+func (cs *CandidateTestSuite) TearDownTest() {
+	if nil != cs.client {
+		cs.client = nil
 	}
-	if nil != cts.server {
+	if nil != cs.server {
 		// TODO: Stop seems to return an error when the process is killed...
-		cts.server.Stop()
-		cts.server = nil
+		cs.server.Stop()
+		cs.server = nil
 	}
 }
 
-func (cts *CandidateTestSuite) TeardDownSuite() {
-	cts.TearDownTest()
+func (cs *CandidateTestSuite) TearDownSuite() {
+	cs.TearDownTest()
 }
 
-func (cts *CandidateTestSuite) makeCandidate(num int) *consultant.Candidate {
-	candidate, err := consultant.NewCandidate(cts.client, fmt.Sprintf("test-%d", num), "consultant/tests/candidate-lock", "5s")
+func (cs *CandidateTestSuite) makeCandidate(num int) *consultant.Candidate {
+	candidate, err := consultant.NewCandidate(cs.client, fmt.Sprintf("test-%d", num), candidateLockKey, candidateLockTTL)
 	if nil != err {
-		cts.T().Fatalf("err: %v", err)
+		cs.T().Fatalf("err: %v", err)
 	}
 
 	return candidate
 }
 
-func (cts *CandidateTestSuite) TestSimpleElectionCycle() {
+func (cs *CandidateTestSuite) TestSimpleElectionCycle() {
 	var candidate1, candidate2, candidate3 *consultant.Candidate
 	var leader *api.SessionEntry
 	var err error
@@ -67,17 +68,17 @@ func (cts *CandidateTestSuite) TestSimpleElectionCycle() {
 	wg.Add(3)
 
 	go func() {
-		candidate1 = cts.makeCandidate(1)
+		candidate1 = cs.makeCandidate(1)
 		candidate1.Wait()
 		wg.Done()
 	}()
 	go func() {
-		candidate2 = cts.makeCandidate(2)
+		candidate2 = cs.makeCandidate(2)
 		candidate2.Wait()
 		wg.Done()
 	}()
 	go func() {
-		candidate3 = cts.makeCandidate(3)
+		candidate3 = cs.makeCandidate(3)
 		candidate3.Wait()
 		wg.Done()
 	}()
@@ -85,10 +86,10 @@ func (cts *CandidateTestSuite) TestSimpleElectionCycle() {
 	wg.Wait()
 
 	leader, err = candidate1.Leader()
-	require.Nil(cts.T(), err, fmt.Sprintf("Unable to locate leader session entry: %v", err))
+	require.Nil(cs.T(), err, fmt.Sprintf("Unable to locate leader session entry: %v", err))
 
 	require.True(
-		cts.T(),
+		cs.T(),
 		leader.ID == candidate1.SessionID() ||
 			leader.ID == candidate2.SessionID() ||
 			leader.ID == candidate3.SessionID(),
@@ -115,6 +116,6 @@ func (cts *CandidateTestSuite) TestSimpleElectionCycle() {
 	wg.Wait()
 
 	leader, err = candidate1.Leader()
-	require.NotNil(cts.T(), err, "Expected empty key error, got nil")
-	require.Nil(cts.T(), leader, fmt.Sprintf("Expected nil leader, got %v", leader))
+	require.NotNil(cs.T(), err, "Expected empty key error, got nil")
+	require.Nil(cs.T(), leader, fmt.Sprintf("Expected nil leader, got %v", leader))
 }

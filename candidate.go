@@ -3,6 +3,7 @@ package consultant
 import (
 	"fmt"
 	"github.com/hashicorp/consul/api"
+	"github.com/pkg/errors"
 	"github.com/renstrom/shortuuid"
 	"math/rand"
 	"regexp"
@@ -56,7 +57,7 @@ func NewCandidate(client *api.Client, id, key, ttl string) (*Candidate, error) {
 	id = strings.TrimSpace(id)
 
 	if !validCandidateIDTest.MatchString(id) {
-		return nil, getCandidateError(CandidateErrorInvalidID)
+		return nil, errors.New(candidateIDErrMsg)
 	}
 
 	c := &Candidate{
@@ -89,8 +90,7 @@ func NewCandidate(client *api.Client, id, key, ttl string) (*Candidate, error) {
 	// validate ttl
 	c.sessionTTL, err = time.ParseDuration(ttl)
 	if nil != err {
-		c.logPrintf("Unable to parse provided TTL: %v", err)
-		return nil, getCandidateError(CandidateErrorInvalidTTL)
+		return nil, fmt.Errorf("Unable to parse provided TTL: %v", err)
 	}
 
 	// stay within the limits...
@@ -192,8 +192,7 @@ func (c *Candidate) ForeignLeader(dc string) (*api.SessionEntry, error) {
 	}
 
 	if nil == kv {
-		c.logPrintf("Unable to locate kv \"%s\" in datacenter \"%s\"", c.kv.Key, dc)
-		return nil, getCandidateError(CandidateErrorKeyNotFound)
+		return nil, fmt.Errorf("Unable to locate kv \"%s\" in datacenter \"%s\"", c.kv.Key, dc)
 	}
 
 	if "" != kv.Session {
@@ -203,8 +202,7 @@ func (c *Candidate) ForeignLeader(dc string) (*api.SessionEntry, error) {
 		}
 	}
 
-	c.logPrintf("No session associated with kv \"%s\" in datacenter \"%s\"", c.kv.Key, dc)
-	return nil, getCandidateError(CandidateErrorNoSession)
+	return nil, fmt.Errorf("No session associated with kv \"%s\" in datacenter \"%s\"", c.kv.Key, dc)
 }
 
 // Wait will block until a leader has been elected, regardless of candidate.
@@ -397,7 +395,7 @@ func (c *Candidate) sessionValidate() {
 		if err != nil {
 			// log error
 			c.logPrintf("sessionValidate() failed to renew session: %s", err)
-			// destroy sesion
+			// destroy session
 			c.client.Session().Destroy(c.sessionID, nil)
 		}
 		// check session
@@ -423,7 +421,6 @@ func (c *Candidate) sessionValidate() {
 		return
 	}
 	// renew okay
-	// log.Debug("sessionValidate() renewed session: %s", c.sid)
 }
 
 // sessionKeepAlive keeps session and ttl check alive

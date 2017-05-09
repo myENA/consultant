@@ -106,7 +106,7 @@ func makeCluster(t *testing.T, nodeCount int) (*testConsulCluster, error) {
 
 	for i := 0; i < nodeCount; i++ {
 		c.clients[i], c.servers[i] = makeServerAndAPIClient(t, func(c *testutil.TestServerConfig) {
-			c.Performance.RaftMultiplier = 5
+			c.Performance.RaftMultiplier = 1
 			c.DisableCheckpoint = false
 			if 0 < i {
 				c.Bootstrap = false

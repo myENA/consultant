@@ -50,7 +50,7 @@ type SiblingLocator struct {
 	callbacksLock    *sync.RWMutex
 	lazyCallbackName uint64
 
-	wp        *watch.WatchPlan
+	wp        *watch.Plan
 	wpLock    *sync.Mutex
 	wpRunning bool
 

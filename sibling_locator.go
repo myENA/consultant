@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"github.com/hashicorp/consul/api"
 	"github.com/hashicorp/consul/watch"
+	"github.com/pkg/errors"
 	"math"
 	"reflect"
 	"strconv"
@@ -67,12 +68,12 @@ func NewSiblingLocator(config SiblingLocatorConfig) (*SiblingLocator, error) {
 
 	sl.config.LocalServiceID = strings.TrimSpace(sl.config.LocalServiceID)
 	if "" == sl.config.LocalServiceID {
-		return nil, getSiblingLocatorError(SiblingLocatorErrorLocalIDEmpty)
+		return nil, errors.New("Local Service ID cannot be empty")
 	}
 
 	sl.config.ServiceName = strings.TrimSpace(sl.config.ServiceName)
 	if "" == sl.config.ServiceName {
-		return nil, getSiblingLocatorError(SiblingLocatorErrorNameEmpty)
+		return nil, errors.New("Local Service Name cannot be empty")
 	}
 
 	if nil == sl.config.ServiceTags || 0 == len(sl.config.ServiceTags) {
@@ -159,7 +160,7 @@ func (sl *SiblingLocator) StartWatcher(passingOnly bool, address string) error {
 	defer sl.wpLock.Unlock()
 
 	if sl.wpRunning {
-		return getSiblingLocatorError(SiblingLocatorErrorWatcherAlreadyRunning)
+		return errors.New("Watcher already running")
 	}
 
 	var err error
@@ -186,8 +187,7 @@ func (sl *SiblingLocator) StartWatcher(passingOnly bool, address string) error {
 	// try to build watchplan
 	sl.wp, err = watch.ParseExempt(params, nil)
 	if nil != err {
-		sl.logPrintf("Unable to create watch plan: %v", err)
-		return getSiblingLocatorError(SiblingLocatorErrorWatcherCreateFailed)
+		return fmt.Errorf("Unable to create watch plan: %v", err)
 	}
 
 	// run watchplan until it returns something
@@ -225,8 +225,7 @@ func (sl *SiblingLocator) Current(passingOnly, sendToCallbacks bool) (Siblings, 
 		AllowStale: sl.config.AllowStale,
 	})
 	if nil != err {
-		sl.logPrintf("Unable to locate current siblings: %v", err)
-		return nil, getSiblingLocatorError(SiblingLocatorErrorCurrentCallFailed)
+		return nil, fmt.Errorf("Unable to locate current siblings: %v", err)
 	}
 
 	if sendToCallbacks {

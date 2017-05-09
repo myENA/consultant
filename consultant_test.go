@@ -13,23 +13,51 @@ func init() {
 	consultant.Debug()
 }
 
-func makeClientAndServer(t *testing.T, cb testutil.ServerConfigCallback) (*api.Client, *testutil.TestServer, error) {
-	apiConf := api.DefaultConfig()
-
+func makeServer(t *testing.T, cb testutil.ServerConfigCallback) *testutil.TestServer {
 	server, err := testutil.NewTestServerConfig(cb)
 	if nil != err {
-
+		t.Fatalf("Unable to initialize Consul agent server: %v", err)
 	}
+
+	return server
+}
+
+func makeAPIClient(t *testing.T, server *testutil.TestServer) *api.Client {
+	apiConf := api.DefaultConfig()
 	apiConf.Address = server.HTTPAddr
 
 	client, err := api.NewClient(apiConf)
 	if err != nil {
 		server.Stop()
-		t.Logf("err: %v", err)
-		t.FailNow()
+		t.Fatalf("Unable to create client for server \"%s\": %v", apiConf.Address, err)
 	}
 
-	return client, server, nil
+	return client
+}
+
+func makeConsultantClient(t *testing.T, server *testutil.TestServer) *consultant.Client {
+	apiConf := api.DefaultConfig()
+	apiConf.Address = server.HTTPAddr
+
+	client, err := consultant.NewClient(apiConf)
+	if err != nil {
+		server.Stop()
+		t.Fatalf("Unable to create client for server \"%s\": %v", apiConf.Address, err)
+	}
+
+	return client
+}
+
+func makeServerAndAPIClient(t *testing.T, cb testutil.ServerConfigCallback) (*api.Client, *testutil.TestServer) {
+	server := makeServer(t, cb)
+	client := makeAPIClient(t, server)
+	return client, server
+}
+
+func makeServerAndConsultantClient(t *testing.T, cb testutil.ServerConfigCallback) (*consultant.Client, *testutil.TestServer) {
+	server := makeServer(t, cb)
+	client := makeConsultantClient(t, server)
+	return client, server
 }
 
 type testConsulCluster struct {
@@ -66,9 +94,8 @@ func (c *testConsulCluster) shutdown() {
 }
 
 func makeCluster(t *testing.T, nodeCount int) (*testConsulCluster, error) {
-	var err error
 	if 0 > nodeCount {
-		t.Fatalf("nodeCount must be >= 0, \"%d\" provided", nodeCount)
+		t.Fatalf("nodeCount must be > 0, \"%d\" provided", nodeCount)
 	}
 
 	c := &testConsulCluster{
@@ -78,16 +105,13 @@ func makeCluster(t *testing.T, nodeCount int) (*testConsulCluster, error) {
 	}
 
 	for i := 0; i < nodeCount; i++ {
-		c.clients[i], c.servers[i], err = makeClientAndServer(t, func(c *testutil.TestServerConfig) {
+		c.clients[i], c.servers[i] = makeServerAndAPIClient(t, func(c *testutil.TestServerConfig) {
 			c.Performance.RaftMultiplier = 5
 			c.DisableCheckpoint = false
 			if 0 < i {
 				c.Bootstrap = false
 			}
 		})
-		if nil != err {
-			return nil, err
-		}
 	}
 
 	if 1 == nodeCount {

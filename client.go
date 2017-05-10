@@ -14,8 +14,8 @@ import (
 type Client struct {
 	*api.Client
 
-	myaddr string
-	myhost string
+	myAddr string
+	myHost string
 
 	logSlug      string
 	logSlugSlice []interface{}
@@ -35,15 +35,31 @@ func NewClient(conf *api.Config) (*Client, error) {
 		return nil, fmt.Errorf("Unable to create Consul API Client: %v", err)
 	}
 
-	if client.myhost, err = os.Hostname(); err != nil {
+	if client.myHost, err = os.Hostname(); err != nil {
 		client.logPrintf("Unable to determine hostname: %v", err)
 	}
 
-	if client.myaddr, err = GetMyAddress(); err != nil {
+	if client.myAddr, err = GetMyAddress(); err != nil {
 		client.logPrintf("Unable to determine ip address: %v", err)
 	}
 
 	return client, nil
+}
+
+func (c *Client) MyAddr() string {
+	return c.myAddr
+}
+
+func (c *Client) SetMyAddr(myAddr string) {
+	c.myAddr = myAddr
+}
+
+func (c *Client) MyHost() string {
+	return c.myHost
+}
+
+func (c *Client) SetMyHost(myHost string) {
+	c.myHost = myHost
 }
 
 // Service will attempt to locate any registered service with a name + tag combination and return one at random from
@@ -104,7 +120,7 @@ func (c *Client) SimpleServiceRegister(reg *SimpleServiceRegistration) (string, 
 	}
 
 	if address = reg.Address; address == "" {
-		address = c.myaddr
+		address = c.myAddr
 	}
 
 	if serviceId = reg.Id; serviceId == "" {
@@ -113,7 +129,7 @@ func (c *Client) SimpleServiceRegister(reg *SimpleServiceRegistration) (string, 
 		if reg.RandomId {
 			tail = shortuuid.New()
 		} else {
-			tail = strings.ToLower(c.myhost)
+			tail = strings.ToLower(c.myHost)
 		}
 		serviceId = fmt.Sprintf("%s-%s", serviceName, tail)
 	}

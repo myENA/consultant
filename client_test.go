@@ -28,7 +28,7 @@ func TestClient(t *testing.T) {
 }
 
 func (cs *ClientTestSuite) SetupTest() {
-	cs.client, cs.server = makeServerAndConsultantClient(cs.T(), nil)
+	cs.server, cs.client = makeServerAndClient(cs.T(), nil)
 }
 
 func (cs *ClientTestSuite) TearDownTest() {

@@ -21,7 +21,7 @@ var validCandidateIDTest = regexp.MustCompile(validCandidateIDRegex)
 var candidateIDErrMsg = fmt.Sprintf("Candidate ID must obey \"%s\"", validCandidateIDRegex)
 
 type Candidate struct {
-	client *api.Client
+	client *Client
 
 	lock *sync.RWMutex
 
@@ -50,7 +50,7 @@ type Candidate struct {
 // - "key" must be the full path to a KV, it will be created if it doesn't already exist
 //
 // - "ttl" is the duration to set on the kv session ttl, will default to 30s if not specified
-func NewCandidate(client *api.Client, id, key, ttl string) (*Candidate, error) {
+func NewCandidate(client *Client, id, key, ttl string) (*Candidate, error) {
 	var err error
 	var ttlSeconds float64
 
@@ -74,7 +74,7 @@ func NewCandidate(client *api.Client, id, key, ttl string) (*Candidate, error) {
 
 	// begin session entry construction
 	c.sessionEntry = &api.SessionEntry{
-		Name:     fmt.Sprintf("leader-session-%s-%s", id, shortuuid.New()),
+		Name:     fmt.Sprintf("leader-%s-%s-%s", id, c.client.MyNode(), shortuuid.New()),
 		Behavior: api.SessionBehaviorDelete,
 	}
 
@@ -504,4 +504,27 @@ func (c *Candidate) logPanic(v ...interface{}) {
 
 func (c *Candidate) logPanicln(v ...interface{}) {
 	log.Panicln(append(c.logSlugSlice, v...)...)
+}
+
+type CandidateSessionParts struct {
+	Prefix     string
+	ID         string
+	NodeName   string
+	RandomUUID string
+}
+
+// ParseCandidateSessionName is provided so you don't have to parse it yourself :)
+func ParseCandidateSessionName(name string) (*CandidateSessionParts, error) {
+	// fmt.Sprintf("leader-%s-%s-%s", id, c.client.MyNode(), shortuuid.New()),
+	split := strings.Split(name, "-")
+	if 4 != len(split) {
+		return nil, fmt.Errorf("Expected four parts in session name \"%s\", saw only \"%d\".", name, len(split))
+	}
+
+	return &CandidateSessionParts{
+		Prefix:     split[0],
+		ID:         split[1],
+		NodeName:   split[2],
+		RandomUUID: split[3],
+	}, nil
 }

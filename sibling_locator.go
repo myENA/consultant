@@ -30,11 +30,11 @@ type Siblings []Sibling
 
 // SiblingLocatorConfig is used to construct a SiblingLocator.  All values except ServiceTags are required.
 type SiblingLocatorConfig struct {
-	Client         *api.Client // REQUIRED consul api client
-	LocalServiceID string      // REQUIRED ID of local service you want to find siblings for.  Used to exclude local service from responses
-	LocalNodeName  string      // REQUIRED name of local node where service was registered.  Used to exclude local service from responses
-	ServiceName    string      // REQUIRED name of service
-	ServiceTags    []string    // OPTIONAL tags to require when looking for siblings
+	Client         *Client  // REQUIRED consultant client
+	LocalServiceID string   // REQUIRED ID of local service you want to find siblings for.  Used to exclude local service from responses
+	LocalNodeName  string   // REQUIRED name of local node where service was registered.  Used to exclude local service from responses
+	ServiceName    string   // REQUIRED name of service
+	ServiceTags    []string // OPTIONAL tags to require when looking for siblings
 
 	AllowStale bool   // OPTIONAL allow "Stale" values
 	Datacenter string // OPTIONAL // consul Datacenter
@@ -91,7 +91,7 @@ func NewSiblingLocator(config SiblingLocatorConfig) (*SiblingLocator, error) {
 }
 
 // NewSiblingLocatorWithCatalogService will construct a SiblingLocator from a consul api catalog service struct
-func NewSiblingLocatorWithCatalogService(c *api.Client, cs *api.CatalogService) (*SiblingLocator, error) {
+func NewSiblingLocatorWithCatalogService(c *Client, cs *api.CatalogService) (*SiblingLocator, error) {
 	conf := &SiblingLocatorConfig{
 		Client:         c,
 		LocalNodeName:  cs.Node,
@@ -110,7 +110,7 @@ func NewSiblingLocatorWithCatalogService(c *api.Client, cs *api.CatalogService) 
 }
 
 // NewSiblingLocatorWithAgentService will construct a SiblingLocator from a consul api node and agent service struct
-func NewSiblingLocatorWithAgentService(c *api.Client, n *api.Node, as *api.AgentService) (*SiblingLocator, error) {
+func NewSiblingLocatorWithAgentService(c *Client, n *api.Node, as *api.AgentService) (*SiblingLocator, error) {
 	conf := &SiblingLocatorConfig{
 		Client:         c,
 		LocalNodeName:  n.Node,

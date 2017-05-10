@@ -17,6 +17,8 @@ type Client struct {
 	myAddr string
 	myHost string
 
+	myNode string
+
 	logSlug      string
 	logSlugSlice []interface{}
 }
@@ -32,34 +34,47 @@ func NewClient(conf *api.Config) (*Client, error) {
 
 	client.Client, err = api.NewClient(conf)
 	if err != nil {
-		return nil, fmt.Errorf("Unable to create Consul API Client: %v", err)
+		return nil, fmt.Errorf("Unable to create Consul API Client: %s", err)
 	}
 
 	if client.myHost, err = os.Hostname(); err != nil {
-		client.logPrintf("Unable to determine hostname: %v", err)
+		client.logPrintf("Unable to determine hostname: %s", err)
 	}
 
 	if client.myAddr, err = GetMyAddress(); err != nil {
-		client.logPrintf("Unable to determine ip address: %v", err)
+		client.logPrintf("Unable to determine ip address: %s", err)
+	}
+
+	if client.myNode, err = client.Agent().NodeName(); err != nil {
+		return nil, fmt.Errorf("Unable to determine local Consul node name: %s", err)
 	}
 
 	return client, nil
 }
 
+// MyAddr returns either the self-determine or set IP address of our host
 func (c *Client) MyAddr() string {
 	return c.myAddr
 }
 
+// SetMyAddr allows you to manually specify the IP address of our host
 func (c *Client) SetMyAddr(myAddr string) {
 	c.myAddr = myAddr
 }
 
+// MyHost returns either the self-determined or set name of our host
 func (c *Client) MyHost() string {
 	return c.myHost
 }
 
+// SetMyHost allows you to to manually specify the name of our host
 func (c *Client) SetMyHost(myHost string) {
 	c.myHost = myHost
+}
+
+// MyNode returns the name of the Consul Node this client is connected to
+func (c *Client) MyNode() string {
+	return c.myNode
 }
 
 // Service will attempt to locate any registered service with a name + tag combination and return one at random from
@@ -82,9 +97,9 @@ func (c *Client) Service(service, tag string, passingOnly bool, options *api.Que
 type SimpleServiceRegistration struct {
 	Name string // [required] name to register service under
 	Port int    // [required] external port to advertise for service consumers
-	Id   string // [optional] specific id for service, will be generated if not set
 
-	RandomId          bool     // [optional] if Id is not set, use a random uuid if true, or hostname if false
+	ID                string   // [optional] specific id for service, will be generated if not set
+	RandomID          bool     // [optional] if ID is not set, use a random uuid if true, or hostname if false
 	Address           string   // [optional] determined automatically by Register() if not set
 	Tags              []string // [optional] desired tags: Register() adds serviceId
 	CheckTCP          bool     // [optional] if true register a TCP check
@@ -123,10 +138,10 @@ func (c *Client) SimpleServiceRegister(reg *SimpleServiceRegistration) (string, 
 		address = c.myAddr
 	}
 
-	if serviceId = reg.Id; serviceId == "" {
+	if serviceId = reg.ID; serviceId == "" {
 		// Form a unique service id
 		var tail string
-		if reg.RandomId {
+		if reg.RandomID {
 			tail = shortuuid.New()
 		} else {
 			tail = strings.ToLower(c.myHost)

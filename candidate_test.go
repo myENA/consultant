@@ -20,8 +20,8 @@ type CandidateTestSuite struct {
 	suite.Suite
 
 	// these values are cyclical, and should be re-defined per test method
-	client *api.Client
 	server *testutil.TestServer
+	client *consultant.Client
 }
 
 func TestCandidate(t *testing.T) {
@@ -30,7 +30,7 @@ func TestCandidate(t *testing.T) {
 
 // SetupTest is called before each method is run.
 func (cs *CandidateTestSuite) SetupTest() {
-	cs.client, cs.server = makeServerAndAPIClient(cs.T(), nil)
+	cs.server, cs.client = makeServerAndClient(cs.T(), nil)
 }
 
 // TearDownTest is called after each method has been run.
@@ -94,7 +94,7 @@ func (cs *CandidateTestSuite) TestSimpleElectionCycle() {
 			leader.ID == candidate2.SessionID() ||
 			leader.ID == candidate3.SessionID(),
 		fmt.Sprintf(
-			"Expected one of \"%v\", saw \"%s\"",
+			"Expected one of \"%+v\", saw \"%s\"",
 			[]string{candidate1.SessionID(), candidate2.SessionID(), candidate3.SessionID()},
 			leader.ID))
 

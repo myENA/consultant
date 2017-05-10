@@ -93,6 +93,17 @@ func (c *Client) Service(service, tag string, passingOnly bool, options *api.Que
 	return nil, qm, nil
 }
 
+// BuildServiceURL will attempt to locate a healthy instance of the specified service name + tag combination, then
+// attempt to construct a *net.URL from the resulting service information
+func (c *Client) BuildServiceURL(protocol, serviceName, tag string, passingOnly bool, options *api.QueryOptions) (*url.URL, error) {
+	svc, _, err := c.Service(serviceName, tag, passingOnly, options)
+	if nil != err {
+		return nil, err
+	}
+
+	return url.Parse(fmt.Sprintf("%s://%s:%d", protocol, svc.Service.Address, svc.Service.Port))
+}
+
 // SimpleServiceRegistration describes a service that we want to register
 type SimpleServiceRegistration struct {
 	Name string // [required] name to register service under

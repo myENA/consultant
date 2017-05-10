@@ -14,6 +14,9 @@ import (
 const (
 	clientTestKVKey   = "consultant/tests/junkey"
 	clientTestKVValue = "i don't know what i'm doing"
+
+	clientSimpleServiceRegistrationName = "test-service"
+	clientSimpleServiceRegistrationPort = 1234
 )
 
 type ClientTestSuite struct {
@@ -61,4 +64,49 @@ func (cs *ClientTestSuite) TestSimpleClientInteraction() {
 			"Expected KV Get response to be type \"%s\", saw \"%s\"",
 			reflect.TypeOf(&api.KVPair{}),
 			reflect.TypeOf(kv)))
+}
+
+func (cs *ClientTestSuite) TestSimpleServiceRegister() {
+	reg := &consultant.SimpleServiceRegistration{
+		Name: clientSimpleServiceRegistrationName,
+		Port: clientSimpleServiceRegistrationPort,
+	}
+
+	sid, err := cs.client.SimpleServiceRegister(reg)
+	require.Nil(cs.T(), err, fmt.Sprintf("Unable to utilize simple service registration: %s", err))
+
+	svcs, _, err := cs.client.Health().Service(clientSimpleServiceRegistrationName, "", false, nil)
+	require.Nil(cs.T(), err, fmt.Sprintf("Unable to locate service with name \"%s\": %s", clientSimpleServiceRegistrationName, err))
+
+	sidList := make([]string, len(svcs))
+
+	for i, s := range svcs {
+		sidList[i] = s.Service.ID
+	}
+
+	require.Contains(cs.T(), sidList, sid, fmt.Sprintf("Expected to see service id \"%s\" in list \"%+v\"", sid, sidList))
+}
+
+func (cs *ClientTestSuite) TestGetServiceAddress() {
+	reg := &consultant.SimpleServiceRegistration{
+		Name: clientSimpleServiceRegistrationName,
+		Port: clientSimpleServiceRegistrationPort,
+	}
+
+	_, err := cs.client.SimpleServiceRegister(reg)
+	require.Nil(cs.T(), err, fmt.Sprintf("Unable to utilize simple service registration: %s", err))
+
+	url, err := cs.client.BuildServiceURL("http", clientSimpleServiceRegistrationName, "", false, nil)
+	require.Nil(cs.T(), err, fmt.Sprintf("Error seen while getting service URL: %s", err))
+	require.NotNil(cs.T(), url, fmt.Sprintf("URL was nil.  Saw: %+v", url))
+
+	require.Equal(
+		cs.T(),
+		fmt.Sprintf("%s:%d", cs.client.MyAddr(), clientSimpleServiceRegistrationPort),
+		url.Host,
+		fmt.Sprintf(
+			"Expected address \"%s:%d\", saw \"%s\"",
+			cs.client.MyAddr(),
+			clientSimpleServiceRegistrationPort,
+			url.Host))
 }

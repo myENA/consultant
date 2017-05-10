@@ -4,6 +4,7 @@ import (
 	"github.com/hashicorp/consul/api"
 	"github.com/hashicorp/consul/testutil"
 	"github.com/myENA/consultant"
+	"math/rand"
 	"net"
 	"sync"
 	"testing"
@@ -49,6 +50,12 @@ func (c *testConsulCluster) server(node int) *testutil.TestServer {
 	c.lock.RLock()
 	defer c.lock.RUnlock()
 	return c.servers[node]
+}
+
+func (c *testConsulCluster) randomClient() *consultant.Client {
+	c.lock.RLock()
+	defer c.lock.RUnlock()
+	return c.clients[rand.Intn(len(c.clients)-1)]
 }
 
 func (c *testConsulCluster) shutdown() {

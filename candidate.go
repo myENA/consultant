@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"net"
 	"time"
 )
 
@@ -172,6 +173,29 @@ func (c *Candidate) Resign() {
 // Leader will attempt to locate the leader's session entry in your local agent's datacenter
 func (c *Candidate) Leader() (*api.SessionEntry, error) {
 	return c.ForeignLeader("")
+}
+
+// Return the leader, assuming its ID can be interpreted as an IP address
+func (c *Candidate) LeaderService() (net.IP, error) {
+
+	leaderSession, err := c.Leader()
+	if nil != err {
+		return nil, fmt.Errorf("leaderAddress() Error getting leader address: %s", err)
+	}
+
+	// parse session name
+	parts, err := ParseCandidateSessionName(leaderSession.Name)
+	if nil != err {
+		return nil, fmt.Errorf("leaderAddress() Unable to parse leader session name: %s", err)
+	}
+
+	// attempt to validate value
+	ip := net.ParseIP(parts.ID)
+	if nil == ip {
+		return nil, fmt.Errorf("leaderAddress() Unable to parse IP address from \"%s\"", parts.ID)
+	}
+
+	return ip, nil
 }
 
 // ForeignLeader will attempt to locate the leader's session entry in a datacenter of your choosing

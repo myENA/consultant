@@ -28,7 +28,7 @@ func init() {
 }
 
 // GetMyAddress searches available interfaces (skip loopback) and returns the first
-// private ipv4 address found giving preference to 172.16.0.0/12 > 192.168.0.0/16 > 10.0.0.0/8
+// private ipv4 address found giving preference to smaller RFC1918 blocks: 192.168.0.0/16 < 172.16.0.0/12 < 10.0.0.0/8
 func GetMyAddress() (string, error) {
 	myAddress := os.Getenv("CONSUL_SERVICE_ADDR")
 	if myAddress != "" {
@@ -63,9 +63,9 @@ func GetMyAddress() (string, error) {
 			// don't report loopback or ipv6 addresses
 			if !ip.IsLoopback() && ip.To4() != nil {
 				switch {
-				case block172.Contains(ip):
-					return ip.String(), nil
 				case block192.Contains(ip):
+					return ip.String(), nil
+				case block172.Contains(ip):
 					return ip.String(), nil
 				case block10.Contains(ip):
 					return ip.String(), nil

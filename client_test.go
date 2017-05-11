@@ -52,9 +52,9 @@ func (cs *ClientTestSuite) TearDownSuite() {
 func (cs *ClientTestSuite) TestClientConstructionMethods() {
 	var err error
 
-	server := makeServer(cs.T(), nil)
+	cs.server = makeServer(cs.T(), nil)
 
-	os.Setenv(api.HTTPAddrEnvName, server.HTTPAddr)
+	os.Setenv(api.HTTPAddrEnvName, cs.server.HTTPAddr)
 
 	_, err = consultant.NewClient(nil)
 	require.NotNil(cs.T(), err, "Did not see an error when passing \"nil\" to consultant.NewCient()")

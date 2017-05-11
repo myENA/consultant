@@ -31,10 +31,6 @@ func TestClient(t *testing.T) {
 	suite.Run(t, &ClientTestSuite{})
 }
 
-func (cs *ClientTestSuite) SetupTest() {
-	cs.server, cs.client = makeServerAndClient(cs.T(), nil)
-}
-
 func (cs *ClientTestSuite) TearDownTest() {
 	if nil != cs.server {
 		cs.server.Stop()
@@ -66,6 +62,8 @@ func (cs *ClientTestSuite) TestClientConstructionMethods() {
 }
 
 func (cs *ClientTestSuite) TestSimpleClientInteraction() {
+	cs.server, cs.client = makeServerAndClient(cs.T(), nil)
+
 	_, err := cs.client.KV().Put(&api.KVPair{Key: clientTestKVKey, Value: []byte(clientTestKVValue)}, nil)
 	require.Nil(cs.T(), err, fmt.Sprintf("Unable to put key \"%s\": %s", clientTestKVKey, err))
 
@@ -84,6 +82,8 @@ func (cs *ClientTestSuite) TestSimpleClientInteraction() {
 }
 
 func (cs *ClientTestSuite) TestSimpleServiceRegister() {
+	cs.server, cs.client = makeServerAndClient(cs.T(), nil)
+
 	reg := &consultant.SimpleServiceRegistration{
 		Name: clientSimpleServiceRegistrationName,
 		Port: clientSimpleServiceRegistrationPort,
@@ -105,6 +105,8 @@ func (cs *ClientTestSuite) TestSimpleServiceRegister() {
 }
 
 func (cs *ClientTestSuite) TestGetServiceAddress() {
+	cs.server, cs.client = makeServerAndClient(cs.T(), nil)
+
 	reg := &consultant.SimpleServiceRegistration{
 		Name: clientSimpleServiceRegistrationName,
 		Port: clientSimpleServiceRegistrationPort,

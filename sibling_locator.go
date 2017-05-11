@@ -170,22 +170,8 @@ func (sl *SiblingLocator) StartWatcher(passingOnly bool, address string) error {
 		tag = sl.config.ServiceTags[0]
 	}
 
-	// create param map
-	params := map[string]interface{}{
-		// non-modifiable values
-		"type":    "service",
-		"service": sl.config.ServiceName,
-		"tag":     tag,
-
-		// modifiable values
-		"passingonly": passingOnly,
-		"stale":       sl.config.AllowStale,
-		"datacenter":  sl.config.Datacenter,
-		"token":       sl.config.Token,
-	}
-
 	// try to build watchplan
-	sl.wp, err = watch.ParseExempt(params, nil)
+	sl.wp, err = WatchService(sl.config.ServiceName, tag, passingOnly, sl.config.AllowStale, sl.config.Datacenter, sl.config.Token)
 	if nil != err {
 		return fmt.Errorf("Unable to create watch plan: %v", err)
 	}

@@ -48,6 +48,16 @@ func (cs *ClientTestSuite) TearDownSuite() {
 	cs.TearDownTest()
 }
 
+func (cs *ClientTestSuite) TestClientConstructionMethods() {
+	var err error
+
+	_, err = consultant.NewClient(nil)
+	require.NotNil(cs.T(), err, "Did not see an error when passing \"nil\" to consultant.NewCient()")
+
+	_, err = consultant.NewDefaultClient()
+	require.Nil(cs.T(), err, fmt.Sprintf("Saw error when attmepting to construct default client: %s", err))
+}
+
 func (cs *ClientTestSuite) TestSimpleClientInteraction() {
 	_, err := cs.client.KV().Put(&api.KVPair{Key: clientTestKVKey, Value: []byte(clientTestKVValue)}, nil)
 	require.Nil(cs.T(), err, fmt.Sprintf("Unable to put key \"%s\": %s", clientTestKVKey, err))

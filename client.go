@@ -23,9 +23,13 @@ type Client struct {
 	logSlugSlice []interface{}
 }
 
-// NewConnection generates a fresh connection to the local consul agent using the default config
+// NewClient constructs a new consultant client.
 func NewClient(conf *api.Config) (*Client, error) {
 	var err error
+
+	if nil == conf {
+		return nil, errors.New("config cannot be nil")
+	}
 
 	client := &Client{
 		logSlug:      "[consultant-client]",
@@ -50,6 +54,11 @@ func NewClient(conf *api.Config) (*Client, error) {
 	}
 
 	return client, nil
+}
+
+// NewDefaultClient creates a new client with default configuration values
+func NewDefaultClient() (*Client, error) {
+	return NewClient(api.DefaultConfig())
 }
 
 // MyAddr returns either the self-determine or set IP address of our host

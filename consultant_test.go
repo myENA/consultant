@@ -14,12 +14,16 @@ func init() {
 	consultant.Debug()
 }
 
-func makeServerAndClient(t *testing.T, cb testutil.ServerConfigCallback) (*testutil.TestServer, *consultant.Client) {
+func makeServer(t *testing.T, cb testutil.ServerConfigCallback) *testutil.TestServer {
 	server, err := testutil.NewTestServerConfig(cb)
 	if nil != err {
 		t.Fatalf("Unable to initialize Consul agent server: %v", err)
 	}
 
+	return server
+}
+
+func makeClient(t *testing.T, server *testutil.TestServer) *consultant.Client {
 	apiConf := api.DefaultConfig()
 	apiConf.Address = server.HTTPAddr
 
@@ -29,7 +33,12 @@ func makeServerAndClient(t *testing.T, cb testutil.ServerConfigCallback) (*testu
 		t.Fatalf("Unable to create client for server \"%s\": %v", apiConf.Address, err)
 	}
 
-	return server, client
+	return client
+}
+
+func makeServerAndClient(t *testing.T, cb testutil.ServerConfigCallback) (*testutil.TestServer, *consultant.Client) {
+	server := makeServer(t, cb)
+	return server, makeClient(t, server)
 }
 
 type testConsulCluster struct {

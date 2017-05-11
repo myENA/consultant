@@ -7,6 +7,7 @@ import (
 	"github.com/myENA/consultant"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
+	"os"
 	"reflect"
 	"testing"
 )
@@ -51,11 +52,17 @@ func (cs *ClientTestSuite) TearDownSuite() {
 func (cs *ClientTestSuite) TestClientConstructionMethods() {
 	var err error
 
+	server := makeServer(cs.T(), nil)
+
+	os.Setenv(api.HTTPAddrEnvName, server.HTTPAddr)
+
 	_, err = consultant.NewClient(nil)
 	require.NotNil(cs.T(), err, "Did not see an error when passing \"nil\" to consultant.NewCient()")
 
 	_, err = consultant.NewDefaultClient()
 	require.Nil(cs.T(), err, fmt.Sprintf("Saw error when attmepting to construct default client: %s", err))
+
+	os.Unsetenv(api.HTTPAddrEnvName)
 }
 
 func (cs *ClientTestSuite) TestSimpleClientInteraction() {

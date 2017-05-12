@@ -86,9 +86,9 @@ func (c *Client) MyNode() string {
 	return c.myNode
 }
 
-// Service will attempt to locate any registered service with a name + tag combination and return one at random from
+// PickService will attempt to locate any registered service with a name + tag combination and return one at random from
 // the resulting list
-func (c *Client) Service(service, tag string, passingOnly bool, options *api.QueryOptions) (*api.ServiceEntry, *api.QueryMeta, error) {
+func (c *Client) PickService(service, tag string, passingOnly bool, options *api.QueryOptions) (*api.ServiceEntry, *api.QueryMeta, error) {
 	svcs, qm, err := c.Health().Service(service, tag, passingOnly, options)
 	if nil != err {
 		return nil, nil, err
@@ -105,7 +105,7 @@ func (c *Client) Service(service, tag string, passingOnly bool, options *api.Que
 // BuildServiceURL will attempt to locate a healthy instance of the specified service name + tag combination, then
 // attempt to construct a *net.URL from the resulting service information
 func (c *Client) BuildServiceURL(protocol, serviceName, tag string, passingOnly bool, options *api.QueryOptions) (*url.URL, error) {
-	svc, _, err := c.Service(serviceName, tag, passingOnly, options)
+	svc, _, err := c.PickService(serviceName, tag, passingOnly, options)
 	if nil != err {
 		return nil, err
 	}

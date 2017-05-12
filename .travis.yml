@@ -14,10 +14,10 @@ sudo: false
 
 install:
   - wget "https://github.com/Masterminds/glide/releases/download/v0.12.3/glide-v0.12.3-linux-amd64.tar.gz"
-  - wget "https://releases.hashicorp.com/consul/0.8.2/consul_0.8.2_linux_amd64.zip"
+  - wget "https://releases.hashicorp.com/consul/0.8.3/consul_0.8.3_linux_amd64.zip"
   - mkdir -p $HOME/bin
   - tar -vxz -C $HOME/bin --strip=1 -f glide-v0.12.3-linux-amd64.tar.gz
-  - unzip -d $HOME/bin consul_0.8.2_linux_amd64.zip
+  - unzip -d $HOME/bin consul_0.8.3_linux_amd64.zip
   - export PATH="$HOME/bin:$PATH"
   - glide up
 

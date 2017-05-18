@@ -171,12 +171,7 @@ func (sls *SiblingLocatorTestSuite) TestWatchers() {
 	}
 
 	for i := 0; i < siblingLocatorClusterCount; i++ {
-		err := sls.locators[i].StartWatcher(
-			false,
-			fmt.Sprintf("%s:%d",
-				sls.localCluster.server(i).Config.Addresses.HTTP,
-				sls.localCluster.server(i).Config.Ports.HTTP))
-
+		err := sls.locators[i].StartWatcher(false)
 		require.Nil(sls.T(), err, fmt.Sprintf("Failed to start node \"%d\" watcher; %v", i, err))
 	}
 

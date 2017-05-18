@@ -14,7 +14,7 @@ import (
 type Client struct {
 	*api.Client
 
-	conf *api.Config
+	config *api.Config
 
 	myAddr string
 	myHost string
@@ -34,7 +34,7 @@ func NewClient(conf *api.Config) (*Client, error) {
 	}
 
 	client := &Client{
-		conf:         conf,
+		config:       conf,
 		logSlug:      "[consultant-client]",
 		logSlugSlice: []interface{}{"[consultant-client]"},
 	}

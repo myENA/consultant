@@ -122,14 +122,14 @@ func (ms *ManagedService) NewSiblingLocator(allowStale bool) (*SiblingLocator, e
 	}
 
 	ms.siblingLocator, err = NewSiblingLocator(SiblingLocatorConfig{
-		Client:         ms.client,
-		LocalServiceID: ms.meta.ID(),
-		LocalNodeName:  ms.client.MyNode(),
-		ServiceName:    ms.meta.Name(),
-		ServiceTags:    ms.meta.RegisteredTags(),
-		AllowStale:     allowStale,
-		Datacenter:     ms.client.conf.Datacenter,
-		Token:          ms.client.conf.Token,
+		Client:      ms.client,
+		ServiceID:   ms.meta.ID(),
+		NodeName:    ms.client.MyNode(),
+		ServiceName: ms.meta.Name(),
+		ServiceTags: ms.meta.RegisteredTags(),
+		AllowStale:  allowStale,
+		Datacenter:  ms.client.config.Datacenter,
+		Token:       ms.client.config.Token,
 	})
 
 	if nil != err {

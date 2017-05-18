@@ -30,15 +30,15 @@ type Siblings []Sibling
 
 // SiblingLocatorConfig is used to construct a SiblingLocator.  All values except ServiceTags are required.
 type SiblingLocatorConfig struct {
-	Client         *Client  // REQUIRED consultant client
-	LocalServiceID string   // REQUIRED ID of local service you want to find siblings for.  Used to exclude local service from responses
-	LocalNodeName  string   // REQUIRED name of local node where service was registered.  Used to exclude local service from responses
-	ServiceName    string   // REQUIRED name of service
-	ServiceTags    []string // OPTIONAL tags to require when looking for siblings
+	Client      *Client // REQUIRED consultant client
+	ServiceID   string  // REQUIRED ID of service you want to find siblings for.  Used to exclude local service from responses
+	ServiceName string  // REQUIRED name of service
 
-	AllowStale bool   // OPTIONAL allow "Stale" values
-	Datacenter string // OPTIONAL // consul Datacenter
-	Token      string // OPTIONAL consul acl token
+	NodeName    string   // OPTIONAL name of node where service was registered.  Used to exclude local service from responses.  Will use node client is connected to if not defined.
+	ServiceTags []string // OPTIONAL tags to require when looking for siblings
+	AllowStale  bool     // OPTIONAL allow "stale" values
+	Datacenter  string   // OPTIONAL consul datacenter.  Will use value from Client if left blank
+	Token       string   // OPTIONAL consul acl token.  Will use value from Client if left blank
 }
 
 // SiblingLocator provides a way for a local service to find other services registered in Consul that share it's name
@@ -59,6 +59,12 @@ type SiblingLocator struct {
 }
 
 func NewSiblingLocator(config SiblingLocatorConfig) (*SiblingLocator, error) {
+	// client must be defined
+	if nil == config.Client {
+		return nil, errors.New("\"Client\" cannot be empty")
+	}
+
+	// construct new sibling locator
 	sl := &SiblingLocator{
 		config:        &config,
 		callbacks:     make(map[string]SiblingCallback),
@@ -66,16 +72,37 @@ func NewSiblingLocator(config SiblingLocatorConfig) (*SiblingLocator, error) {
 		wpLock:        new(sync.Mutex),
 	}
 
-	sl.config.LocalServiceID = strings.TrimSpace(sl.config.LocalServiceID)
-	if "" == sl.config.LocalServiceID {
-		return nil, errors.New("Local Service ID cannot be empty")
+	// verify service id is set
+	sl.config.ServiceID = strings.TrimSpace(sl.config.ServiceID)
+	if "" == sl.config.ServiceID {
+		return nil, errors.New("\"ServiceID\" cannot be empty")
 	}
 
+	// verify service name is set
 	sl.config.ServiceName = strings.TrimSpace(sl.config.ServiceName)
 	if "" == sl.config.ServiceName {
-		return nil, errors.New("Local Service Name cannot be empty")
+		return nil, errors.New("\"ServiceName\" cannot be empty")
 	}
 
+	// verify node name is set, using client node if not
+	sl.config.NodeName = strings.TrimSpace(sl.config.NodeName)
+	if "" == sl.config.NodeName {
+		sl.config.NodeName = sl.config.Client.MyNode()
+	}
+
+	// verify datacenter is set, using client datacenter if not
+	sl.config.Datacenter = strings.TrimSpace(sl.config.Datacenter)
+	if "" == sl.config.Datacenter {
+		sl.config.Datacenter = sl.config.Client.config.Datacenter
+	}
+
+	// verify token is set, using client token if not
+	sl.config.Token = strings.TrimSpace(sl.config.Token)
+	if "" == sl.config.Token {
+		sl.config.Token = sl.config.Client.config.Token
+	}
+
+	// create copy of tags, if necessary
 	if nil == sl.config.ServiceTags || 0 == len(sl.config.ServiceTags) {
 		sl.config.ServiceTags = make([]string, 0)
 	} else {
@@ -84,6 +111,7 @@ func NewSiblingLocator(config SiblingLocatorConfig) (*SiblingLocator, error) {
 		sl.config.ServiceTags = tmp
 	}
 
+	// set up log slugs
 	sl.logSlug = fmt.Sprintf("[sibling-locator-%s]", sl.config.ServiceName)
 	sl.logSlugSlice = []interface{}{sl.logSlug}
 
@@ -93,10 +121,10 @@ func NewSiblingLocator(config SiblingLocatorConfig) (*SiblingLocator, error) {
 // NewSiblingLocatorWithCatalogService will construct a SiblingLocator from a consul api catalog service struct
 func NewSiblingLocatorWithCatalogService(c *Client, cs *api.CatalogService) (*SiblingLocator, error) {
 	conf := &SiblingLocatorConfig{
-		Client:         c,
-		LocalNodeName:  cs.Node,
-		LocalServiceID: cs.ServiceID,
-		ServiceName:    cs.ServiceName,
+		Client:      c,
+		NodeName:    cs.Node,
+		ServiceID:   cs.ServiceID,
+		ServiceName: cs.ServiceName,
 	}
 
 	if nil == cs.ServiceTags {
@@ -112,10 +140,10 @@ func NewSiblingLocatorWithCatalogService(c *Client, cs *api.CatalogService) (*Si
 // NewSiblingLocatorWithAgentService will construct a SiblingLocator from a consul api node and agent service struct
 func NewSiblingLocatorWithAgentService(c *Client, n *api.Node, as *api.AgentService) (*SiblingLocator, error) {
 	conf := &SiblingLocatorConfig{
-		Client:         c,
-		LocalNodeName:  n.Node,
-		LocalServiceID: as.ID,
-		ServiceName:    as.Service,
+		Client:      c,
+		NodeName:    n.Node,
+		ServiceID:   as.ID,
+		ServiceName: as.Service,
 	}
 
 	if nil == as.Tags {
@@ -153,9 +181,7 @@ func (sl *SiblingLocator) RemoveCallback(name string) {
 // and set of tags.
 //
 // - passingOnly will limit the response to only registrations deemed "healthy"
-//
-// - address allows you to specify an agent to connect to.  If left empty, it will default to CONSUL_HTTP_ADDR envvar
-func (sl *SiblingLocator) StartWatcher(passingOnly bool, address string) error {
+func (sl *SiblingLocator) StartWatcher(passingOnly bool) error {
 	sl.wpLock.Lock()
 	defer sl.wpLock.Unlock()
 
@@ -177,7 +203,7 @@ func (sl *SiblingLocator) StartWatcher(passingOnly bool, address string) error {
 	}
 
 	// run watchplan until it returns something
-	go sl.runWatcher(address)
+	go sl.runWatcher(sl.config.Client.config.Address)
 
 	return nil
 }
@@ -225,7 +251,7 @@ func (sl *SiblingLocator) Current(passingOnly, sendToCallbacks bool) (Siblings, 
 		sl.sendToCallbacks(math.MaxUint64, svcs)
 	}
 
-	return buildSiblingList(sl.config.LocalNodeName, sl.config.LocalServiceID, sl.config.ServiceTags, svcs), nil
+	return buildSiblingList(sl.config.NodeName, sl.config.ServiceID, sl.config.ServiceTags, svcs), nil
 }
 
 func (sl *SiblingLocator) runWatcher(address string) {
@@ -268,7 +294,7 @@ func (sl *SiblingLocator) sendToCallbacks(index uint64, svcs []*api.ServiceEntry
 	defer sl.callbacksLock.RUnlock()
 
 	for _, receiver := range sl.callbacks {
-		go receiver(index, buildSiblingList(sl.config.LocalNodeName, sl.config.LocalServiceID, sl.config.ServiceTags, svcs))
+		go receiver(index, buildSiblingList(sl.config.NodeName, sl.config.ServiceID, sl.config.ServiceTags, svcs))
 	}
 }
 

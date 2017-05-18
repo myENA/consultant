@@ -182,6 +182,13 @@ func (sl *SiblingLocator) StartWatcher(passingOnly bool, address string) error {
 	return nil
 }
 
+// RemoveCallbacks will empty out the map of registered callbacks
+func (sl *SiblingLocator) RemoveCallbacks() {
+	sl.callbacksLock.Lock()
+	defer sl.callbacksLock.Unlock()
+	sl.callbacks = make(map[string]SiblingCallback)
+}
+
 // StopWatcher will stop the sibling watchplan.  If the plan was previously stopped, this is a noop.
 func (sl *SiblingLocator) StopWatcher() {
 	sl.wpLock.Lock()

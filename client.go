@@ -14,6 +14,8 @@ import (
 type Client struct {
 	*api.Client
 
+	conf *api.Config
+
 	myAddr string
 	myHost string
 
@@ -32,6 +34,7 @@ func NewClient(conf *api.Config) (*Client, error) {
 	}
 
 	client := &Client{
+		conf:         conf,
 		logSlug:      "[consultant-client]",
 		logSlugSlice: []interface{}{"[consultant-client]"},
 	}
@@ -133,7 +136,7 @@ type SimpleServiceRegistration struct {
 // SimpleServiceRegister is a helper method to ease consul service registration
 func (c *Client) SimpleServiceRegister(reg *SimpleServiceRegistration) (string, error) {
 	var err error                        // generic error holder
-	var serviceId string                 // local service identifier
+	var serviceID string                 // local service identifier
 	var address string                   // service host address
 	var interval string                  // check interval
 	var checkHTTP *api.AgentServiceCheck // http type check
@@ -158,7 +161,7 @@ func (c *Client) SimpleServiceRegister(reg *SimpleServiceRegistration) (string, 
 		address = c.myAddr
 	}
 
-	if serviceId = reg.ID; serviceId == "" {
+	if serviceID = reg.ID; serviceID == "" {
 		// Form a unique service id
 		var tail string
 		if reg.RandomID {
@@ -166,7 +169,7 @@ func (c *Client) SimpleServiceRegister(reg *SimpleServiceRegistration) (string, 
 		} else {
 			tail = strings.ToLower(c.myHost)
 		}
-		serviceId = fmt.Sprintf("%s-%s", serviceName, tail)
+		serviceID = fmt.Sprintf("%s-%s", serviceName, tail)
 	}
 
 	if interval = reg.Interval; interval == "" {
@@ -174,12 +177,12 @@ func (c *Client) SimpleServiceRegister(reg *SimpleServiceRegistration) (string, 
 		interval = "30s"
 	}
 
-	// The serviceId is added in order to ensure detection in ServiceMonitor()
-	tags := append(reg.Tags, serviceId)
+	// The serviceID is added in order to ensure detection in ServiceMonitor()
+	tags := append(reg.Tags, serviceID)
 
 	// Set up the service registration struct
 	asr := &api.AgentServiceRegistration{
-		ID:                serviceId,
+		ID:                serviceID,
 		Name:              serviceName,
 		Tags:              tags,
 		Port:              reg.Port,
@@ -240,7 +243,21 @@ func (c *Client) SimpleServiceRegister(reg *SimpleServiceRegistration) (string, 
 	}
 
 	// return registered service
-	return serviceId, nil
+	return serviceID, nil
+}
+
+// ManagedServiceRegistration will return an instance of ManagedService after registering service
+//
+// NOTE: This forces the "EnableTagOverride" option to "true"
+func (c *Client) ManagedServiceRegistration(reg *SimpleServiceRegistration) (*ManagedService, error) {
+	reg.EnableTagOverride = true
+
+	sid, err := c.SimpleServiceRegister(reg)
+	if nil != err {
+		return nil, err
+	}
+
+	return NewManagedService(c, sid, reg.Name, reg.Tags)
 }
 
 func (c *Client) logPrintf(format string, v ...interface{}) {

@@ -6,10 +6,10 @@ import (
 	"github.com/pkg/errors"
 	"github.com/renstrom/shortuuid"
 	"math/rand"
+	"net"
 	"regexp"
 	"strings"
 	"sync"
-	"net"
 	"time"
 )
 
@@ -269,6 +269,13 @@ func (c *Candidate) DeregisterUpdate(id string) {
 	if ok {
 		delete(c.update, id)
 	}
+}
+
+// DeregisterUpdates will empty out the map of update channels
+func (c *Candidate) DeregisterUpdates() {
+	c.lock.Lock()
+	defer c.lock.Unlock()
+	c.update = make(map[string]chan bool)
 }
 
 // updateLeader is a thread safe update of leader status

@@ -59,7 +59,7 @@ func (cs *CandidateTestSuite) makeCandidate(num int) *consultant.Candidate {
 }
 
 func (cs *CandidateTestSuite) TestSimpleElectionCycle() {
-	var candidate1, candidate2, candidate3 *consultant.Candidate
+	var candidate1, candidate2, candidate3, leaderCandidate *consultant.Candidate
 	var leader *api.SessionEntry
 	var err error
 
@@ -88,15 +88,41 @@ func (cs *CandidateTestSuite) TestSimpleElectionCycle() {
 	leader, err = candidate1.Leader()
 	require.Nil(cs.T(), err, fmt.Sprintf("Unable to locate leader session entry: %v", err))
 
-	require.True(
+	// attempt to locate elected leader
+	switch leader.ID {
+	case candidate1.SessionID():
+		leaderCandidate = candidate1
+	case candidate2.SessionID():
+		leaderCandidate = candidate2
+	case candidate3.SessionID():
+		leaderCandidate = candidate3
+	}
+
+	require.NotNil(
 		cs.T(),
-		leader.ID == candidate1.SessionID() ||
-			leader.ID == candidate2.SessionID() ||
-			leader.ID == candidate3.SessionID(),
+		leaderCandidate,
 		fmt.Sprintf(
 			"Expected one of \"%+v\", saw \"%s\"",
 			[]string{candidate1.SessionID(), candidate2.SessionID(), candidate3.SessionID()},
 			leader.ID))
+
+	leadersFound := 0
+	for i, candidate := range []*consultant.Candidate{candidate1, candidate2, candidate3} {
+		if leaderCandidate == candidate {
+			leadersFound = 1
+			continue
+		}
+
+		require.True(
+			cs.T(),
+			0 == leadersFound || 1 == leadersFound,
+			fmt.Sprintf("leaderCandidate matched to more than 1 candidate.  Iteration \"%d\"", i))
+
+		require.False(
+			cs.T(),
+			candidate.Elected(),
+			fmt.Sprintf("Candidate \"%d\" is not elected but says that it is...", i))
+	}
 
 	wg.Add(3)
 

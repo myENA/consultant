@@ -55,7 +55,7 @@ func (ms *ManagedServiceTestSuite) TestManagedServiceCreation() {
 	var tags []string
 	var tag string
 
-	service, err = ms.client.ManagedServiceRegistration(&consultant.SimpleServiceRegistration{
+	service, err = ms.client.ManagedServiceRegister(&consultant.SimpleServiceRegistration{
 		Name: managedServiceName,
 		Port: managedServicePort,
 	})

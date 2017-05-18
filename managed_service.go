@@ -7,6 +7,21 @@ import (
 	"sync"
 )
 
+// ManagedServiceRegister will return an instance of ManagedService after registering service
+//
+// NOTE: This forces the "EnableTagOverride" option to "true"
+func (c *Client) ManagedServiceRegister(reg *SimpleServiceRegistration) (*ManagedService, error) {
+	reg.EnableTagOverride = true
+
+	sid, err := c.SimpleServiceRegister(reg)
+	if nil != err {
+		return nil, err
+	}
+
+	return NewManagedService(c, sid, reg.Name, reg.Tags)
+}
+
+// ManagedServiceMeta is a small container object for on-creation details on the service
 type ManagedServiceMeta struct {
 	id   string
 	name string

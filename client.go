@@ -246,20 +246,6 @@ func (c *Client) SimpleServiceRegister(reg *SimpleServiceRegistration) (string, 
 	return serviceID, nil
 }
 
-// ManagedServiceRegistration will return an instance of ManagedService after registering service
-//
-// NOTE: This forces the "EnableTagOverride" option to "true"
-func (c *Client) ManagedServiceRegistration(reg *SimpleServiceRegistration) (*ManagedService, error) {
-	reg.EnableTagOverride = true
-
-	sid, err := c.SimpleServiceRegister(reg)
-	if nil != err {
-		return nil, err
-	}
-
-	return NewManagedService(c, sid, reg.Name, reg.Tags)
-}
-
 func (c *Client) logPrintf(format string, v ...interface{}) {
 	log.Printf(fmt.Sprintf("%s %s", c.logSlug, format), v...)
 }

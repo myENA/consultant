@@ -222,6 +222,8 @@ func (sl *SiblingLocator) StopWatcher() {
 
 	if nil != sl.wp {
 		sl.wp.Stop()
+		sl.wpRunning = false
+		sl.wp = nil
 	}
 }
 

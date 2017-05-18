@@ -114,7 +114,7 @@ func (ms *ManagedService) Candidate() *Candidate {
 // NewSiblingLocator will attempt to construct a SiblingLocator for this service.
 //
 // NOTE: If a SiblingLocator was previously created, it will be overwritten
-func (ms *ManagedService) NewSiblingLocator(allowStale bool, dc, token string) (*SiblingLocator, error) {
+func (ms *ManagedService) NewSiblingLocator(allowStale bool) (*SiblingLocator, error) {
 	var err error
 	if nil != ms.siblingLocator {
 		ms.siblingLocator.StopWatcher()
@@ -128,8 +128,8 @@ func (ms *ManagedService) NewSiblingLocator(allowStale bool, dc, token string) (
 		ServiceName:    ms.meta.Name(),
 		ServiceTags:    ms.meta.RegisteredTags(),
 		AllowStale:     allowStale,
-		Datacenter:     dc,
-		Token:          token,
+		Datacenter:     ms.client.conf.Datacenter,
+		Token:          ms.client.conf.Token,
 	})
 
 	if nil != err {

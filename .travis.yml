@@ -25,4 +25,4 @@ before_script:
   - go vet ./
 
 script:
-  - go test
+  - go test -v

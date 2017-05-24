@@ -129,3 +129,11 @@ func (cs *ClientTestSuite) TestGetServiceAddress() {
 			clientSimpleServiceRegistrationPort,
 			url.Host))
 }
+
+func (cs *ClientTestSuite) TestGetServiceAddress_Empty() {
+	cs.server, cs.client = makeServerAndClient(cs.T(), nil)
+
+	url, err := cs.client.BuildServiceURL("whatever", "nope", "nope", false, nil)
+	require.Nil(cs.T(), url, fmt.Sprintf("URL should be nil, saw %+v", url))
+	require.NotNil(cs.T(), err, "Did not receive expected error message")
+}

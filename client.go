@@ -112,6 +112,9 @@ func (c *Client) BuildServiceURL(protocol, serviceName, tag string, passingOnly 
 	if nil != err {
 		return nil, err
 	}
+	if nil == svc {
+		return nil, fmt.Errorf("No services registered as \"%s\" with tag \"%s\" found.", serviceName, tag)
+	}
 
 	return url.Parse(fmt.Sprintf("%s://%s:%d", protocol, svc.Service.Address, svc.Service.Port))
 }

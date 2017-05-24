@@ -53,7 +53,7 @@ func (cs *ClientTestSuite) TestClientConstructionMethods() {
 	os.Setenv(api.HTTPAddrEnvName, cs.server.HTTPAddr)
 
 	_, err = consultant.NewClient(nil)
-	require.NotNil(cs.T(), err, "Did not see an error when passing \"nil\" to consultant.NewCient()")
+	require.NotNil(cs.T(), err, "Did not see an error when passing \"nil\" to consultant.NewClient()")
 
 	_, err = consultant.NewDefaultClient()
 	require.Nil(cs.T(), err, fmt.Sprintf("Saw error when attmepting to construct default client: %s", err))

@@ -5,6 +5,7 @@ import (
 	"github.com/hashicorp/consul/api"
 	"github.com/hashicorp/consul/testutil"
 	"github.com/myENA/consultant"
+	"github.com/hashicorp/consul/watch"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 	"strconv"
@@ -81,7 +82,8 @@ func (cs *ConfiguratorTestSuite) TestKVInit() {
 		t: cs.T(),
 	}
 
-	_, err = cs.client.InitConfigurator(config, prefix)
+	var wp *watch.Plan
+	wp, err = cs.client.InitConfigurator(config, prefix)
 
 	require.Nil(cs.T(), err, "InitConfigurator(..., %s) failed: %s", prefix, err)
 
@@ -93,22 +95,22 @@ func (cs *ConfiguratorTestSuite) TestKVInit() {
 	_, err = cs.client.KV().Put(kv1, nil)
 	require.Nil(cs.T(), err, "Trouble changing the value of %s", key1)
 	time.Sleep(time.Second)
-	// require.Equal(cs.T(), val1b, config.var1, "var1 is not what i expected after updating in consul")
-	cs.T().Logf("var1 after update=%s",config.var1)
+	require.Equal(cs.T(), val1b, config.var1, "var1 is not what i expected after updating in consul")
 
 	kv2 := &api.KVPair{Key: prefix + key2, Value: []byte(fmt.Sprintf("%d", val2b))}
 	_, err = cs.client.KV().Put(kv2, nil)
 	require.Nil(cs.T(), err, "Trouble changing the value of %s", key2)
 	time.Sleep(time.Second)
-	// require.Equal(cs.T(), val2b, config.var2, "var2 is not what i expected after updating in consul")
-	cs.T().Logf("var2 after update=%d",config.var2)
+	require.Equal(cs.T(), val2b, config.var2, "var2 is not what i expected after updating in consul")
 
-	time.Sleep(5*time.Second)
+	time.Sleep(time.Second)
 
 	// report what is actually in the kv prefix now:
 	kvps,_,err := cs.client.KV().List(prefix, nil)
 	config.Update(0,kvps)
 	cs.T().Logf("config after manual update: %+v",config)
+
+	wp.Stop()
 }
 
 func (cs *ConfiguratorTestSuite) buildKVTestData() {

@@ -14,7 +14,7 @@ import (
 type Client struct {
 	*api.Client
 
-	config *api.Config
+	config api.Config
 
 	myAddr string
 	myHost string
@@ -34,7 +34,7 @@ func NewClient(conf *api.Config) (*Client, error) {
 	}
 
 	client := &Client{
-		config:       conf,
+		config:       *conf,
 		logSlug:      "[consultant-client]",
 		logSlugSlice: []interface{}{"[consultant-client]"},
 	}
@@ -62,6 +62,11 @@ func NewClient(conf *api.Config) (*Client, error) {
 // NewDefaultClient creates a new client with default configuration values
 func NewDefaultClient() (*Client, error) {
 	return NewClient(api.DefaultConfig())
+}
+
+// Config returns the API Client configuration struct as it was at time of construction
+func (c *Client) Config() api.Config {
+	return c.config
 }
 
 // MyAddr returns either the self-determine or set IP address of our host

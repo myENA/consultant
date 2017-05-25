@@ -14,25 +14,25 @@ type Configurator interface {
 // InitConfigurator initializes the passed config object.
 // Current values are read from the consul KV store and stored in 'config' (passed by reference).
 // A watch plan is set up to call Update() whenever the KV prefix is changed.
-func (c *Client)InitConfigurator(config Configurator, prefix string) (*watch.Plan, error) {
+func (c *Client) InitConfigurator(config Configurator, prefix string) (*watch.Plan, error) {
 
-	kvps,_,err := c.KV().List(prefix, nil)
+	kvps, _, err := c.KV().List(prefix, nil)
 	if err != nil {
-		return nil,fmt.Errorf("Trouble getting the KVs under: %s",prefix)
+		return nil, fmt.Errorf("Trouble getting the KVs under: %s", prefix)
 	}
-	config.Update(0,kvps)
+	config.Update(0, kvps)
 
-	wp,err :=c.WatchKeyPrefix(prefix, true, config.Update)
+	wp, err := c.WatchKeyPrefix(prefix, true, config.Update)
 	if err != nil {
-		return nil, fmt.Errorf("Trouble building the watch plan: %s",err)
+		return nil, fmt.Errorf("Trouble building the watch plan: %s", err)
 	}
 
 	go func() {
-		err := wp.Run("")
+		err := wp.Run(c.config.Address)
 		if err != nil {
-			fmt.Fprintf(wp.LogOutput,"Watch plan failed for prefix: %s",prefix)
+			fmt.Fprintf(wp.LogOutput, "Watch plan failed for prefix: %s", prefix)
 		}
 	}()
 
-	return wp,nil
+	return wp, nil
 }

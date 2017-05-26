@@ -147,6 +147,8 @@ func (cs *ConfiguratorTestSuite) TestServiceInit() {
 	err := cm.AddService(serviceName, serviceTag1, false)
 	require.Nil(cs.T(), err, "AddKVPrefix(%s) failed: %s", prefix, err)
 
+	time.Sleep(time.Second)
+
 	cs.T().Logf("cm=%+v",cm)
 
 	c = cm.Read().(*config)

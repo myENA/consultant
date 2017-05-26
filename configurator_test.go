@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"github.com/hashicorp/consul/api"
 	"github.com/hashicorp/consul/testutil"
-	"github.com/myENA/consultant"
 	"github.com/hashicorp/consul/watch"
+	"github.com/myENA/consultant"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 	"strconv"
@@ -16,9 +16,11 @@ import (
 
 const (
 	prefix = "test/"
+
 	key1   = "key1"
 	val1   = "value 1"
 	val1b  = "value 1 after change"
+
 	key2   = "key2"
 	val2   = 2
 	val2b  = 42
@@ -36,13 +38,16 @@ type config struct {
 	sync.RWMutex
 }
 
+// Update() handles both the initial settings and updates when anything under the prefix changes
 func (c *config) Update(_ uint64, data interface{}) {
 
 	var err error
 
+	// Code accessing "config" should grab a read lock or use sync/atomic to achieve thread safety
 	c.Lock()
 	defer c.Unlock()
 
+	// We may consider using Update() for services and other updates
 	switch data.(type) {
 
 	case api.KVPairs:
@@ -83,7 +88,7 @@ func (cs *ConfiguratorTestSuite) TestKVInit() {
 	}
 
 	var wp *watch.Plan
-	wp, err = cs.client.InitConfigurator(config, prefix)
+	wp, err = cs.client.ConfigureKVPrefix(config, prefix)
 
 	require.Nil(cs.T(), err, "InitConfigurator(..., %s) failed: %s", prefix, err)
 
@@ -106,9 +111,9 @@ func (cs *ConfiguratorTestSuite) TestKVInit() {
 	time.Sleep(time.Second)
 
 	// report what is actually in the kv prefix now:
-	kvps,_,err := cs.client.KV().List(prefix, nil)
-	config.Update(0,kvps)
-	cs.T().Logf("config after manual update: %+v",config)
+	kvps, _, err := cs.client.KV().List(prefix, nil)
+	config.Update(0, kvps)
+	cs.T().Logf("config after manual update: %+v", config)
 
 	wp.Stop()
 }
@@ -124,7 +129,6 @@ func (cs *ConfiguratorTestSuite) buildKVTestData() {
 	_, err = cs.client.KV().Put(kv2, nil)
 	require.Nil(cs.T(), err, "Failed storing key2/val2: %s", err)
 }
-
 
 type ConfiguratorTestSuite struct {
 	suite.Suite
@@ -154,4 +158,3 @@ func (cs *ConfiguratorTestSuite) TearDownTest() {
 func (cs *ConfiguratorTestSuite) TearDownSuite() {
 	cs.TearDownTest()
 }
-

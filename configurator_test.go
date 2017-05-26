@@ -2,19 +2,22 @@ package consultant_test
 
 import (
 	"fmt"
+	"strconv"
+	"sync"
+	"testing"
+	"time"
+	"net/http"
+
 	"github.com/hashicorp/consul/api"
 	"github.com/hashicorp/consul/testutil"
 	"github.com/hashicorp/consul/watch"
 	"github.com/myENA/consultant"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
-	"strconv"
-	"sync"
-	"testing"
-	"time"
 )
 
 const (
+	// Test prefix monitoring
 	prefix = "test/"
 
 	key1   = "key1"
@@ -24,7 +27,36 @@ const (
 	key2   = "key2"
 	val2   = 2
 	val2b  = 42
+
+	// Service monitoring
+	serviceName = "myservice"
+	serviceTag1 = "tag1"
+	serviceTag2 = "tag2"
+	servicePort = 3000
+	servicePath = "/check"
+
 )
+
+func ExampleConfigurator() {
+	// minimal implementation
+	c := &config{}
+	consul,err := consultant.NewDefaultClient()
+	if err != nil {
+		panic("no consul")
+	}
+
+	// initialize config from consul and set up watchers
+	wp, err := consul.KVPrefixConfigurator(c, prefix)
+	if err != nil {
+		panic("trouble configurating")
+	}
+
+	// ensure that reads from the config are thread safe
+	cc := c.copy() // work with a copy of the configuration
+	fmt.Printf("var1=%s", cc.var1)
+
+	wp.Stop()
+}
 
 func TestConfigurator(t *testing.T) {
 	suite.Run(t, &ConfiguratorTestSuite{})
@@ -34,6 +66,7 @@ func TestConfigurator(t *testing.T) {
 type config struct {
 	var1 string
 	var2 int
+	service []*api.ServiceEntry
 	t    *testing.T
 	sync.RWMutex
 }
@@ -68,12 +101,20 @@ func (c *config) Update(_ uint64, data interface{}) {
 		}
 
 	case []*api.ServiceEntry:
-		// nothing here yet
+		c.service = data.([]*api.ServiceEntry)
+		c.t.Logf("Update: I have %d services in my list", len(c.service))
 
 	default:
 		c.t.Log("Typecast failed")
 		c.t.Fail()
 	}
+}
+
+func (c *config) copy() *config {
+	c.RLock()
+	defer c.RUnlock()
+	cc := *c
+	return &cc
 }
 
 // 1. Test that the consul KV config is transferred correctly
@@ -88,7 +129,7 @@ func (cs *ConfiguratorTestSuite) TestKVInit() {
 	}
 
 	var wp *watch.Plan
-	wp, err = cs.client.ConfigureKVPrefix(config, prefix)
+	wp, err = cs.client.KVPrefixConfigurator(config, prefix)
 
 	require.Nil(cs.T(), err, "InitConfigurator(..., %s) failed: %s", prefix, err)
 
@@ -114,6 +155,58 @@ func (cs *ConfiguratorTestSuite) TestKVInit() {
 	kvps, _, err := cs.client.KV().List(prefix, nil)
 	config.Update(0, kvps)
 	cs.T().Logf("config after manual update: %+v", config)
+
+	wp.Stop()
+}
+
+func (cs *ConfiguratorTestSuite) TestServiceInit() {
+
+	// Fire up a simple health check
+	portString := fmt.Sprintf(":%d",servicePort)
+	http.HandleFunc(servicePath, func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "Hello")
+	})
+	go http.ListenAndServe(portString, nil)
+
+	// Register a service
+	sr := &consultant.SimpleServiceRegistration{
+		Name: serviceName,
+		Port: servicePort,
+		Address: "localhost",
+		RandomID: true,
+		Tags: []string{serviceTag1,serviceTag2},
+		CheckPath: servicePath,
+		Interval: "5s",
+	}
+	serviceID, err := cs.client.SimpleServiceRegister(sr)
+	require.Nil(cs.T(), err, "Trouble registering the test service")
+	cs.T().Logf("serviceID=%s",serviceID)
+
+	config := &config{
+		t: cs.T(),
+	}
+
+	wp, err := cs.client.ConfigureService(config, serviceName, serviceTag1, false,nil)
+	require.Nil(cs.T(), err, "Unable to configure the service")
+
+	cc := config.copy()
+	require.Equal(cs.T(), 1, len(cc.service), "Expecting exactly one service here")
+
+	se := cc.service[0]
+	for _,check := range se.Checks {
+		cs.T().Logf("check[%s]=%s",check.Name,check.Status)
+	}
+
+	time.Sleep(10*time.Second)
+
+	// should be passing now
+	cc = config.copy()
+	require.Equal(cs.T(), 1, len(cc.service), "Expecting exactly one service here")
+
+	se = cc.service[0]
+	for _,check := range se.Checks {
+		cs.T().Logf("check[%s]=%s",check.Name,check.Status)
+	}
 
 	wp.Stop()
 }

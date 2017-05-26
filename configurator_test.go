@@ -1,5 +1,7 @@
 package consultant_test
 
+// Test this aspect of consultant with `go test -run Configurator -v`
+
 import (
 	"fmt"
 	"strconv"
@@ -72,6 +74,7 @@ type config struct {
 }
 
 // Update() handles both the initial settings and updates when anything under the prefix changes
+// or when there are changes to any registered services.
 func (c *config) Update(_ uint64, data interface{}) {
 
 	var err error
@@ -159,8 +162,62 @@ func (cs *ConfiguratorTestSuite) TestKVInit() {
 	wp.Stop()
 }
 
+// 1. Start a web service that provides a health check
+// 2. Register the service with consul
+// 3. Verify that we can see the service before it starts passing it's health check
+// 4. Observe the service as it starts passing in consul.
 func (cs *ConfiguratorTestSuite) TestServiceInit() {
 
+	cs.buildTestService()
+
+	config := &config{
+		t: cs.T(),
+	}
+
+	// Initialize config and start a service watcher
+	wp, err := cs.client.ServiceConfigurator(config, serviceName, serviceTag1, false,nil)
+	require.Nil(cs.T(), err, "Unable to configure the service")
+
+	cc := config.copy()
+	require.Equal(cs.T(), 1, len(cc.service), "Expecting exactly one service here")
+
+	// List the health checks before the service can be expected to pass
+	se := cc.service[0]
+	for _,check := range se.Checks {
+		cs.T().Logf("check[%s]=%s",check.Name,check.Status)
+	}
+
+	// Wait for consul to do a health check
+	time.Sleep(10*time.Second)
+
+	// The service should be passing now
+	cc = config.copy()
+	require.Equal(cs.T(), 1, len(cc.service), "Expecting exactly one service here")
+
+	se = cc.service[0]
+	for _,check := range se.Checks {
+		cs.T().Logf("check[%s]=%s",check.Name,check.Status)
+	}
+
+	// Clean up
+	wp.Stop()
+}
+
+// buildKVTestData populates a kv path with some data
+func (cs *ConfiguratorTestSuite) buildKVTestData() {
+	var err error
+
+	kv1 := &api.KVPair{Key: prefix + key1, Value: []byte(val1)}
+	_, err = cs.client.KV().Put(kv1, nil)
+	require.Nil(cs.T(), err, "Failed storing key1/val1: %s", err)
+
+	kv2 := &api.KVPair{Key: prefix + key2, Value: []byte(fmt.Sprintf("%d", val2))}
+	_, err = cs.client.KV().Put(kv2, nil)
+	require.Nil(cs.T(), err, "Failed storing key2/val2: %s", err)
+}
+
+// create a consul service to test with
+func (cs *ConfiguratorTestSuite) buildTestService() {
 	// Fire up a simple health check
 	portString := fmt.Sprintf(":%d",servicePort)
 	http.HandleFunc(servicePath, func(w http.ResponseWriter, r *http.Request) {
@@ -181,46 +238,6 @@ func (cs *ConfiguratorTestSuite) TestServiceInit() {
 	serviceID, err := cs.client.SimpleServiceRegister(sr)
 	require.Nil(cs.T(), err, "Trouble registering the test service")
 	cs.T().Logf("serviceID=%s",serviceID)
-
-	config := &config{
-		t: cs.T(),
-	}
-
-	wp, err := cs.client.ConfigureService(config, serviceName, serviceTag1, false,nil)
-	require.Nil(cs.T(), err, "Unable to configure the service")
-
-	cc := config.copy()
-	require.Equal(cs.T(), 1, len(cc.service), "Expecting exactly one service here")
-
-	se := cc.service[0]
-	for _,check := range se.Checks {
-		cs.T().Logf("check[%s]=%s",check.Name,check.Status)
-	}
-
-	time.Sleep(10*time.Second)
-
-	// should be passing now
-	cc = config.copy()
-	require.Equal(cs.T(), 1, len(cc.service), "Expecting exactly one service here")
-
-	se = cc.service[0]
-	for _,check := range se.Checks {
-		cs.T().Logf("check[%s]=%s",check.Name,check.Status)
-	}
-
-	wp.Stop()
-}
-
-func (cs *ConfiguratorTestSuite) buildKVTestData() {
-	var err error
-
-	kv1 := &api.KVPair{Key: prefix + key1, Value: []byte(val1)}
-	_, err = cs.client.KV().Put(kv1, nil)
-	require.Nil(cs.T(), err, "Failed storing key1/val1: %s", err)
-
-	kv2 := &api.KVPair{Key: prefix + key2, Value: []byte(fmt.Sprintf("%d", val2))}
-	_, err = cs.client.KV().Put(kv2, nil)
-	require.Nil(cs.T(), err, "Failed storing key2/val2: %s", err)
 }
 
 type ConfiguratorTestSuite struct {

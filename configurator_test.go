@@ -44,6 +44,7 @@ func TestConfigurator(t *testing.T) {
 type config struct {
 	var1    string
 	var2    int
+	otherVar int
 	service []*api.ServiceEntry
 	t       *testing.T
 }
@@ -98,10 +99,10 @@ func (cs *ConfiguratorTestSuite) TestKVInit() {
 	err = cm.AddKVPrefix(configuratorPrefix)
 	require.Nil(cs.T(), err, "AddKVPrefix(%s) failed: %s", configuratorPrefix, err)
 
-	time.Sleep(time.Second)
+	// time.Sleep(time.Second)
 
 	cs.T().Logf("cm=%+v", cm)
-	c = cm.Read().(*config)
+	c = cm.Refresh().Read().(*config)
 
 	// Check that config has what we expect
 	require.Equal(cs.T(), configuratorVal1, c.var1, "the initialized val1 is not what I expected")
@@ -240,4 +241,42 @@ func (cs *ConfiguratorTestSuite) TearDownTest() {
 func (cs *ConfiguratorTestSuite) TearDownSuite() {
 	cs.T().Log("TearDownSuite()")
 	cs.TearDownTest()
+}
+
+func ExampleConfigurator() {
+	// Create a config struct
+	// type config struct {
+	//	kvVar string // Something we know how to update give a consul watch plan update
+	//	otherVar int // Another config item
+	//	service []*api.ServiceEntry // A service entry list for services in our consul environment
+	// }
+
+	// Assume func (c *config) Update(uint64, interface{}) is defined so that *config implements Configurator
+
+	c := &config{
+		otherVar: 123,
+	}
+
+	client,_ := consultant.NewDefaultClient()
+	cm := client.NewConfigManager(c)
+
+	cm.AddKVPrefix("apps/myapp")
+	cm.AddService("elastic", "myapp", true)
+
+	// Force a refresh and read the config
+	c = cm.Refresh().Read().(*config)
+
+	// Casual read of the config, get what is there at the moment
+	c = cm.Read().(*config)
+
+	update := cm.Subscribe()
+
+	for {
+		select {
+		//BUG go test does not recognize the expression `case c = (<- *update).(*config):`
+		case x := <- *update:
+			c = x.(*config)
+			// we have an up-to date config
+		}
+	}
 }

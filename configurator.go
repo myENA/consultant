@@ -2,13 +2,12 @@ package consultant
 
 import (
 	"fmt"
-
 	"github.com/hashicorp/consul/watch"
 )
 
 const (
 	updateChanLength = 100 // must exceed the maximum number of watch plans
-	chanLength       = 10  //
+	chanLength       = 10  // a size for all other channels
 )
 
 // A config object that implements this interface can be initialized from consul's
@@ -80,6 +79,14 @@ func (cm *ConfigManager) Read() Configurator {
 	return <-req
 }
 
+// Refresh all updates (in preparation for a read)
+func (cm *ConfigManager) Refresh() *ConfigManager {
+	sync := cm.pause()
+	cm.updateAll()
+	unpause(sync)
+	return cm
+}
+
 func (cm *ConfigManager) configHandler() {
 	go func() { //  make sure the handler is running before we return
 	loop:
@@ -90,28 +97,32 @@ func (cm *ConfigManager) configHandler() {
 			case seed := <-cm.seedChan:
 				//log.Println("seedChan")
 				cm.config = seed
+				cm.updateAll()
 
-				// fill in information from consul
-				for prefix := range cm.prefixPlans {
-					cm.updateKVPrefix(prefix)
-				}
-				for service, details := range cm.servicePlans {
-					cm.updateService(service, details.tag, details.passingOnly)
-				}
-
+			// request to get a copy of the config
 			case req := <-cm.readChan:
-				//log.Println("readChan")
-				req <- cm.config
+				// Handle all updates before we serve the config back (push request back on channel)
+				if len(cm.updateChan)>0 {
+					cm.readChan <- req
+				} else {
+					req <- cm.config
+				}
 
+			// updates are processed here
 			case u := <-cm.updateChan:
 				//log.Println("updateChan")
 				cm.config.Update(u.index, u.data) // user-defined handling
-				cm.handleSubscriptions()
 
+				// Serve subscribers once all updates have been processed
+				if len(cm.updateChan) == 0 {
+					cm.handleSubscriptions()
+				}
+
+			// provide a means to pause the handler
 			case ch := <-cm.syncChan:
 				//log.Println("syncChan")
 				c1 := make(chan bool)
-				ch <- c1 // say: sync is yours
+				ch <- c1 // say: do your work now
 				<-c1     // wait until ready to move on again
 
 			case <-cm.stopChan:
@@ -124,6 +135,16 @@ func (cm *ConfigManager) configHandler() {
 	}()
 }
 
+// Trigger all updates
+func (cm *ConfigManager) updateAll() {
+	for prefix := range cm.prefixPlans {
+		cm.updateKVPrefix(prefix)
+	}
+	for service, details := range cm.servicePlans {
+		cm.updateService(service, details.tag, details.passingOnly)
+	}
+}
+
 // transform a callback to a channel push
 func (cm *ConfigManager) updateHandler(index uint64, data interface{}) {
 	cm.updateChan <- update{
@@ -132,12 +153,14 @@ func (cm *ConfigManager) updateHandler(index uint64, data interface{}) {
 	}
 }
 
+// Subscribe returns a (pointer to) a channel that will send updates about the config
 func (cm *ConfigManager) Subscribe() *ConfigChan {
 	ch := make(ConfigChan, 1)
 	cm.subscriptions[&ch] = true
 	return &ch
 }
 
+// Unsubscribe from channel updates by passing the (pointer to the) channel here.
 func (cm *ConfigManager) Unsubscribe(ch *ConfigChan) {
 	_, ok := cm.subscriptions[ch]
 	if ok {
@@ -160,15 +183,15 @@ func (cm *ConfigManager) Stop() {
 	cm.stopChan <- true
 }
 
-// lock pauses the handler while we do some otherwise thread-unsafe stuff
-func (cm *ConfigManager) lock() chan bool {
+// pause pauses the handler while we do some otherwise thread-unsafe stuff
+func (cm *ConfigManager) pause() chan bool {
 	c2 := make(chan chan bool)
 	cm.syncChan <- c2
 	return <-c2
 }
 
-// unlock tells the handler that it is okay to resume normal operations
-func unlock(sync chan bool) {
+// unpause tells the handler that it is okay to resume normal operations
+func unpause(sync chan bool) {
 	sync <- true
 }
 
@@ -177,8 +200,8 @@ func (cm *ConfigManager) AddKVPrefix(prefix string) error {
 
 	var err error
 
-	sync := cm.lock()
-	defer unlock(sync)
+	sync := cm.pause()
+	defer unpause(sync)
 
 	wp, ok := cm.prefixPlans[prefix]
 	if ok {
@@ -207,8 +230,8 @@ func (cm *ConfigManager) AddService(service, tag string, passingOnly bool) error
 
 	var err error
 
-	sync := cm.lock()
-	defer unlock(sync)
+	sync := cm.pause()
+	defer unpause(sync)
 
 	details, ok := cm.servicePlans[service]
 	if ok {

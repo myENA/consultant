@@ -4,10 +4,10 @@ package consultant_test
 
 import (
 	"fmt"
+	"net/http"
 	"strconv"
 	"testing"
 	"time"
-	"net/http"
 
 	"github.com/hashicorp/consul/api"
 	"github.com/hashicorp/consul/testutil"
@@ -18,23 +18,22 @@ import (
 
 const (
 	// Test prefix monitoring
-	prefix = "test/"
+	configuratorPrefix = "test/"
 
-	key1   = "key1"
-	val1   = "value 1"
-	val1b  = "value 1 after change"
+	configuratorKey1  = "key1"
+	configuratorVal1  = "value 1"
+	configuratorVal1b = "value 1 after change"
 
-	key2   = "key2"
-	val2   = 2
-	val2b  = 42
+	configuratorKey2  = "key2"
+	configuratorVal2  = 2
+	configuratorVal2b = 42
 
 	// Service monitoring
-	serviceName = "myservice"
-	serviceTag1 = "tag1"
-	serviceTag2 = "tag2"
-	servicePort = 3000
-	servicePath = "/check"
-
+	configuratorServiceName = "myservice"
+	configuratorServiceTag1 = "tag1"
+	configuratorServiceTag2 = "tag2"
+	configuratorServicePort = 3000
+	configuratorServicePath = "/check"
 )
 
 func TestConfigurator(t *testing.T) {
@@ -43,10 +42,10 @@ func TestConfigurator(t *testing.T) {
 
 // Implement the Configurator interface
 type config struct {
-	var1 string
-	var2 int
+	var1    string
+	var2    int
 	service []*api.ServiceEntry
-	t    *testing.T
+	t       *testing.T
 }
 
 // Update() handles both the initial settings and updates when anything under the prefix changes
@@ -64,12 +63,12 @@ func (c *config) Update(_ uint64, data interface{}) {
 		for _, kvp := range kvps {
 			c.t.Logf("key=%s, val=%s", kvp.Key, kvp.Value)
 			switch kvp.Key {
-			case prefix + key1:
+			case configuratorPrefix + configuratorKey1:
 				c.var1 = string(kvp.Value)
-			case prefix + key2:
+			case configuratorPrefix + configuratorKey2:
 				c.var2, err = strconv.Atoi(string(kvp.Value))
 				if err != nil {
-					c.t.Logf("key %s is not an int", key2)
+					c.t.Logf("key %s is not an int", configuratorKey2)
 				}
 			}
 		}
@@ -96,35 +95,35 @@ func (cs *ConfiguratorTestSuite) TestKVInit() {
 	}
 	cm := cs.client.NewConfigManager(c)
 
-	err = cm.AddKVPrefix(prefix)
-	require.Nil(cs.T(), err, "AddKVPrefix(%s) failed: %s", prefix, err)
+	err = cm.AddKVPrefix(configuratorPrefix)
+	require.Nil(cs.T(), err, "AddKVPrefix(%s) failed: %s", configuratorPrefix, err)
 
 	time.Sleep(time.Second)
 
-	cs.T().Logf("cm=%+v",cm)
+	cs.T().Logf("cm=%+v", cm)
 	c = cm.Read().(*config)
 
 	// Check that config has what we expect
-	require.Equal(cs.T(), val1, c.var1, "the initialized val1 is not what I expected")
-	require.Equal(cs.T(), val2, c.var2, "the initialized val2 is not what I expected")
+	require.Equal(cs.T(), configuratorVal1, c.var1, "the initialized val1 is not what I expected")
+	require.Equal(cs.T(), configuratorVal2, c.var2, "the initialized val2 is not what I expected")
 
 	// Change the kv:s in consul
 	cs.T().Log("=== changing the kv values")
 	ch := cm.Subscribe()
-	kv1 := &api.KVPair{Key: prefix + key1, Value: []byte(val1b)}
+	kv1 := &api.KVPair{Key: configuratorPrefix + configuratorKey1, Value: []byte(configuratorVal1b)}
 	_, err = cs.client.KV().Put(kv1, nil)
-	require.Nil(cs.T(), err, "Trouble changing the value of %s", key1)
-	c = (<- *ch).(*config)
-	require.Equal(cs.T(), val1b, c.var1, "var1 is not what i expected after updating in consul")
+	require.Nil(cs.T(), err, "Trouble changing the value of %s", configuratorKey1)
+	c = (<-*ch).(*config)
+	require.Equal(cs.T(), configuratorVal1b, c.var1, "var1 is not what i expected after updating in consul")
 
-	kv2 := &api.KVPair{Key: prefix + key2, Value: []byte(fmt.Sprintf("%d", val2b))}
+	kv2 := &api.KVPair{Key: configuratorPrefix + configuratorKey2, Value: []byte(fmt.Sprintf("%d", configuratorVal2b))}
 	_, err = cs.client.KV().Put(kv2, nil)
-	require.Nil(cs.T(), err, "Trouble changing the value of %s", key2)
-	c = (<- *ch).(*config)
-	require.Equal(cs.T(), val2b, c.var2, "var2 is not what i expected after updating in consul")
+	require.Nil(cs.T(), err, "Trouble changing the value of %s", configuratorKey2)
+	c = (<-*ch).(*config)
+	require.Equal(cs.T(), configuratorVal2b, c.var2, "var2 is not what i expected after updating in consul")
 
 	// report what is actually in the kv prefix now:
-	kvps, _, err := cs.client.KV().List(prefix, nil)
+	kvps, _, err := cs.client.KV().List(configuratorPrefix, nil)
 	c.Update(0, kvps)
 	cs.T().Logf("config after manual update: %+v", c)
 
@@ -144,32 +143,32 @@ func (cs *ConfiguratorTestSuite) TestServiceInit() {
 	}
 	cm := cs.client.NewConfigManager(c)
 
-	err := cm.AddService(serviceName, serviceTag1, false)
-	require.Nil(cs.T(), err, "AddKVPrefix(%s) failed: %s", prefix, err)
+	err := cm.AddService(configuratorServiceName, configuratorServiceTag1, false)
+	require.Nil(cs.T(), err, "AddKVPrefix(%s) failed: %s", configuratorPrefix, err)
 
 	time.Sleep(time.Second)
 
-	cs.T().Logf("cm=%+v",cm)
+	cs.T().Logf("cm=%+v", cm)
 
 	c = cm.Read().(*config)
 	require.Equal(cs.T(), 1, len(c.service), "Expecting exactly one service here")
 
 	// List the health checks before the service can be expected to pass
 	se := c.service[0]
-	for _,check := range se.Checks {
-		cs.T().Logf("check[%s]=%s",check.Name,check.Status)
+	for _, check := range se.Checks {
+		cs.T().Logf("check[%s]=%s", check.Name, check.Status)
 	}
 
 	// Wait for consul to do a health check
-	time.Sleep(10*time.Second)
+	time.Sleep(10 * time.Second)
 
 	// The service should be passing now
 	c = cm.Read().(*config)
 	require.Equal(cs.T(), 1, len(c.service), "Expecting exactly one service here")
 
 	se = c.service[0]
-	for _,check := range se.Checks {
-		cs.T().Logf("check[%s]=%s",check.Name,check.Status)
+	for _, check := range se.Checks {
+		cs.T().Logf("check[%s]=%s", check.Name, check.Status)
 	}
 
 	// Clean up
@@ -180,11 +179,11 @@ func (cs *ConfiguratorTestSuite) TestServiceInit() {
 func (cs *ConfiguratorTestSuite) buildKVTestData() {
 	var err error
 
-	kv1 := &api.KVPair{Key: prefix + key1, Value: []byte(val1)}
+	kv1 := &api.KVPair{Key: configuratorPrefix + configuratorKey1, Value: []byte(configuratorVal1)}
 	_, err = cs.client.KV().Put(kv1, nil)
 	require.Nil(cs.T(), err, "Failed storing key1/val1: %s", err)
 
-	kv2 := &api.KVPair{Key: prefix + key2, Value: []byte(fmt.Sprintf("%d", val2))}
+	kv2 := &api.KVPair{Key: configuratorPrefix + configuratorKey2, Value: []byte(fmt.Sprintf("%d", configuratorVal2))}
 	_, err = cs.client.KV().Put(kv2, nil)
 	require.Nil(cs.T(), err, "Failed storing key2/val2: %s", err)
 }
@@ -192,25 +191,25 @@ func (cs *ConfiguratorTestSuite) buildKVTestData() {
 // create a consul service to test with
 func (cs *ConfiguratorTestSuite) buildTestService() {
 	// Fire up a simple health check
-	portString := fmt.Sprintf(":%d",servicePort)
-	http.HandleFunc(servicePath, func(w http.ResponseWriter, r *http.Request) {
+	portString := fmt.Sprintf(":%d", configuratorServicePort)
+	http.HandleFunc(configuratorServicePath, func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, "Hello")
 	})
 	go http.ListenAndServe(portString, nil)
 
 	// Register a service
 	sr := &consultant.SimpleServiceRegistration{
-		Name: serviceName,
-		Port: servicePort,
-		Address: "localhost",
-		RandomID: true,
-		Tags: []string{serviceTag1,serviceTag2},
-		CheckPath: servicePath,
-		Interval: "5s",
+		Name:      configuratorServiceName,
+		Port:      configuratorServicePort,
+		Address:   "localhost",
+		RandomID:  true,
+		Tags:      []string{configuratorServiceTag1, configuratorServiceTag2},
+		CheckPath: configuratorServicePath,
+		Interval:  "5s",
 	}
 	serviceID, err := cs.client.SimpleServiceRegister(sr)
 	require.Nil(cs.T(), err, "Trouble registering the test service")
-	cs.T().Logf("serviceID=%s",serviceID)
+	cs.T().Logf("serviceID=%s", serviceID)
 }
 
 type ConfiguratorTestSuite struct {

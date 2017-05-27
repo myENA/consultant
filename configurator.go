@@ -32,11 +32,11 @@ type ConfigChan chan Configurator
 
 // ConfigManager keeps a private copy of the Configurator object in order to manage thread-safe access.
 type ConfigManager struct {
-	client        *Client // a consultant client
-	config        Configurator // private copy
-	prefixPlans   map[string]*watch.Plan  // the prefixes we are managing
+	client        *Client                    // a consultant client
+	config        Configurator               // private copy
+	prefixPlans   map[string]*watch.Plan     // the prefixes we are managing
 	servicePlans  map[string]*serviceDetails // services we are managing
-	subscriptions map[*ConfigChan]bool // user can subscribe to updates
+	subscriptions map[*ConfigChan]bool       // user can subscribe to updates
 	seedChan      ConfigChan
 	readChan      chan ConfigChan
 	updateChan    chan update
@@ -45,10 +45,10 @@ type ConfigManager struct {
 }
 
 // NewConfigManager creates a new instance and kicks off a manager for it
-func (client *Client) NewConfigManager(config Configurator) *ConfigManager {
+func (c *Client) NewConfigManager(config Configurator) *ConfigManager {
 
 	cm := &ConfigManager{
-		client:        client,
+		client:        c,
 		config:        config,
 		prefixPlans:   make(map[string]*watch.Plan),
 		servicePlans:  make(map[string]*serviceDetails),
@@ -88,11 +88,11 @@ func (cm *ConfigManager) configHandler() {
 
 			// initialize the config object with non-consul items
 			case seed := <-cm.seedChan:
-				//fmt.Println("seedChan")
+				//log.Println("seedChan")
 				cm.config = seed
 
 				// fill in information from consul
-				for prefix, _ := range cm.prefixPlans {
+				for prefix := range cm.prefixPlans {
 					cm.updateKVPrefix(prefix)
 				}
 				for service, details := range cm.servicePlans {
@@ -100,27 +100,27 @@ func (cm *ConfigManager) configHandler() {
 				}
 
 			case req := <-cm.readChan:
-				//fmt.Println("readChan")
+				//log.Println("readChan")
 				req <- cm.config
 
 			case u := <-cm.updateChan:
-				//fmt.Println("updateChan")
+				//log.Println("updateChan")
 				cm.config.Update(u.index, u.data) // user-defined handling
 				cm.handleSubscriptions()
 
 			case ch := <-cm.syncChan:
-				//fmt.Println("syncChan")
+				//log.Println("syncChan")
 				c1 := make(chan bool)
 				ch <- c1 // say: sync is yours
 				<-c1     // wait until ready to move on again
 
 			case <-cm.stopChan:
-				//fmt.Println("stopChan")
+				//log.Println("stopChan")
 				cm.cleanup()
 				break loop
 			}
 		}
-		fmt.Println("Exiting the handler")
+		log.Println("Exiting the handler")
 	}()
 }
 
@@ -169,7 +169,7 @@ func (cm *ConfigManager) lock() chan bool {
 
 // unlock tells the handler that it is okay to resume normal operations
 func unlock(sync chan bool) {
-	sync<-true
+	sync <- true
 }
 
 // AddKvPrefix starts watching the given prefix and updates the config with current values
@@ -268,7 +268,7 @@ func (cm *ConfigManager) cleanup() {
 	}
 
 	// Close subscriber channels
-	for ch, _ := range cm.subscriptions {
+	for ch := range cm.subscriptions {
 		close(*ch)
 	}
 }

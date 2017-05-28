@@ -41,18 +41,18 @@ func TestConfigurator(t *testing.T) {
 }
 
 // Implement the Configurator interface
-type config struct {
-	var1    string
-	var2    int
+type configuratorConfig struct {
+	var1     string
+	var2     int
 	otherVar int
-	service []*api.ServiceEntry
-	t       *testing.T
+	service  []*api.ServiceEntry
+	t        *testing.T
 }
 
 // Update() handles both the initial settings and updates when anything under the prefix changes
 // or when there are changes to any registered services. Changes are made to a private copy of 'c'
 // so thread safety is not an issue.
-func (c *config) Update(_ uint64, data interface{}) {
+func (c *configuratorConfig) Update(_ uint64, data interface{}) {
 
 	var err error
 
@@ -91,7 +91,7 @@ func (cs *ConfiguratorTestSuite) TestKVInit() {
 
 	cs.buildKVTestData()
 
-	c := &config{
+	c := &configuratorConfig{
 		t: cs.T(),
 	}
 	cm := cs.client.NewConfigManager(c)
@@ -102,7 +102,7 @@ func (cs *ConfiguratorTestSuite) TestKVInit() {
 	// time.Sleep(time.Second)
 
 	cs.T().Logf("cm=%+v", cm)
-	c = cm.Refresh().Read().(*config)
+	c = cm.Refresh().Read().(*configuratorConfig)
 
 	// Check that config has what we expect
 	require.Equal(cs.T(), configuratorVal1, c.var1, "the initialized val1 is not what I expected")
@@ -114,13 +114,15 @@ func (cs *ConfiguratorTestSuite) TestKVInit() {
 	kv1 := &api.KVPair{Key: configuratorPrefix + configuratorKey1, Value: []byte(configuratorVal1b)}
 	_, err = cs.client.KV().Put(kv1, nil)
 	require.Nil(cs.T(), err, "Trouble changing the value of %s", configuratorKey1)
-	c = (<-*ch).(*config)
+	time.Sleep(time.Second)
+	c = (<-*ch).(*configuratorConfig)
+	fmt.Printf("\n\n%v\n\n", c)
 	require.Equal(cs.T(), configuratorVal1b, c.var1, "var1 is not what i expected after updating in consul")
 
 	kv2 := &api.KVPair{Key: configuratorPrefix + configuratorKey2, Value: []byte(fmt.Sprintf("%d", configuratorVal2b))}
 	_, err = cs.client.KV().Put(kv2, nil)
 	require.Nil(cs.T(), err, "Trouble changing the value of %s", configuratorKey2)
-	c = (<-*ch).(*config)
+	c = (<-*ch).(*configuratorConfig)
 	require.Equal(cs.T(), configuratorVal2b, c.var2, "var2 is not what i expected after updating in consul")
 
 	// report what is actually in the kv prefix now:
@@ -139,7 +141,7 @@ func (cs *ConfiguratorTestSuite) TestServiceInit() {
 
 	cs.buildTestService()
 
-	c := &config{
+	c := &configuratorConfig{
 		t: cs.T(),
 	}
 	cm := cs.client.NewConfigManager(c)
@@ -151,7 +153,7 @@ func (cs *ConfiguratorTestSuite) TestServiceInit() {
 
 	cs.T().Logf("cm=%+v", cm)
 
-	c = cm.Read().(*config)
+	c = cm.Read().(*configuratorConfig)
 	require.Equal(cs.T(), 1, len(c.service), "Expecting exactly one service here")
 
 	// List the health checks before the service can be expected to pass
@@ -164,7 +166,7 @@ func (cs *ConfiguratorTestSuite) TestServiceInit() {
 	time.Sleep(10 * time.Second)
 
 	// The service should be passing now
-	c = cm.Read().(*config)
+	c = cm.Read().(*configuratorConfig)
 	require.Equal(cs.T(), 1, len(c.service), "Expecting exactly one service here")
 
 	se = c.service[0]
@@ -253,29 +255,29 @@ func ExampleConfigurator() {
 
 	// Assume func (c *config) Update(uint64, interface{}) is defined so that *config implements Configurator
 
-	c := &config{
+	c := &configuratorConfig{
 		otherVar: 123,
 	}
 
-	client,_ := consultant.NewDefaultClient()
+	client, _ := consultant.NewDefaultClient()
 	cm := client.NewConfigManager(c)
 
 	cm.AddKVPrefix("apps/myapp")
 	cm.AddService("elastic", "myapp", true)
 
 	// Force a refresh and read the config
-	c = cm.Refresh().Read().(*config)
+	c = cm.Refresh().Read().(*configuratorConfig)
 
 	// Casual read of the config, get what is there at the moment
-	c = cm.Read().(*config)
+	c = cm.Read().(*configuratorConfig)
 
 	update := cm.Subscribe()
 
 	for {
 		select {
 		//BUG go test does not recognize the expression `case c = (<- *update).(*config):`
-		case x := <- *update:
-			c = x.(*config)
+		case x := <-*update:
+			c = x.(*configuratorConfig)
 			// we have an up-to date config
 		}
 	}

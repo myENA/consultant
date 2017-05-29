@@ -251,7 +251,6 @@ func (cs *ConfiguratorTestSuite) TestUnsubscribe() {
 	require.Equal(cs.T(), 3, ch2UpdatesReceived, "Expected exactly 3 updates, saw \"%d\"", ch2UpdatesReceived)
 
 	close(ch1)
-	close(ch2)
 
 	cm.Stop()
 }

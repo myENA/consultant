@@ -110,19 +110,24 @@ func (cs *ConfiguratorTestSuite) TestKVInit() {
 
 	// Change the kv:s in consul
 	cs.T().Log("=== changing the kv values")
+
 	ch := cm.Subscribe()
+
 	kv1 := &api.KVPair{Key: configuratorPrefix + configuratorKey1, Value: []byte(configuratorVal1b)}
 	_, err = cs.client.KV().Put(kv1, nil)
 	require.Nil(cs.T(), err, "Trouble changing the value of %s", configuratorKey1)
+
 	time.Sleep(time.Second)
-	c = (<-*ch).(*configuratorConfig)
+	c = (<-ch).(*configuratorConfig)
+
 	fmt.Printf("\n\n%v\n\n", c)
 	require.Equal(cs.T(), configuratorVal1b, c.var1, "var1 is not what i expected after updating in consul")
 
 	kv2 := &api.KVPair{Key: configuratorPrefix + configuratorKey2, Value: []byte(fmt.Sprintf("%d", configuratorVal2b))}
 	_, err = cs.client.KV().Put(kv2, nil)
 	require.Nil(cs.T(), err, "Trouble changing the value of %s", configuratorKey2)
-	c = (<-*ch).(*configuratorConfig)
+
+	c = (<-ch).(*configuratorConfig)
 	require.Equal(cs.T(), configuratorVal2b, c.var2, "var2 is not what i expected after updating in consul")
 
 	// report what is actually in the kv prefix now:
@@ -175,6 +180,79 @@ func (cs *ConfiguratorTestSuite) TestServiceInit() {
 	}
 
 	// Clean up
+	cm.Stop()
+}
+
+func (cs *ConfiguratorTestSuite) TestUnsubscribe() {
+	var err error
+
+	cs.buildKVTestData()
+
+	c := &configuratorConfig{
+		t: cs.T(),
+	}
+	cm := cs.client.NewConfigManager(c)
+
+	err = cm.AddKVPrefix(configuratorPrefix)
+	require.Nil(cs.T(), err, "AddKVPrefix(%s) failed: %s", configuratorPrefix, err)
+
+	// time.Sleep(time.Second)
+
+	cs.T().Logf("cm=%+v", cm)
+	c = cm.Refresh().Read().(*configuratorConfig)
+
+	// Check that config has what we expect
+	require.Equal(cs.T(), configuratorVal1, c.var1, "the initialized val1 is not what I expected")
+	require.Equal(cs.T(), configuratorVal2, c.var2, "the initialized val2 is not what I expected")
+
+	// Change the kv:s in consul
+	cs.T().Log("=== changing the kv values")
+
+	ch1 := cm.Subscribe()
+	ch2 := cm.Subscribe()
+
+	ch1UpdatesReceived := 0
+	ch2UpdatesReceived := 0
+
+	// wait around and count updates on both chans...
+	go func() {
+		for cch := range ch1 {
+			uc := cch.(*configuratorConfig)
+			fmt.Printf("\n\nch1 Subscription triggered: %v\n\n\n", uc)
+			ch1UpdatesReceived++
+		}
+	}()
+	go func() {
+		for cch := range ch2 {
+			uc := cch.(*configuratorConfig)
+			fmt.Printf("\n\nch2 Subscription triggered: %v\n\n\n", uc)
+			ch2UpdatesReceived++
+		}
+	}()
+
+	time.Sleep(time.Second)
+
+	kv1 := &api.KVPair{Key: configuratorPrefix + configuratorKey1, Value: []byte(configuratorVal1b)}
+	_, err = cs.client.KV().Put(kv1, nil)
+	require.Nil(cs.T(), err, "Trouble changing the value of %s", configuratorKey1)
+
+	time.Sleep(time.Second)
+
+	// unsub ch1
+	cm.Unsubscribe(ch1)
+
+	kv2 := &api.KVPair{Key: configuratorPrefix + configuratorKey2, Value: []byte(fmt.Sprintf("%d", configuratorVal2b))}
+	_, err = cs.client.KV().Put(kv2, nil)
+	require.Nil(cs.T(), err, "Trouble changing the value of %s", configuratorKey2)
+
+	time.Sleep(time.Second)
+
+	require.Equal(cs.T(), 2, ch1UpdatesReceived, "Expected exactly 2 udpates, saw \"%d\"", ch1UpdatesReceived)
+	require.Equal(cs.T(), 3, ch2UpdatesReceived, "Expected exactly 3 updates, saw \"%d\"", ch2UpdatesReceived)
+
+	close(ch1)
+	close(ch2)
+
 	cm.Stop()
 }
 
@@ -276,7 +354,7 @@ func ExampleConfigurator() {
 	for {
 		select {
 		//BUG go test does not recognize the expression `case c = (<- *update).(*config):`
-		case x := <-*update:
+		case x := <-update:
 			c = x.(*configuratorConfig)
 			// we have an up-to date config
 		}

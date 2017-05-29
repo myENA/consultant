@@ -35,7 +35,7 @@ type ConfigManager struct {
 	config        Configurator               // private copy
 	prefixPlans   map[string]*watch.Plan     // the prefixes we are managing
 	servicePlans  map[string]*serviceDetails // services we are managing
-	subscriptions map[*ConfigChan]bool       // user can subscribe to updates
+	subscriptions map[ConfigChan]bool        // user can subscribe to updates
 	seedChan      ConfigChan
 	readChan      chan ConfigChan
 	updateChan    chan update
@@ -51,7 +51,7 @@ func (c *Client) NewConfigManager(config Configurator) *ConfigManager {
 		config:        config,
 		prefixPlans:   make(map[string]*watch.Plan),
 		servicePlans:  make(map[string]*serviceDetails),
-		subscriptions: make(map[*ConfigChan]bool),
+		subscriptions: make(map[ConfigChan]bool),
 		seedChan:      make(ConfigChan, chanLength),
 		readChan:      make(chan ConfigChan, chanLength),
 		updateChan:    make(chan update, updateChanLength),
@@ -102,7 +102,7 @@ func (cm *ConfigManager) configHandler() {
 			// request to get a copy of the config
 			case req := <-cm.readChan:
 				// Handle all updates before we serve the config back (push request back on channel)
-				if len(cm.updateChan)>0 {
+				if len(cm.updateChan) > 0 {
 					cm.readChan <- req
 				} else {
 					req <- cm.config
@@ -153,15 +153,15 @@ func (cm *ConfigManager) updateHandler(index uint64, data interface{}) {
 	}
 }
 
-// Subscribe returns a (pointer to) a channel that will send updates about the config
-func (cm *ConfigManager) Subscribe() *ConfigChan {
+// Subscribe returns a channel that will send updates about the config
+func (cm *ConfigManager) Subscribe() ConfigChan {
 	ch := make(ConfigChan, 1)
-	cm.subscriptions[&ch] = true
-	return &ch
+	cm.subscriptions[ch] = true
+	return ch
 }
 
-// Unsubscribe from channel updates by passing the (pointer to the) channel here.
-func (cm *ConfigManager) Unsubscribe(ch *ConfigChan) {
+// Unsubscribe from channel updates by passing the channel here.
+func (cm *ConfigManager) Unsubscribe(ch ConfigChan) {
 	_, ok := cm.subscriptions[ch]
 	if ok {
 		delete(cm.subscriptions, ch)
@@ -171,10 +171,10 @@ func (cm *ConfigManager) Unsubscribe(ch *ConfigChan) {
 func (cm *ConfigManager) handleSubscriptions() {
 	for ch := range cm.subscriptions {
 		// Replace current item in the queue if there is something there
-		if len(*ch) == 1 {
-			<-*ch
+		if len(ch) == 1 {
+			<-ch
 		}
-		*ch <- cm.config
+		ch <- cm.config
 	}
 }
 
@@ -216,7 +216,7 @@ func (cm *ConfigManager) AddKVPrefix(prefix string) error {
 	go func() {
 		err := wp.Run(cm.client.config.Address)
 		if err != nil {
-			fmt.Fprintf(wp.LogOutput, "Watch plan failed for prefix: %s", prefix)
+			log.Printf("Watch plan failed for prefix: %s", prefix)
 		}
 	}()
 
@@ -292,6 +292,6 @@ func (cm *ConfigManager) cleanup() {
 
 	// Close subscriber channels
 	for ch := range cm.subscriptions {
-		close(*ch)
+		close(ch)
 	}
 }

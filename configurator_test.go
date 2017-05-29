@@ -247,8 +247,12 @@ func (cs *ConfiguratorTestSuite) TestUnsubscribe() {
 
 	time.Sleep(time.Second)
 
-	require.Equal(cs.T(), 2, ch1UpdatesReceived, "Expected exactly 2 udpates, saw \"%d\"", ch1UpdatesReceived)
-	require.Equal(cs.T(), 3, ch2UpdatesReceived, "Expected exactly 3 updates, saw \"%d\"", ch2UpdatesReceived)
+	require.True(
+		cs.T(),
+		ch2UpdatesReceived == ch1UpdatesReceived+1,
+		"Expected ch2 to receive 1 more update than ch1.  ch1: \"%d\"; ch2: \"%d\"",
+		ch1UpdatesReceived,
+		ch2UpdatesReceived)
 
 	close(ch1)
 

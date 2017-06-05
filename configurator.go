@@ -290,6 +290,10 @@ func (cm *ConfigManager) cleanup() {
 		details.plan.Stop()
 	}
 
+	for _, details := range cm.prefixPlans {
+		details.Stop()
+	}
+
 	// Close subscriber channels
 	for ch := range cm.subscriptions {
 		close(ch)

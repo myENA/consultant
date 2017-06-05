@@ -5,7 +5,7 @@ Helpful wrappers around Consul API client
 [![Build Status](https://travis-ci.org/myENA/consultant.svg?branch=master)](https://travis-ci.org/myENA/consultant)
 
 ## Client
-Our Consultant [Client](./client.go#L14) is a very thin wrapper around the 
+Our Consultant [Client](./client.go#L14) is a thin wrapper around the
 [Consul API Client](https://github.com/hashicorp/consul/blob/v0.8.2/api/api.go#L356).  It provides
 
 - Simplified Service Retrieval ([see here](./client.go#L51))
@@ -35,6 +35,14 @@ Look [here](./candidate.go#L53) for some basic documentation.
   provided by hashi
 - Helper methods hanging off of our [Client](./client.go) struct that will fill in some values based on the client's
   own definition
+
+## Configurator
+[Configurator](./configurator.go) provides a way to initialize a config struct from a consul KV prefix
+or service status. A ConfigManager keeps a private copy of the config and handles watchers to update the
+config as the consul state changes. The ConfigManager offers access to the updated configuration.
+
+The ConfigManager provides dire read access to the configuration object, or one can subscribe to a channel
+that will be fed updates as they happen.
 
 ## TODO:
 - More tests

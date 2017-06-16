@@ -6,7 +6,7 @@ Helpful wrappers around Consul API client
 
 ## Client
 Our Consultant [Client](./client.go#L14) is a thin wrapper around the
-[Consul API Client](https://github.com/hashicorp/consul/blob/v0.8.2/api/api.go#L356).  It provides
+[Consul API Client](https://github.com/hashicorp/consul/blob/v0.8.4/api/api.go#L356).  It provides
 
 - Simplified Service Retrieval ([see here](./client.go#L51))
 - Simplified Service Registration ([see here](./client.go#L83))

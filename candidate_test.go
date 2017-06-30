@@ -85,7 +85,7 @@ func (cs *CandidateTestSuite) TestSimpleElectionCycle() {
 
 	wg.Wait()
 
-	leader, err = candidate1.Leader()
+	leader, err = candidate1.LeaderService()
 	require.Nil(cs.T(), err, fmt.Sprintf("Unable to locate leader session entry: %v", err))
 
 	// attempt to locate elected leader
@@ -141,7 +141,7 @@ func (cs *CandidateTestSuite) TestSimpleElectionCycle() {
 
 	wg.Wait()
 
-	leader, err = candidate1.Leader()
+	leader, err = candidate1.LeaderService()
 	require.NotNil(cs.T(), err, "Expected empty key error, got nil")
 	require.Nil(cs.T(), leader, fmt.Sprintf("Expected nil leader, got %v", leader))
 }

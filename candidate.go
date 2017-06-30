@@ -170,15 +170,15 @@ func (c *Candidate) Resign() {
 	c.logPrintln("Candidacy resigned.  We're no longer in the running")
 }
 
-// Leader will attempt to locate the leader's session entry in your local agent's datacenter
-func (c *Candidate) Leader() (*api.SessionEntry, error) {
-	return c.ForeignLeader("")
+// LeaderService will attempt to locate the leader's session entry in your local agent's datacenter
+func (c *Candidate) LeaderService() (*api.SessionEntry, error) {
+	return c.ForeignLeaderService("")
 }
 
 // Return the leader, assuming its ID can be interpreted as an IP address
-func (c *Candidate) LeaderService() (net.IP, error) {
+func (c *Candidate) LeaderIP() (net.IP, error) {
 
-	leaderSession, err := c.Leader()
+	leaderSession, err := c.LeaderService()
 	if nil != err {
 		return nil, fmt.Errorf("leaderAddress() Error getting leader address: %s", err)
 	}
@@ -198,8 +198,8 @@ func (c *Candidate) LeaderService() (net.IP, error) {
 	return ip, nil
 }
 
-// ForeignLeader will attempt to locate the leader's session entry in a datacenter of your choosing
-func (c *Candidate) ForeignLeader(dc string) (*api.SessionEntry, error) {
+// ForeignLeaderService will attempt to locate the leader's session entry in a datacenter of your choosing
+func (c *Candidate) ForeignLeaderService(dc string) (*api.SessionEntry, error) {
 	var kv *api.KVPair
 	var se *api.SessionEntry
 	var err error
@@ -235,7 +235,7 @@ func (c *Candidate) Wait() {
 
 	for {
 		// attempt to locate current leader
-		if _, err = c.Leader(); nil == err {
+		if _, err = c.LeaderService(); nil == err {
 			break
 		}
 

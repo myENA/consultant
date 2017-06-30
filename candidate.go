@@ -177,8 +177,13 @@ func (c *Candidate) LeaderService() (*api.SessionEntry, error) {
 
 // Return the leader, assuming its ID can be interpreted as an IP address
 func (c *Candidate) LeaderIP() (net.IP, error) {
+	return c.ForeignLeaderIP("")
 
-	leaderSession, err := c.LeaderService()
+}
+
+func (c *Candidate) ForeignLeaderIP(dc string) (net.IP, error) {
+
+	leaderSession, err := c.ForeignLeaderService(dc)
 	if nil != err {
 		return nil, fmt.Errorf("leaderAddress() Error getting leader address: %s", err)
 	}

@@ -52,36 +52,27 @@ type configuratorConfig struct {
 // Update() handles both the initial settings and updates when anything under the prefix changes
 // or when there are changes to any registered services. Changes are made to a private copy of 'c'
 // so thread safety is not an issue.
-func (c *configuratorConfig) Update(_ uint64, data interface{}) {
 
+func (c *configuratorConfig) UpdatePrefix(prefix string, _ uint64, kvps api.KVPairs) {
 	var err error
-
-	switch data.(type) {
-
-	case api.KVPairs:
-		kvps := data.(api.KVPairs)
-		c.t.Logf("Update received %d KV pairs", len(kvps))
-		for _, kvp := range kvps {
-			c.t.Logf("key=%s, val=%s", kvp.Key, kvp.Value)
-			switch kvp.Key {
-			case configuratorPrefix + configuratorKey1:
-				c.var1 = string(kvp.Value)
-			case configuratorPrefix + configuratorKey2:
-				c.var2, err = strconv.Atoi(string(kvp.Value))
-				if err != nil {
-					c.t.Logf("key %s is not an int", configuratorKey2)
-				}
+	c.t.Logf("Update received %d KV pairs", len(kvps))
+	for _, kvp := range kvps {
+		c.t.Logf("key=%s, val=%s", kvp.Key, kvp.Value)
+		switch kvp.Key {
+		case configuratorPrefix + configuratorKey1:
+			c.var1 = string(kvp.Value)
+		case configuratorPrefix + configuratorKey2:
+			c.var2, err = strconv.Atoi(string(kvp.Value))
+			if err != nil {
+				c.t.Logf("key %s is not an int", configuratorKey2)
 			}
 		}
-
-	case []*api.ServiceEntry:
-		c.service = data.([]*api.ServiceEntry)
-		c.t.Logf("Update: I have %d services in my list", len(c.service))
-
-	default:
-		c.t.Log("Typecast failed")
-		c.t.Fail()
 	}
+}
+
+func (c *configuratorConfig) UpdateService(name, tag string, passingOnly bool, _ uint64, services []*api.ServiceEntry) {
+	c.service = services
+	c.t.Logf("Update: I have %d services in my list", len(c.service))
 }
 
 // 1. Test that the consul KV config is transferred correctly
@@ -132,7 +123,7 @@ func (cs *ConfiguratorTestSuite) TestKVInit() {
 
 	// report what is actually in the kv prefix now:
 	kvps, _, err := cs.client.KV().List(configuratorPrefix, nil)
-	c.Update(0, kvps)
+	c.UpdatePrefix(configuratorPrefix, 0, kvps)
 	cs.T().Logf("config after manual update: %+v", c)
 
 	cm.Stop()

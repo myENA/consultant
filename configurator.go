@@ -2,6 +2,7 @@ package consultant
 
 import (
 	"fmt"
+	"github.com/hashicorp/consul/api"
 	"github.com/hashicorp/consul/watch"
 )
 
@@ -13,7 +14,8 @@ const (
 // A config object that implements this interface can be initialized from consul's
 // KV store or from it's service list and then automatically updated as these things change in consul.
 type Configurator interface {
-	Update(uint64, interface{})
+	UpdatePrefix(prefix string, index uint64, kvps api.KVPairs)
+	UpdateService(name, tag string, passingOnly bool, index uint64, services []*api.ServiceEntry)
 }
 
 type serviceDetails struct {
@@ -22,9 +24,55 @@ type serviceDetails struct {
 	passingOnly bool
 }
 
-type update struct {
-	index uint64
-	data  interface{}
+type update interface {
+	Index() uint64
+	Data() interface{}
+}
+
+type prefixUpdate struct {
+	index  uint64
+	data   interface{}
+	prefix string
+}
+
+func (u *prefixUpdate) Index() uint64 {
+	return u.index
+}
+
+func (u *prefixUpdate) Data() interface{} {
+	return u.data
+}
+
+func (u *prefixUpdate) Prefix() string {
+	return u.prefix
+}
+
+type serviceUpdate struct {
+	index       uint64
+	data        interface{}
+	name        string
+	tag         string
+	passingOnly bool
+}
+
+func (u *serviceUpdate) Index() uint64 {
+	return u.index
+}
+
+func (u *serviceUpdate) Data() interface{} {
+	return u.data
+}
+
+func (u *serviceUpdate) Name() string {
+	return u.name
+}
+
+func (u *serviceUpdate) Tag() string {
+	return u.tag
+}
+
+func (u *serviceUpdate) PassingOnly() bool {
+	return u.passingOnly
 }
 
 type ConfigChan chan Configurator
@@ -111,7 +159,27 @@ func (cm *ConfigManager) configHandler() {
 			// updates are processed here
 			case u := <-cm.updateChan:
 				//log.Println("updateChan")
-				cm.config.Update(u.index, u.data) // user-defined handling
+				switch u.(type) {
+				case *prefixUpdate:
+					up := u.(*prefixUpdate)
+					d := up.Data()
+					if d == nil {
+						cm.config.UpdatePrefix(up.Prefix(), up.Index(), nil)
+					} else {
+						cm.config.UpdatePrefix(up.Prefix(), up.Index(), d.(api.KVPairs))
+					}
+				case *serviceUpdate:
+					up := u.(*serviceUpdate)
+					d := up.Data()
+					if nil == d {
+						cm.config.UpdateService(up.Name(), up.Tag(), up.PassingOnly(), up.Index(), nil)
+					} else {
+						cm.config.UpdateService(up.Name(), up.Tag(), up.PassingOnly(), u.Index(), d.([]*api.ServiceEntry))
+					}
+
+				default: // TODO: Yell about it?
+					continue
+				}
 
 				// Serve subscribers once all updates have been processed
 				if len(cm.updateChan) == 0 {
@@ -146,11 +214,8 @@ func (cm *ConfigManager) updateAll() {
 }
 
 // transform a callback to a channel push
-func (cm *ConfigManager) updateHandler(index uint64, data interface{}) {
-	cm.updateChan <- update{
-		index: index,
-		data:  data,
-	}
+func (cm *ConfigManager) pushUpdate(u update) {
+	cm.updateChan <- u
 }
 
 // Subscribe returns a channel that will send updates about the config
@@ -208,7 +273,13 @@ func (cm *ConfigManager) AddKVPrefix(prefix string) error {
 		wp.Stop()
 	}
 
-	wp, err = cm.client.WatchKeyPrefix(prefix, true, cm.updateHandler)
+	wp, err = cm.client.WatchKeyPrefix(prefix, true, func(index uint64, data interface{}) {
+		cm.pushUpdate(&prefixUpdate{
+			index:  index,
+			data:   data,
+			prefix: prefix,
+		})
+	})
 	if err != nil {
 		return fmt.Errorf("Trouble building the watch plan: %s", err)
 	}
@@ -243,7 +314,15 @@ func (cm *ConfigManager) AddService(service, tag string, passingOnly bool) error
 		passingOnly: passingOnly,
 	}
 
-	details.plan, err = cm.client.WatchService(service, tag, passingOnly, true, cm.updateHandler)
+	details.plan, err = cm.client.WatchService(service, tag, passingOnly, true, func(index uint64, data interface{}) {
+		cm.pushUpdate(&serviceUpdate{
+			index:       index,
+			data:        data,
+			name:        service,
+			tag:         tag,
+			passingOnly: passingOnly,
+		})
+	})
 	if err != nil {
 		return fmt.Errorf("Trouble building the watch plan: %s", err)
 	}
@@ -266,7 +345,11 @@ func (cm *ConfigManager) updateKVPrefix(prefix string) error {
 	if err != nil {
 		return fmt.Errorf("Trouble getting the KVs under: %s", prefix)
 	}
-	cm.updateHandler(0, kvps)
+	cm.pushUpdate(&prefixUpdate{
+		index:  0,
+		data:   kvps,
+		prefix: prefix,
+	})
 
 	return nil
 }
@@ -277,7 +360,13 @@ func (cm *ConfigManager) updateService(service, tag string, passingOnly bool) er
 	if err != nil {
 		return fmt.Errorf("Trouble finding a passing service for %s (tag=%s)", service, tag)
 	}
-	cm.updateHandler(0, seList)
+	cm.pushUpdate(&serviceUpdate{
+		index:       0,
+		data:        seList,
+		name:        service,
+		tag:         tag,
+		passingOnly: passingOnly,
+	})
 
 	return nil
 }

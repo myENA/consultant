@@ -295,7 +295,9 @@ func (ms *ManagedService) Deregister() error {
 	ms.client.Agent().ServiceDeregister(ms.meta.ID())
 
 	// shut candidate down
-	ms.candidate.Resign()
+	if nil != ms.candidate {
+		ms.candidate.Resign()
+	}
 
 	ms.logPrint("Service has been deregistered from Consul")
 

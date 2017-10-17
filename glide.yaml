@@ -5,7 +5,7 @@ import:
   - package: github.com/renstrom/shortuuid
 
   - package: github.com/hashicorp/consul
-    version: ">=v0.8.2"
+    version: "v0.9.3"
 
   - package: github.com/stretchr/testify
     version: v1.1.*

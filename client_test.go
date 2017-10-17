@@ -137,3 +137,17 @@ func (cs *ClientTestSuite) TestGetServiceAddress_Empty() {
 	require.Nil(cs.T(), url, fmt.Sprintf("URL should be nil, saw %+v", url))
 	require.NotNil(cs.T(), err, "Did not receive expected error message")
 }
+
+func (cs *ClientTestSuite) TestEnsureKey() {
+	cs.server, cs.client = makeServerAndClient(cs.T(), nil)
+	_, err := cs.client.KV().Put(&api.KVPair{Key: "/foo/bar", Value: []byte("hello")}, nil)
+	require.Nil(cs.T(), err, fmt.Sprintf("Failed to write key %s : %s", "/foo/bar", err))
+
+	kvp, _, err := cs.client.EnsureKey("/foo/bar", nil)
+	require.Nil(cs.T(), err, fmt.Sprintf("Failed to read key %s : %s", "/foo/bar", err))
+	require.NotNil(cs.T(), kvp, fmt.Sprintf("Key: %s should not be nil, was nil", "/foo/bar"))
+
+	kvp, _, err = cs.client.EnsureKey("/foo/barbar", nil)
+	require.NotNil(cs.T(), err, fmt.Sprintf("Non-existent key %s should error, was nil", "/foo/barbar"))
+	require.Nil(cs.T(), kvp, fmt.Sprintf("Key: %s should be nil, was not nil", "/foo/barbar"))
+}

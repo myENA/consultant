@@ -94,6 +94,18 @@ func (c *Client) MyNode() string {
 	return c.myNode
 }
 
+// EnsureKey will fetch a key/value and ensure the key is present.  The value may still be empty.
+func (c *Client) EnsureKey(key string, options *api.QueryOptions) (*api.KVPair, *api.QueryMeta, error) {
+	kvp, qm, err := c.KV().Get(key, options)
+	if err != nil {
+		return nil, nil, err
+	}
+	if kvp != nil {
+		return kvp, qm, nil
+	}
+	return nil, nil, errors.New("key not found")
+}
+
 // PickService will attempt to locate any registered service with a name + tag combination and return one at random from
 // the resulting list
 func (c *Client) PickService(service, tag string, passingOnly bool, options *api.QueryOptions) (*api.ServiceEntry, *api.QueryMeta, error) {

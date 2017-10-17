@@ -20,7 +20,7 @@ install:
   - unzip -d $HOME/bin consul_1.0.0_linux_amd64.zip
   - export PATH="$HOME/bin:$PATH"
   - glide up
-  - go install github.com/hashicorp/consul/test/porter/cmd/porter
+  - go get github.com/hashicorp/consul/test/porter/cmd/porter
 
 before_script:
   - go vet ./

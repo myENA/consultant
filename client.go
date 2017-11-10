@@ -160,7 +160,6 @@ func (c *Client) SimpleServiceRegister(reg *SimpleServiceRegistration) (string, 
 	var address string                   // service host address
 	var interval string                  // check interval
 	var checkHTTP *api.AgentServiceCheck // http type check
-	var checkTCP *api.AgentServiceCheck  // tcp port check
 	var serviceName string               // service registration name
 
 	// Perform some basic service name cleanup and validation
@@ -211,6 +210,10 @@ func (c *Client) SimpleServiceRegister(reg *SimpleServiceRegistration) (string, 
 		EnableTagOverride: reg.EnableTagOverride,
 	}
 
+	if (reg.CheckPath != "" || reg.CheckTCP) && reg.Interval == "" {
+		return "", errors.New("you must specify Interval when registering a service with health check(s)")
+	}
+
 	// allow port override
 	checkPort := reg.CheckPort
 	if checkPort <= 0 {
@@ -246,15 +249,10 @@ func (c *Client) SimpleServiceRegister(reg *SimpleServiceRegistration) (string, 
 	// build tcp check if specified
 	if reg.CheckTCP {
 		// create tcp check definition
-		checkTCP = &api.AgentServiceCheck{
+		asr.Checks = append(asr.Checks, &api.AgentServiceCheck{
 			TCP:      fmt.Sprintf("%s:%d", address, checkPort),
 			Interval: interval,
-		}
-	}
-
-	// add tcp check if defined
-	if checkTCP != nil {
-		asr.Checks = append(asr.Checks, checkTCP)
+		})
 	}
 
 	// register and check error

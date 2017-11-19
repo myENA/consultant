@@ -1,0 +1,12 @@
+[[constraint]]
+  name = "github.com/hashicorp/consul"
+  version = ">=v0.8.2"
+
+[[constraint]]
+  name = "github.com/myENA/go-helpers"
+
+[[constraint]]
+  name = "github.com/renstrom/shortuuid"
+
+[[constraint]]
+  name = "github.com/stretchr/testify"

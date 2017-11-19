@@ -1,9 +1,9 @@
 package consultant
 
 import (
+	"errors"
 	"fmt"
 	"github.com/hashicorp/consul/api"
-	"github.com/pkg/errors"
 	"github.com/renstrom/shortuuid"
 	"math/rand"
 	"net"
@@ -18,13 +18,15 @@ const (
 	CandidateMaxWait      = 10                 // specifies the maximum wait after failed lock checks
 )
 
-var validCandidateIDTest = regexp.MustCompile(validCandidateIDRegex)
-var candidateIDErrMsg = fmt.Sprintf("Candidate ID must obey \"%s\"", validCandidateIDRegex)
+var (
+	validCandidateIDTest = regexp.MustCompile(validCandidateIDRegex)
+	candidateIDErrMsg    = fmt.Sprintf("Candidate ID must obey \"%s\"", validCandidateIDRegex)
+)
 
 type Candidate struct {
 	client *Client
 
-	lock *sync.RWMutex
+	mu *sync.Mutex
 
 	id           string
 	logSlug      string
@@ -64,7 +66,7 @@ func NewCandidate(client *Client, id, key, ttl string) (*Candidate, error) {
 	c := &Candidate{
 		client: client,
 		id:     id,
-		lock:   new(sync.RWMutex),
+		mu:     new(sync.Mutex),
 		wait:   new(sync.WaitGroup),
 		update: make(map[string]chan bool),
 	}
@@ -91,7 +93,7 @@ func NewCandidate(client *Client, id, key, ttl string) (*Candidate, error) {
 	// validate ttl
 	c.sessionTTL, err = time.ParseDuration(ttl)
 	if nil != err {
-		return nil, fmt.Errorf("Unable to parse provided TTL: %v", err)
+		return nil, fmt.Errorf("unable to parse provided TTL: %v", err)
 	}
 
 	// stay within the limits...
@@ -149,25 +151,25 @@ func (c *Candidate) SessionTTL() time.Duration {
 
 // Elected will return true if this candidate's session is "locking" the kv
 func (c *Candidate) Elected() bool {
-	c.lock.RLock()
-	defer c.lock.RUnlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	return c.leader
 }
 
 // Resign makes this candidate defunct.
 func (c *Candidate) Resign() {
-	c.lock.Lock()
+	c.mu.Lock()
 	c.leader = false
 	c.closing = true
-	c.lock.Unlock()
+	c.mu.Unlock()
 
 	if debug {
-		c.logPrintln("Resigning candidacy ... waiting for routines to exit ...")
+		c.logPrint("Resigning candidacy ... waiting for routines to exit ...")
 	}
 
 	c.wait.Wait()
 
-	c.logPrintln("Candidacy resigned.  We're no longer in the running")
+	c.logPrint("Candidacy resigned.  We're no longer in the running")
 }
 
 // LeaderService will attempt to locate the leader's session entry in your local agent's datacenter
@@ -221,7 +223,7 @@ func (c *Candidate) ForeignLeaderService(dc string) (*api.SessionEntry, error) {
 	}
 
 	if nil == kv {
-		return nil, fmt.Errorf("Unable to locate kv \"%s\" in datacenter \"%s\"", c.kv.Key, dc)
+		return nil, fmt.Errorf("kv \"%s\" not found in datacenter \"%s\"", c.kv.Key, dc)
 	}
 
 	if "" != kv.Session {
@@ -231,7 +233,7 @@ func (c *Candidate) ForeignLeaderService(dc string) (*api.SessionEntry, error) {
 		}
 	}
 
-	return nil, fmt.Errorf("No session associated with kv \"%s\" in datacenter \"%s\"", c.kv.Key, dc)
+	return nil, fmt.Errorf("kv \"%s\" has no session in datacenter \"%s\"", c.kv.Key, dc)
 }
 
 // Wait will block until a leader has been elected, regardless of candidate.
@@ -252,8 +254,8 @@ func (c *Candidate) Wait() {
 // Register returns a channel for updates in leader status -
 // only one message per candidate instance will be sent
 func (c *Candidate) RegisterUpdate(id string) (string, chan bool) {
-	c.lock.Lock()
-	defer c.lock.Unlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if id == "" {
 		id = randToken()
 	}
@@ -268,8 +270,8 @@ func (c *Candidate) RegisterUpdate(id string) (string, chan bool) {
 }
 
 func (c *Candidate) DeregisterUpdate(id string) {
-	c.lock.Lock()
-	defer c.lock.Unlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	_, ok := c.update[id]
 	if ok {
 		delete(c.update, id)
@@ -278,15 +280,15 @@ func (c *Candidate) DeregisterUpdate(id string) {
 
 // DeregisterUpdates will empty out the map of update channels
 func (c *Candidate) DeregisterUpdates() {
-	c.lock.Lock()
-	defer c.lock.Unlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.update = make(map[string]chan bool)
 }
 
 // updateLeader is a thread safe update of leader status
 func (c *Candidate) updateLeader(v bool) {
-	c.lock.Lock()
-	defer c.lock.Unlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
 	// Send out updates if leader status changed
 	if v != c.leader {
@@ -352,7 +354,7 @@ func (c *Candidate) lockRunner() {
 		// check closing
 		if c.closing {
 			if debug {
-				c.logPrintln("lockRunner() exiting")
+				c.logPrint("lockRunner() exiting")
 			}
 			return
 		}
@@ -375,7 +377,7 @@ func (c *Candidate) lockRunner() {
 				// check error
 				if err != nil {
 					// failed to get session - log error
-					c.logPrintf("lockRuner() error fetching session: %s", err)
+					c.logPrintf("lockRunner() error fetching session: %s", err)
 					// renew/rebuild session
 					c.sessionValidate()
 					// wait for next iteration
@@ -398,7 +400,7 @@ func (c *Candidate) lockRunner() {
 		// check for nil key
 		if kv == nil {
 			if debug {
-				c.logPrintln("lockRunner() nil lock or empty session detected - attempting to get lock ...")
+				c.logPrint("lockRunner() nil lock or empty session detected - attempting to get lock ...")
 			}
 			// attempt to get the lock and check for error
 			if ok, _, err = c.client.KV().Acquire(c.kv, nil); err != nil {
@@ -437,7 +439,7 @@ func (c *Candidate) sessionValidate() {
 		// check session
 		if se == nil {
 			// log error
-			c.logPrintln("sessionValidate() failed to renew session: not found")
+			c.logPrint("sessionValidate() failed to renew session: not found")
 		}
 		// recreate the session
 		if sid, _, err = c.client.Session().Create(c.sessionEntry, nil); err != nil {
@@ -445,10 +447,10 @@ func (c *Candidate) sessionValidate() {
 			return
 		}
 		// update session and lock pair
-		c.lock.Lock()
+		c.mu.Lock()
 		c.sessionID = sid
 		c.kv.Session = sid
-		c.lock.Unlock()
+		c.mu.Unlock()
 		// log session rebuild
 		if debug {
 			c.logPrintf("sessionValidate() registered new session %s", sid)
@@ -484,7 +486,7 @@ func (c *Candidate) sessionKeepAlive() {
 		// check closing
 		if c.closing {
 			if debug {
-				c.logPrintln("sessionKeepAlive() exiting")
+				c.logPrint("sessionKeepAlive() exiting")
 			}
 			// destroy session
 			if _, err = c.client.Session().Destroy(c.sessionID, nil); err != nil {
@@ -502,7 +504,7 @@ func (c *Candidate) sessionKeepAlive() {
 
 	// shouldn't ever happen
 	if !c.closing {
-		c.logPrintln("sessionKeepAlive() exiting unexpectedly")
+		c.logPrint("sessionKeepAlive() exiting unexpectedly")
 	}
 }
 
@@ -512,34 +514,6 @@ func (c *Candidate) logPrintf(format string, v ...interface{}) {
 
 func (c *Candidate) logPrint(v ...interface{}) {
 	log.Print(append(c.logSlugSlice, v...)...)
-}
-
-func (c *Candidate) logPrintln(v ...interface{}) {
-	log.Println(append(c.logSlugSlice, v...)...)
-}
-
-func (c *Candidate) logFatalf(format string, v ...interface{}) {
-	log.Fatalf(fmt.Sprintf("%s %s", c.logSlug, format), v...)
-}
-
-func (c *Candidate) logFatal(v ...interface{}) {
-	log.Fatal(append(c.logSlugSlice, v...)...)
-}
-
-func (c *Candidate) logFatalln(v ...interface{}) {
-	log.Fatalln(append(c.logSlugSlice, v...)...)
-}
-
-func (c *Candidate) logPanicf(format string, v ...interface{}) {
-	log.Panicf(fmt.Sprintf("%s %s", c.logSlug, format), v...)
-}
-
-func (c *Candidate) logPanic(v ...interface{}) {
-	log.Panic(append(c.logSlugSlice, v...)...)
-}
-
-func (c *Candidate) logPanicln(v ...interface{}) {
-	log.Panicln(append(c.logSlugSlice, v...)...)
 }
 
 type CandidateSessionParts struct {
@@ -554,7 +528,7 @@ func ParseCandidateSessionName(name string) (*CandidateSessionParts, error) {
 	// fmt.Sprintf("leader-%s-%s-%s", id, c.client.MyNode(), shortuuid.New()),
 	split := strings.Split(name, "-")
 	if 4 != len(split) {
-		return nil, fmt.Errorf("Expected four parts in session name \"%s\", saw only \"%d\".", name, len(split))
+		return nil, fmt.Errorf("expected four parts in session name \"%s\", saw only \"%d\"", name, len(split))
 	}
 
 	return &CandidateSessionParts{

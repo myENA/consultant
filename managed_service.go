@@ -52,11 +52,9 @@ func (m *ManagedServiceMeta) RegisteredTags() []string {
 // via the consul api / ui, this object will be defunct.
 type ManagedService struct {
 	client *Client
+	mu     *sync.Mutex
 
-	lock sync.RWMutex
-
-	meta *ManagedServiceMeta
-
+	meta           *ManagedServiceMeta
 	candidate      *Candidate
 	siblingLocator *SiblingLocator
 
@@ -67,6 +65,7 @@ type ManagedService struct {
 func NewManagedService(client *Client, serviceID, serviceName string, registeredTags []string) (*ManagedService, error) {
 	return &ManagedService{
 		client: client,
+		mu:     new(sync.Mutex),
 		meta: &ManagedServiceMeta{
 			id:                   serviceID,
 			name:                 serviceName,
@@ -121,8 +120,7 @@ func (ms *ManagedService) NewSiblingLocator(allowStale bool) (*SiblingLocator, e
 		ms.siblingLocator.RemoveCallbacks()
 	}
 
-	ms.siblingLocator, err = NewSiblingLocator(SiblingLocatorConfig{
-		Client:      ms.client,
+	ms.siblingLocator, err = NewSiblingLocator(ms.client, SiblingLocatorConfig{
 		ServiceID:   ms.meta.ID(),
 		NodeName:    ms.client.MyNode(),
 		ServiceName: ms.meta.Name(),
@@ -149,8 +147,8 @@ func (ms *ManagedService) SiblingLocator() *SiblingLocator {
 // - Input is "uniqued" before processing occurs.
 // - If delta is 0, this is a no-op
 func (ms *ManagedService) AddTags(tags ...string) error {
-	ms.lock.RLock()
-	defer ms.lock.RUnlock()
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
 
 	// unique-ify it
 	tags = helpers.UniqueStringSlice(tags)
@@ -172,7 +170,7 @@ func (ms *ManagedService) AddTags(tags ...string) error {
 	// if we couldn't, something bad has happened...
 	if currentDefs == nil || len(currentDefs) == 0 {
 		return fmt.Errorf(
-			"Unable to locate current Service definition for \"%s\" with tag \"%s\" in Catalog",
+			"service \"%s\" with tag \"%s\" not found in Catalog",
 			serviceName,
 			serviceID)
 	}
@@ -215,8 +213,8 @@ func (ms *ManagedService) AddTags(tags ...string) error {
 // - Input is "uniqued" before processing occurs.
 // - If delta is 0, this is a no-op.
 func (ms *ManagedService) RemoveTags(tags ...string) error {
-	ms.lock.RLock()
-	defer ms.lock.RUnlock()
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
 
 	// unique-ify stuff
 	tags = helpers.UniqueStringSlice(tags)
@@ -251,7 +249,7 @@ func (ms *ManagedService) RemoveTags(tags ...string) error {
 	// if we couldn't, something bad has happened...
 	if currentDefs == nil || len(currentDefs) == 0 {
 		return fmt.Errorf(
-			"Unable to locate current Service definition for \"%s\" with tag \"%s\" in Catalog",
+			"current Service \"%s\" with tag \"%s\" not found in Catalog",
 			serviceName,
 			serviceID)
 	}
@@ -288,8 +286,8 @@ func (ms *ManagedService) RemoveTags(tags ...string) error {
 
 // Deregister will remove this service from the service catalog in consul
 func (ms *ManagedService) Deregister() error {
-	ms.lock.Lock()
-	defer ms.lock.Unlock()
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
 
 	// remove our service entry from consul
 	ms.client.Agent().ServiceDeregister(ms.meta.ID())
@@ -310,32 +308,4 @@ func (ms *ManagedService) logPrintf(format string, v ...interface{}) {
 
 func (ms *ManagedService) logPrint(v ...interface{}) {
 	log.Print(append(ms.logSlugSlice, v...)...)
-}
-
-func (ms *ManagedService) logPrintln(v ...interface{}) {
-	log.Println(append(ms.logSlugSlice, v...)...)
-}
-
-func (ms *ManagedService) logFatalf(format string, v ...interface{}) {
-	log.Fatalf(fmt.Sprintf("%s %s", ms.logSlug, format), v...)
-}
-
-func (ms *ManagedService) logFatal(v ...interface{}) {
-	log.Fatal(append(ms.logSlugSlice, v...)...)
-}
-
-func (ms *ManagedService) logFatalln(v ...interface{}) {
-	log.Fatalln(append(ms.logSlugSlice, v...)...)
-}
-
-func (ms *ManagedService) logPanicf(format string, v ...interface{}) {
-	log.Panicf(fmt.Sprintf("%s %s", ms.logSlug, format), v...)
-}
-
-func (ms *ManagedService) logPanic(v ...interface{}) {
-	log.Panic(append(ms.logSlugSlice, v...)...)
-}
-
-func (ms *ManagedService) logPanicln(v ...interface{}) {
-	log.Panicln(append(ms.logSlugSlice, v...)...)
 }

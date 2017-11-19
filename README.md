@@ -36,14 +36,6 @@ Look [here](./candidate.go#L53) for some basic documentation.
 - Helper methods hanging off of our [Client](./client.go) struct that will fill in some values based on the client's
   own definition
 
-## Configurator
-[Configurator](./configurator.go) provides a way to initialize a config struct from a consul KV prefix
-or service status. A ConfigManager keeps a private copy of the config and handles watchers to update the
-config as the consul state changes. The ConfigManager offers access to the updated configuration.
-
-The ConfigManager provides dire read access to the configuration object, or one can subscribe to a channel
-that will be fed updates as they happen.
-
 ## TODO:
 - More tests
 - More docs

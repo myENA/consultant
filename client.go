@@ -41,7 +41,7 @@ func NewClient(conf *api.Config) (*Client, error) {
 
 	client.Client, err = api.NewClient(conf)
 	if err != nil {
-		return nil, fmt.Errorf("Unable to create Consul API Client: %s", err)
+		return nil, fmt.Errorf("unable to create Consul API Client: %s", err)
 	}
 
 	if client.myHost, err = os.Hostname(); err != nil {
@@ -53,7 +53,7 @@ func NewClient(conf *api.Config) (*Client, error) {
 	}
 
 	if client.myNode, err = client.Agent().NodeName(); err != nil {
-		return nil, fmt.Errorf("Unable to determine local Consul node name: %s", err)
+		return nil, fmt.Errorf("unable to determine local Consul node name: %s", err)
 	}
 
 	return client, nil
@@ -130,7 +130,7 @@ func (c *Client) BuildServiceURL(protocol, serviceName, tag string, passingOnly 
 		return nil, err
 	}
 	if nil == svc {
-		return nil, fmt.Errorf("No services registered as \"%s\" with tag \"%s\" found.", serviceName, tag)
+		return nil, fmt.Errorf("no services registered as \"%s\" with tag \"%s\" found", serviceName, tag)
 	}
 
 	return url.Parse(fmt.Sprintf("%s://%s:%d", protocol, svc.Service.Address, svc.Service.Port))
@@ -168,7 +168,7 @@ func (c *Client) SimpleServiceRegister(reg *SimpleServiceRegistration) (string, 
 		return "", errors.New("\"Name\" cannot be blank")
 	}
 	if strings.Contains(serviceName, " ") {
-		return "", fmt.Errorf("Specified service name \"%s\" is invalid, service names cannot contain spaces", serviceName)
+		return "", fmt.Errorf("name \"%s\" is invalid, service names cannot contain spaces", serviceName)
 	}
 
 	// Come on, guys...valid ports plz...
@@ -210,10 +210,6 @@ func (c *Client) SimpleServiceRegister(reg *SimpleServiceRegistration) (string, 
 		EnableTagOverride: reg.EnableTagOverride,
 	}
 
-	if (reg.CheckPath != "" || reg.CheckTCP) && reg.Interval == "" {
-		return "", errors.New("you must specify Interval when registering a service with health check(s)")
-	}
-
 	// allow port override
 	checkPort := reg.CheckPort
 	if checkPort <= 0 {
@@ -239,7 +235,7 @@ func (c *Client) SimpleServiceRegister(reg *SimpleServiceRegistration) (string, 
 		// build check
 		checkHTTP = &api.AgentServiceCheck{
 			HTTP:     checkURL.String(),
-			Interval: reg.Interval,
+			Interval: interval,
 		}
 
 		// add http check
@@ -270,32 +266,4 @@ func (c *Client) logPrintf(format string, v ...interface{}) {
 
 func (c *Client) logPrint(v ...interface{}) {
 	log.Print(append(c.logSlugSlice, v...)...)
-}
-
-func (c *Client) logPrintln(v ...interface{}) {
-	log.Println(append(c.logSlugSlice, v...)...)
-}
-
-func (c *Client) logFatalf(format string, v ...interface{}) {
-	log.Fatalf(fmt.Sprintf("%s %s", c.logSlug, format), v...)
-}
-
-func (c *Client) logFatal(v ...interface{}) {
-	log.Fatal(append(c.logSlugSlice, v...)...)
-}
-
-func (c *Client) logFatalln(v ...interface{}) {
-	log.Fatalln(append(c.logSlugSlice, v...)...)
-}
-
-func (c *Client) logPanicf(format string, v ...interface{}) {
-	log.Panicf(fmt.Sprintf("%s %s", c.logSlug, format), v...)
-}
-
-func (c *Client) logPanic(v ...interface{}) {
-	log.Panic(append(c.logSlugSlice, v...)...)
-}
-
-func (c *Client) logPanicln(v ...interface{}) {
-	log.Panicln(append(c.logSlugSlice, v...)...)
 }

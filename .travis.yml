@@ -5,10 +5,6 @@ dist: trusty
 go:
   - 1.9.x
 
-branches:
-  only:
-    - master
-
 sudo: false
 
 install:

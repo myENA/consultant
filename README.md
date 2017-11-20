@@ -8,8 +8,8 @@ Helpful wrappers around Consul API client
 Our Consultant [Client](./client.go#L14) is a thin wrapper around the
 [Consul API Client](https://github.com/hashicorp/consul/blob/v0.8.4/api/api.go#L356).  It provides
 
-- Simplified Service Retrieval ([see here](./client.go#L51))
-- Simplified Service Registration ([see here](./client.go#L83))
+- Simplified Service Retrieval ([see here](./client.go#L111))
+- Simplified Service Registration ([see here](./client.go#L140))
 
 ## Sibling Services Locator
 If you run in an environment where you are running several instances of the same service, it can be useful sometimes

@@ -11,9 +11,9 @@ install:
   - wget "https://releases.hashicorp.com/consul/1.0.1/consul_1.0.1_linux_amd64.zip"
   - mkdir -p $HOME/bin
   - unzip -d $HOME/bin consul_1.0.1_linux_amd64.zip
-  - export PATH="$HOME/bin:$PATH"
-  - go get github.com/golang/dep
-  - dep ensure -v
+  - export PATH=$HOME/bin:$PATH
+  - go get -u github.com/golang/dep/cmd/dep
+  - $GOPATH/bin/dep ensure -v
 
 before_script:
   - go vet ./

@@ -22,7 +22,7 @@ type SiblingCallback func(index uint64, siblings Siblings)
 type Sibling struct {
 	Node    api.Node
 	Service api.AgentService
-	Checks  []api.HealthCheck
+	Checks  api.HealthChecks
 }
 
 // Siblings is provided to any callbacks
@@ -349,9 +349,10 @@ func buildSibling(svc *api.ServiceEntry) Sibling {
 	copy(tmp1, service.Tags)
 	service.Tags = tmp1
 
-	checks := make([]api.HealthCheck, len(svc.Checks))
+	checks := make(api.HealthChecks, len(svc.Checks))
 	for i, c := range svc.Checks {
-		checks[i] = *c
+		checks[i] = new(api.HealthCheck)
+		*checks[i] = *c
 	}
 
 	return Sibling{

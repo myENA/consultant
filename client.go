@@ -8,6 +8,7 @@ import (
 	"math/rand"
 	"net/url"
 	"os"
+	"sort"
 	"strings"
 )
 
@@ -24,6 +25,22 @@ type Client struct {
 	logSlug      string
 	logSlugSlice []interface{}
 }
+
+type TagsOption int
+
+const (
+	// TagsAll means all tags passed must be present, though other tags are okay
+	TagsAll TagsOption = iota
+
+	// TagsAny means any service having at least one of the tags are returned
+	TagsAny
+
+	// TagsExactly means that the service tags must match those passed exactly
+	TagsExactly
+
+	// TagsExclude means skip services that match any tags passed
+	TagsExclude
+)
 
 // NewClient constructs a new consultant client.
 func NewClient(conf *api.Config) (*Client, error) {
@@ -120,6 +137,108 @@ func (c *Client) PickService(service, tag string, passingOnly bool, options *api
 	}
 
 	return nil, qm, nil
+}
+
+// ServiceByTags - this wraps the consul Health().Service() call, adding the tagsOption parameter and accepting a
+// slice of tags.  tagsOption should be one of the following:
+//
+//     TagsAll - this will return only services that have all the specified tags present.
+//     TagsExactly - like TagsAll, but will return only services that match exactly the tags specified, no more.
+//     TagsAny - this will return services that match any of the tags specified.
+//     TagsExclude - this will return services don't have any of the tags specified.
+func (c *Client) ServiceByTags(service string, tags []string, tagsOption TagsOption, passingOnly bool, options *api.QueryOptions) ([]*api.ServiceEntry, *api.QueryMeta, error) {
+	var (
+		retv, tmpv []*api.ServiceEntry
+		qm         *api.QueryMeta
+		err        error
+	)
+	var tag string
+
+	// Grab the initial payload
+	switch tagsOption {
+	case TagsAll, TagsExactly:
+		if len(tags) > 0 {
+			tag = tags[0]
+		}
+		fallthrough
+	case TagsAny, TagsExclude:
+		tmpv, qm, err = c.Health().Service(service, tag, passingOnly, options)
+	default:
+		return nil, nil, fmt.Errorf("invalid value for tagsOption: %d", tagsOption)
+	}
+
+	if err != nil {
+		return retv, qm, err
+	}
+	tagsMap := make(map[string]bool)
+	for _, t := range tags {
+		tagsMap[t] = true
+	}
+
+	// Filter payload.
+OUTER:
+	for _, se := range tmpv {
+		switch tagsOption {
+		case TagsExactly:
+			if !strSlicesEqual(tags, se.Service.Tags) {
+				continue OUTER
+			}
+		case TagsAll:
+			if len(se.Service.Tags) < len(tags) {
+				continue OUTER
+			}
+			// Consul allows duplicate tags, so this workaround.  Boo.
+			mc := 0
+			dedupeMap := make(map[string]bool)
+			for _, t := range se.Service.Tags {
+				if tagsMap[t] && !dedupeMap[t] {
+					mc++
+					dedupeMap[t] = true
+				}
+			}
+			if mc != len(tagsMap) {
+				continue OUTER
+			}
+		case TagsAny, TagsExclude:
+			found := false
+			for _, t := range se.Service.Tags {
+				if tagsMap[t] {
+					found = true
+					break
+				}
+			}
+			if tagsOption == TagsAny {
+				if !found && len(tags) > 0 {
+					continue OUTER
+				}
+			} else if found { // TagsExclude
+				continue OUTER
+			}
+
+		}
+		retv = append(retv, se)
+	}
+
+	return retv, qm, err
+}
+
+// determines if a and b contain the same elements (order doesn't matter)
+func strSlicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	ac := make([]string, len(a))
+	bc := make([]string, len(b))
+	copy(ac, a)
+	copy(bc, b)
+	sort.Strings(ac)
+	sort.Strings(bc)
+	for i, v := range ac {
+		if bc[i] != v {
+			return false
+		}
+	}
+	return true
 }
 
 // BuildServiceURL will attempt to locate a healthy instance of the specified service name + tag combination, then

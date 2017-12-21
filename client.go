@@ -152,7 +152,8 @@ func (c *Client) ServiceByTags(service string, tags []string, tagsOption TagsOpt
 		qm         *api.QueryMeta
 		err        error
 	)
-	var tag string
+
+	tag := ""
 
 	// Grab the initial payload
 	switch tagsOption {
@@ -170,9 +171,13 @@ func (c *Client) ServiceByTags(service string, tags []string, tagsOption TagsOpt
 	if err != nil {
 		return retv, qm, err
 	}
-	tagsMap := make(map[string]bool)
-	for _, t := range tags {
-		tagsMap[t] = true
+
+	var tagsMap map[string]bool
+	if tagsOption != TagsExactly {
+		tagsMap = make(map[string]bool)
+		for _, t := range tags {
+			tagsMap[t] = true
+		}
 	}
 
 	// Filter payload.

@@ -179,6 +179,17 @@ func (cs *ClientTestSuite) TestServiceTagSelection() {
 	require.Contains(cs.T(), sids, sid2, "TagsAny query failed, did not contain %s", sid2)
 	require.Contains(cs.T(), sids, sid3, "TagsAny query failed, did not contain %s", sid3)
 
+	svcs, _, err = cs.client.ServiceByTags(clientSimpleServiceRegistrationName, []string{"Three"}, consultant.TagsExclude, false, nil)
+	require.Nil(cs.T(), err, "error fetching services")
+
+	sids = nil
+	for _, svc := range svcs {
+		sids = append(sids, svc.Service.ID)
+	}
+	require.Contains(cs.T(), sids, sid2, "TagsExclude query failed, did not contain %s", sid2)
+	require.NotContains(cs.T(), sids, sid1, "TagsExclude query failed, contained %s", sid1)
+	require.NotContains(cs.T(), sids, sid3, "TagsExclude query failed, contained %s", sid3)
+
 }
 
 func (cs *ClientTestSuite) TestGetServiceAddress() {

@@ -8,6 +8,7 @@ import (
 	"math/rand"
 	"net/url"
 	"os"
+	"sort"
 	"strings"
 )
 
@@ -36,6 +37,9 @@ const (
 
 	// TagsExactly means that the service tags must match those passed exactly
 	TagsExactly
+
+	// TagsExclude means skip services that match any tags passed
+	TagsExclude
 )
 
 // NewClient constructs a new consultant client.
@@ -141,6 +145,7 @@ func (c *Client) PickService(service, tag string, passingOnly bool, options *api
 //     TagsAll - this will return only services that have all the specified tags present.
 //     TagsExactly - like TagsAll, but will return only services that match exactly the tags specified, no more.
 //     TagsAny - this will return services that match any of the tags specified.
+//     TagsExclude - this will return services don't have any of the tags specified.
 func (c *Client) ServiceByTags(service string, tags []string, tagsOption TagsOption, passingOnly bool, options *api.QueryOptions) ([]*api.ServiceEntry, *api.QueryMeta, error) {
 	var (
 		retv, tmpv []*api.ServiceEntry
@@ -156,7 +161,7 @@ func (c *Client) ServiceByTags(service string, tags []string, tagsOption TagsOpt
 			tag = tags[0]
 		}
 		fallthrough
-	case TagsAny:
+	case TagsAny, TagsExclude:
 		tmpv, qm, err = c.Health().Service(service, tag, passingOnly, options)
 	default:
 		return nil, nil, fmt.Errorf("invalid value for tagsOption: %d", tagsOption)
@@ -175,10 +180,9 @@ OUTER:
 	for _, se := range tmpv {
 		switch tagsOption {
 		case TagsExactly:
-			if len(tags) != len(se.Service.Tags) {
+			if !strSlicesEqual(tags, se.Service.Tags) {
 				continue OUTER
 			}
-			fallthrough
 		case TagsAll:
 			if len(se.Service.Tags) < len(tags) {
 				continue OUTER
@@ -195,7 +199,7 @@ OUTER:
 			if mc != len(tagsMap) {
 				continue OUTER
 			}
-		case TagsAny:
+		case TagsAny, TagsExclude:
 			found := false
 			for _, t := range se.Service.Tags {
 				if tagsMap[t] {
@@ -203,14 +207,38 @@ OUTER:
 					break
 				}
 			}
-			if !found && len(tags) > 0 {
+			if tagsOption == TagsAny {
+				if !found && len(tags) > 0 {
+					continue OUTER
+				}
+			} else if found { // TagsExclude
 				continue OUTER
 			}
+
 		}
 		retv = append(retv, se)
 	}
 
 	return retv, qm, err
+}
+
+// determines if a and b contain the same elements (order doesn't matter)
+func strSlicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	ac := make([]string, len(a))
+	bc := make([]string, len(b))
+	copy(ac, a)
+	copy(bc, b)
+	sort.Strings(ac)
+	sort.Strings(bc)
+	for i, v := range ac {
+		if bc[i] != v {
+			return false
+		}
+	}
+	return true
 }
 
 // BuildServiceURL will attempt to locate a healthy instance of the specified service name + tag combination, then

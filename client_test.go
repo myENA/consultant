@@ -104,6 +104,83 @@ func (cs *ClientTestSuite) TestSimpleServiceRegister() {
 	require.Contains(cs.T(), sidList, sid, fmt.Sprintf("Expected to see service id \"%s\" in list \"%+v\"", sid, sidList))
 }
 
+func (cs *ClientTestSuite) TestServiceTagSelection() {
+	cs.server, cs.client = makeServerAndClient(cs.T(), nil)
+
+	reg1 := &consultant.SimpleServiceRegistration{
+		Name:     clientSimpleServiceRegistrationName,
+		Port:     clientSimpleServiceRegistrationPort,
+		Tags:     []string{"One", "Two", "Three"},
+		RandomID: true,
+	}
+
+	sid1, err := cs.client.SimpleServiceRegister(reg1)
+	require.Nil(cs.T(), err, "Unable to register service reg1")
+
+	reg2 := &consultant.SimpleServiceRegistration{
+		Name:     clientSimpleServiceRegistrationName,
+		Port:     clientSimpleServiceRegistrationPort,
+		Tags:     []string{"One", "Two"},
+		RandomID: true,
+	}
+	sid2, err := cs.client.SimpleServiceRegister(reg2)
+	require.Nil(cs.T(), err, "Unable to register service reg2")
+
+	reg3 := &consultant.SimpleServiceRegistration{
+		Name:     clientSimpleServiceRegistrationName,
+		Port:     clientSimpleServiceRegistrationPort,
+		Tags:     []string{"One", "Two", "Three", "Three"},
+		RandomID: true,
+	}
+	sid3, err := cs.client.SimpleServiceRegister(reg3)
+	require.Nil(cs.T(), err, "Unable to register service reg3")
+
+	svcs, _, err := cs.client.ServiceByTags(clientSimpleServiceRegistrationName, []string{"One", "Two", "Three"}, consultant.TagsAll, false, nil)
+	require.Nil(cs.T(), err, "error fetching services")
+
+	var sids []string
+	for _, svc := range svcs {
+		sids = append(sids, svc.Service.ID)
+	}
+	require.Contains(cs.T(), sids, sid1, "TagsAll query failed, did not contain", sid1)
+	require.Contains(cs.T(), sids, sid3, "TagsAll query failed, did not contain", sid3)
+	require.NotContains(cs.T(), sids, sid2, "TagsAll query failed, contained", sid2)
+
+	svcs, _, err = cs.client.ServiceByTags(clientSimpleServiceRegistrationName, []string{"One", "Two", "Three", sid1}, consultant.TagsExactly, false, nil)
+	require.Nil(cs.T(), err, "error fetching services")
+
+	sids = nil
+	for _, svc := range svcs {
+		sids = append(sids, svc.Service.ID)
+	}
+	require.Contains(cs.T(), sids, sid1, "TagsExactly query failed first test, did not contain %s", sid1)
+	require.NotContains(cs.T(), sids, sid2, "TagsExactly query failed first test, contained %s", sid2)
+	require.NotContains(cs.T(), sids, sid3, "TagsExactly query failed first test, contained %s", sid3)
+
+	svcs, _, err = cs.client.ServiceByTags(clientSimpleServiceRegistrationName, []string{"One", "Two", "Three", "Three", sid3}, consultant.TagsExactly, false, nil)
+	require.Nil(cs.T(), err, "error fetching services")
+
+	sids = nil
+	for _, svc := range svcs {
+		sids = append(sids, svc.Service.ID)
+	}
+	require.Contains(cs.T(), sids, sid3, "TagsExactly query failed second test (dupes), did not contain %s", sid3)
+	require.NotContains(cs.T(), sids, sid1, "TagsExactly query failed second test (dupes), contained %s", sid1)
+	require.NotContains(cs.T(), sids, sid2, "TagsExactly query failed second test (dupes), contained %s", sid2)
+
+	svcs, _, err = cs.client.ServiceByTags(clientSimpleServiceRegistrationName, []string{"One", "Two", "Three"}, consultant.TagsAny, false, nil)
+	require.Nil(cs.T(), err, "error fetching services")
+
+	sids = nil
+	for _, svc := range svcs {
+		sids = append(sids, svc.Service.ID)
+	}
+	require.Contains(cs.T(), sids, sid1, "TagsAny query failed, did not contain %s", sid1)
+	require.Contains(cs.T(), sids, sid2, "TagsAny query failed, did not contain %s", sid2)
+	require.Contains(cs.T(), sids, sid3, "TagsAny query failed, did not contain %s", sid3)
+
+}
+
 func (cs *ClientTestSuite) TestGetServiceAddress() {
 	cs.server, cs.client = makeServerAndClient(cs.T(), nil)
 

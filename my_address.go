@@ -74,5 +74,5 @@ func GetMyAddress() (string, error) {
 		}
 	}
 
-	return "", errors.New("No valid interfaces found")
+	return "", errors.New("no valid interfaces found")
 }

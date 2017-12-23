@@ -26,7 +26,7 @@ var (
 type Candidate struct {
 	client *Client
 
-	mu *sync.Mutex
+	mu sync.Mutex
 
 	id           string
 	logSlug      string
@@ -66,13 +66,12 @@ func NewCandidate(client *Client, id, key, ttl string) (*Candidate, error) {
 	c := &Candidate{
 		client: client,
 		id:     id,
-		mu:     new(sync.Mutex),
 		wait:   new(sync.WaitGroup),
 		update: make(map[string]chan bool),
 	}
 
 	// create some slugs for log output
-	c.logSlug = fmt.Sprintf("[candidate-%s]", id)
+	c.logSlug = fmt.Sprintf("[candidate-%s] ", id)
 	c.logSlugSlice = []interface{}{c.logSlug}
 
 	// begin session entry construction
@@ -136,29 +135,47 @@ func NewCandidate(client *Client, id, key, ttl string) (*Candidate, error) {
 
 // ID returns the unique identifier given at construct
 func (c *Candidate) ID() string {
-	return c.id
+	c.mu.Lock()
+	id := c.id
+	c.mu.Unlock()
+	return id
 }
 
 // SessionID is the name of this candidate's session
 func (c *Candidate) SessionID() string {
-	return c.sessionID
+	c.mu.Lock()
+	sid := c.sessionID
+	c.mu.Unlock()
+	return sid
 }
 
 // SessionTTL returns the parsed TTL
 func (c *Candidate) SessionTTL() time.Duration {
-	return c.sessionTTL
+	c.mu.Lock()
+	ttl := c.sessionTTL
+	c.mu.Unlock()
+	return ttl
 }
 
 // Elected will return true if this candidate's session is "locking" the kv
 func (c *Candidate) Elected() bool {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.leader
+	el := c.leader
+	c.mu.Unlock()
+	return el
 }
 
 // Resign makes this candidate defunct.
 func (c *Candidate) Resign() {
 	c.mu.Lock()
+	if !c.leader && c.closing {
+		if debug {
+			c.logPrint("Resign called while not in election pool...")
+		}
+		c.mu.Unlock()
+		return
+	}
+
 	c.leader = false
 	c.closing = true
 	c.mu.Unlock()
@@ -183,8 +200,8 @@ func (c *Candidate) LeaderIP() (net.IP, error) {
 
 }
 
+// Return the leader of a foreign datacenter, assuming its ID can be interpreted as an IP address
 func (c *Candidate) ForeignLeaderIP(dc string) (net.IP, error) {
-
 	leaderSession, err := c.ForeignLeaderService(dc)
 	if nil != err {
 		return nil, fmt.Errorf("leaderAddress() Error getting leader address: %s", err)
@@ -255,40 +272,37 @@ func (c *Candidate) Wait() {
 // only one message per candidate instance will be sent
 func (c *Candidate) RegisterUpdate(id string) (string, chan bool) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	if id == "" {
 		id = randToken()
 	}
 	cup, ok := c.update[id]
-	if ok {
-		return id, cup
-	} else {
+	if !ok {
 		cup = make(chan bool, 1)
 		c.update[id] = cup
-		return id, cup
 	}
+	c.mu.Unlock()
+	return id, cup
 }
 
 func (c *Candidate) DeregisterUpdate(id string) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	_, ok := c.update[id]
 	if ok {
 		delete(c.update, id)
 	}
+	c.mu.Unlock()
 }
 
 // DeregisterUpdates will empty out the map of update channels
 func (c *Candidate) DeregisterUpdates() {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	c.update = make(map[string]chan bool)
+	c.mu.Unlock()
 }
 
 // updateLeader is a thread safe update of leader status
 func (c *Candidate) updateLeader(v bool) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 
 	// Send out updates if leader status changed
 	if v != c.leader {
@@ -299,6 +313,8 @@ func (c *Candidate) updateLeader(v bool) {
 
 	// Update the leader flag
 	c.leader = v
+
+	c.mu.Unlock()
 }
 
 func randToken() string {
@@ -312,15 +328,15 @@ func (c *Candidate) lockRunner() {
 	var se *api.SessionEntry // session entry
 	var kv *api.KVPair       // retrieved key
 	var qm *api.QueryMeta    // metadata
-	var qo *api.QueryOptions // options
 	var err error            // error holder
 	var ok bool              // lock status
 	var checkWait int        // fail retry
 
 	// build options
-	qo = new(api.QueryOptions)
-	qo.WaitIndex = uint64(0)
-	qo.WaitTime = c.sessionTTL
+	qo := &api.QueryOptions{
+		WaitIndex: uint64(0),
+		WaitTime:  c.SessionTTL(),
+	}
 
 	// increment wait group
 	c.wait.Add(1)
@@ -364,7 +380,7 @@ func (c *Candidate) lockRunner() {
 
 		// check kv
 		if kv != nil {
-			if kv.Session == c.sessionID {
+			if kv.Session == c.SessionID() {
 				// we are the leader
 				c.updateLeader(true)
 				continue
@@ -428,13 +444,13 @@ func (c *Candidate) sessionValidate() {
 	var err error            // error holder
 
 	// attempt to renew session
-	if se, _, err = c.client.Session().Renew(c.sessionID, nil); err != nil || se == nil {
+	if se, _, err = c.client.Session().Renew(c.SessionID(), nil); err != nil || se == nil {
 		// check error
 		if err != nil {
 			// log error
 			c.logPrintf("sessionValidate() failed to renew session: %s", err)
 			// destroy session
-			c.client.Session().Destroy(c.sessionID, nil)
+			c.client.Session().Destroy(c.SessionID(), nil)
 		}
 		// check session
 		if se == nil {

@@ -52,8 +52,8 @@ func NewClient(conf *api.Config) (*Client, error) {
 
 	client := &Client{
 		config:       *conf,
-		logSlug:      "[consultant-client]",
-		logSlugSlice: []interface{}{"[consultant-client]"},
+		logSlug:      "[consultant-client] ",
+		logSlugSlice: []interface{}{"[consultant-client] "},
 	}
 
 	client.Client, err = api.NewClient(conf)

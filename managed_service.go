@@ -86,41 +86,49 @@ func (ms *ManagedService) Meta() *ManagedServiceMeta {
 //
 // NOTE: If a Candidate was previously created, it will be halted, removed, and a new one created
 func (ms *ManagedService) NewCandidate(key, ttl string, wait bool) (*Candidate, error) {
-	var err error
+	ms.mu.Lock()
 
 	if nil != ms.candidate {
 		ms.candidate.DeregisterUpdates()
 		ms.candidate.Resign()
 	}
 
-	ms.candidate, err = NewCandidate(ms.client, ms.client.MyAddr(), key, ttl)
+	candidate, err := NewCandidate(ms.client, ms.client.MyAddr(), key, ttl)
 	if nil != err {
+		ms.mu.Unlock()
 		return nil, err
 	}
 
 	if wait {
-		ms.candidate.Wait()
+		candidate.Wait()
 	}
+	ms.candidate = candidate
 
-	return ms.candidate, nil
+	ms.mu.Unlock()
+
+	return candidate, nil
 }
 
 // Candidate returns the current candidate for this service.  Does not create one
 func (ms *ManagedService) Candidate() *Candidate {
-	return ms.candidate
+	ms.mu.Lock()
+	candidate := ms.candidate
+	ms.mu.Unlock()
+	return candidate
 }
 
 // NewSiblingLocator will attempt to construct a SiblingLocator for this service.
 //
 // NOTE: If a SiblingLocator was previously created, it will be overwritten
 func (ms *ManagedService) NewSiblingLocator(allowStale bool) (*SiblingLocator, error) {
-	var err error
+	ms.mu.Lock()
+
 	if nil != ms.siblingLocator {
 		ms.siblingLocator.StopWatcher()
 		ms.siblingLocator.RemoveCallbacks()
 	}
 
-	ms.siblingLocator, err = NewSiblingLocator(ms.client, SiblingLocatorConfig{
+	siblingLocator, err := NewSiblingLocator(ms.client, SiblingLocatorConfig{
 		ServiceID:   ms.meta.ID(),
 		NodeName:    ms.client.MyNode(),
 		ServiceName: ms.meta.Name(),
@@ -131,15 +139,22 @@ func (ms *ManagedService) NewSiblingLocator(allowStale bool) (*SiblingLocator, e
 	})
 
 	if nil != err {
+		ms.mu.Unlock()
 		return nil, err
 	}
 
-	return ms.siblingLocator, nil
+	ms.siblingLocator = siblingLocator
+	ms.mu.Unlock()
+
+	return siblingLocator, nil
 }
 
 // SiblingLocator returns the current SiblingLocator for this service. Does not create one
 func (ms *ManagedService) SiblingLocator() *SiblingLocator {
-	return ms.siblingLocator
+	ms.mu.Lock()
+	siblingLocator := ms.siblingLocator
+	ms.mu.Unlock()
+	return siblingLocator
 }
 
 // AddTags will attempt to add the provided tags to the service registration in consul
@@ -148,13 +163,13 @@ func (ms *ManagedService) SiblingLocator() *SiblingLocator {
 // - If delta is 0, this is a no-op
 func (ms *ManagedService) AddTags(tags ...string) error {
 	ms.mu.Lock()
-	defer ms.mu.Unlock()
 
 	// unique-ify it
 	tags = helpers.UniqueStringSlice(tags)
 
 	// if empty...
 	if 0 == len(tags) {
+		ms.mu.Unlock()
 		return nil
 	}
 
@@ -164,11 +179,13 @@ func (ms *ManagedService) AddTags(tags ...string) error {
 	// locate current definition as it exists within consul
 	currentDefs, _, err := ms.client.Catalog().Service(serviceName, serviceID, nil)
 	if nil != err {
+		ms.mu.Unlock()
 		return err
 	}
 
 	// if we couldn't, something bad has happened...
 	if currentDefs == nil || len(currentDefs) == 0 {
+		ms.mu.Unlock()
 		return fmt.Errorf(
 			"service \"%s\" with tag \"%s\" not found in Catalog",
 			serviceName,
@@ -185,6 +202,7 @@ func (ms *ManagedService) AddTags(tags ...string) error {
 	// if none were added, log and return
 	if 0 == additions {
 		ms.logPrint("No new tags were found, will not execute update")
+		ms.mu.Unlock()
 		return nil
 	}
 
@@ -199,12 +217,9 @@ func (ms *ManagedService) AddTags(tags ...string) error {
 		EnableTagOverride: def.ServiceEnableTagOverride,
 	})
 
-	// if update failed...
-	if nil != err {
-		return err
-	}
+	ms.mu.Unlock()
 
-	return nil
+	return err
 }
 
 // RemoveTags will attempt to remove the provided set of tags from the service registration in consul.
@@ -214,13 +229,13 @@ func (ms *ManagedService) AddTags(tags ...string) error {
 // - If delta is 0, this is a no-op.
 func (ms *ManagedService) RemoveTags(tags ...string) error {
 	ms.mu.Lock()
-	defer ms.mu.Unlock()
 
 	// unique-ify stuff
 	tags = helpers.UniqueStringSlice(tags)
 
 	// if empty...
 	if 0 == len(tags) {
+		ms.mu.Unlock()
 		return nil
 	}
 
@@ -237,17 +252,20 @@ func (ms *ManagedService) RemoveTags(tags ...string) error {
 
 	// if empty...
 	if 0 == len(okt) {
+		ms.mu.Unlock()
 		return nil
 	}
 
 	// locate current definition as it exists in consul...
 	currentDefs, _, err := ms.client.Catalog().Service(serviceName, serviceID, nil)
 	if nil != err {
+		ms.mu.Unlock()
 		return err
 	}
 
 	// if we couldn't, something bad has happened...
 	if currentDefs == nil || len(currentDefs) == 0 {
+		ms.mu.Unlock()
 		return fmt.Errorf(
 			"current Service \"%s\" with tag \"%s\" not found in Catalog",
 			serviceName,
@@ -262,6 +280,7 @@ func (ms *ManagedService) RemoveTags(tags ...string) error {
 	newTags, removed := helpers.RemoveStringsFromSlice(def.ServiceTags, okt)
 	if 0 == removed {
 		ms.logPrint("No tags were removed, will not execute update")
+		ms.mu.Unlock()
 		return nil
 	}
 
@@ -276,30 +295,25 @@ func (ms *ManagedService) RemoveTags(tags ...string) error {
 		EnableTagOverride: def.ServiceEnableTagOverride,
 	})
 
-	// if update failed...
-	if nil != err {
-		return err
-	}
+	ms.mu.Unlock()
 
-	return nil
+	return err
 }
 
 // Deregister will remove this service from the service catalog in consul
 func (ms *ManagedService) Deregister() error {
 	ms.mu.Lock()
-	defer ms.mu.Unlock()
-
-	// remove our service entry from consul
-	ms.client.Agent().ServiceDeregister(ms.meta.ID())
 
 	// shut candidate down
 	if nil != ms.candidate {
 		ms.candidate.Resign()
 	}
 
-	ms.logPrint("Service has been deregistered from Consul")
+	// remove our service entry from consul
+	err := ms.client.Agent().ServiceDeregister(ms.meta.ID())
+	ms.mu.Unlock()
 
-	return nil
+	return err
 }
 
 func (ms *ManagedService) logPrintf(format string, v ...interface{}) {

@@ -43,16 +43,15 @@ type SiblingLocatorConfig struct {
 // SiblingLocator provides a way for a local service to find other services registered in Consul that share it's name
 // and tags (if any).
 type SiblingLocator struct {
+	mu sync.Mutex
+
 	client *Client
 	config *SiblingLocatorConfig
 
 	callbacks        map[string]SiblingCallback
-	callbacksLock    *sync.RWMutex
 	lazyCallbackName uint64
 
-	wp        *watch.Plan
-	wpLock    *sync.Mutex
-	wpRunning bool
+	wp *watch.Plan
 
 	logSlug      string
 	logSlugSlice []interface{}
@@ -61,11 +60,9 @@ type SiblingLocator struct {
 func NewSiblingLocator(client *Client, config SiblingLocatorConfig) (*SiblingLocator, error) {
 	// construct new sibling locator
 	sl := &SiblingLocator{
-		client:        client,
-		config:        &config,
-		callbacks:     make(map[string]SiblingCallback),
-		callbacksLock: new(sync.RWMutex),
-		wpLock:        new(sync.Mutex),
+		client:    client,
+		config:    &config,
+		callbacks: make(map[string]SiblingCallback),
 	}
 
 	// verify service id is set
@@ -108,7 +105,7 @@ func NewSiblingLocator(client *Client, config SiblingLocatorConfig) (*SiblingLoc
 	}
 
 	// set up log slugs
-	sl.logSlug = fmt.Sprintf("[sibling-locator-%s]", sl.config.ServiceName)
+	sl.logSlug = fmt.Sprintf("[sibling-locator-%s] ", sl.config.ServiceName)
 	sl.logSlugSlice = []interface{}{sl.logSlug}
 
 	return sl, nil
@@ -151,24 +148,25 @@ func NewSiblingLocatorWithAgentService(c *Client, n *api.Node, as *api.AgentServ
 }
 
 func (sl *SiblingLocator) AddCallback(name string, cb SiblingCallback) string {
-	sl.callbacksLock.Lock()
-	defer sl.callbacksLock.Unlock()
+	sl.mu.Lock()
 
 	name = strings.TrimSpace(name)
-	if "" == name {
+	if name == "" {
 		name = strconv.FormatUint(sl.lazyCallbackName, 10)
 		sl.lazyCallbackName++
 	}
 
 	sl.callbacks[name] = cb
 
+	sl.mu.Unlock()
+
 	return name
 }
 
 func (sl *SiblingLocator) RemoveCallback(name string) {
-	sl.callbacksLock.Lock()
-	defer sl.callbacksLock.Unlock()
+	sl.mu.Lock()
 	delete(sl.callbacks, name)
+	sl.mu.Unlock()
 }
 
 // StartWatcher will spin up a Consul WatchPlan that watches for other registered services with the same name
@@ -176,11 +174,11 @@ func (sl *SiblingLocator) RemoveCallback(name string) {
 //
 // - passingOnly will limit the response to only registrations deemed "healthy"
 func (sl *SiblingLocator) StartWatcher(passingOnly bool) error {
-	sl.wpLock.Lock()
-	defer sl.wpLock.Unlock()
-
-	if sl.wpRunning {
-		return errors.New("watcher already running")
+	sl.mu.Lock()
+	if sl.wp != nil && !sl.wp.IsStopped() {
+		sl.logPrint("watcher is already running")
+		sl.mu.Unlock()
+		return nil
 	}
 
 	var err error
@@ -193,32 +191,43 @@ func (sl *SiblingLocator) StartWatcher(passingOnly bool) error {
 	// try to build watchplan
 	sl.wp, err = WatchService(sl.config.ServiceName, tag, passingOnly, sl.config.AllowStale, sl.config.Datacenter, sl.config.Token)
 	if nil != err {
+		sl.mu.Unlock()
 		return fmt.Errorf("unable to create watch plan: %v", err)
 	}
+	sl.wp.Handler = sl.watchHandler
 
-	// run watchplan until it returns something
-	go sl.runWatcher(sl.client.config.Address)
+	go func() {
+		err := sl.wp.Run(sl.client.config.Address)
+		sl.mu.Lock()
+		if err != nil {
+			sl.logPrintf("Watch Plan stopped with error: %s", err)
+		} else {
+			sl.logPrint("Watch Plan stopped without error")
+		}
+		sl.wp = nil
+		sl.mu.Unlock()
+	}()
+
+	sl.mu.Unlock()
 
 	return nil
 }
 
 // RemoveCallbacks will empty out the map of registered callbacks
 func (sl *SiblingLocator) RemoveCallbacks() {
-	sl.callbacksLock.Lock()
-	defer sl.callbacksLock.Unlock()
+	sl.mu.Lock()
 	sl.callbacks = make(map[string]SiblingCallback)
+	sl.mu.Unlock()
 }
 
 // StopWatcher will stop the sibling watchplan.  If the plan was previously stopped, this is a noop.
 func (sl *SiblingLocator) StopWatcher() {
-	sl.wpLock.Lock()
-	defer sl.wpLock.Unlock()
-
-	if nil != sl.wp {
+	sl.mu.Lock()
+	if sl.wp != nil && !sl.wp.IsStopped() {
 		sl.wp.Stop()
-		sl.wpRunning = false
 		sl.wp = nil
 	}
+	sl.mu.Unlock()
 }
 
 // Current will immediately execute a Health().Service() call, returning and optionally sending the result to
@@ -250,29 +259,6 @@ func (sl *SiblingLocator) Current(passingOnly, sendToCallbacks bool) (Siblings, 
 	return buildSiblingList(sl.config.NodeName, sl.config.ServiceID, sl.config.ServiceTags, svcs), nil
 }
 
-func (sl *SiblingLocator) runWatcher(address string) {
-	// set handler
-	sl.wp.Handler = sl.watchHandler
-
-	// blocks until error or closed
-	err := sl.wp.Run(address)
-
-	// lock
-	sl.wpLock.Lock()
-	defer sl.wpLock.Unlock()
-
-	// record error
-	if nil != err {
-		sl.logPrintf("WatchPlan stopped with error: %v", err)
-	}
-
-	// set running to false
-	sl.wpRunning = false
-
-	// nil out watchplan
-	sl.wp = nil
-}
-
 func (sl *SiblingLocator) watchHandler(index uint64, data interface{}) {
 	svcs, ok := data.([]*api.ServiceEntry)
 	if !ok {
@@ -286,12 +272,11 @@ func (sl *SiblingLocator) watchHandler(index uint64, data interface{}) {
 }
 
 func (sl *SiblingLocator) sendToCallbacks(index uint64, svcs []*api.ServiceEntry) {
-	sl.callbacksLock.RLock()
-	defer sl.callbacksLock.RUnlock()
-
+	sl.mu.Lock()
 	for _, receiver := range sl.callbacks {
 		go receiver(index, buildSiblingList(sl.config.NodeName, sl.config.ServiceID, sl.config.ServiceTags, svcs))
 	}
+	sl.mu.Unlock()
 }
 
 func (sl *SiblingLocator) logPrintf(format string, v ...interface{}) {
@@ -305,21 +290,21 @@ func (sl *SiblingLocator) logPrint(v ...interface{}) {
 func buildSiblingList(localNode, localID string, tags []string, svcs []*api.ServiceEntry) Siblings {
 	siblings := make(Siblings, 0)
 
-ServiceLoop:
+serviceLoop:
 	for _, svc := range svcs {
 		// omit myself
 		if svc.Node.Node == localNode && svc.Service.ID == localID {
-			continue ServiceLoop
+			continue serviceLoop
 		}
 
-	TagLoop:
+	tagLoop:
 		for _, t := range tags {
 			for _, st := range svc.Service.Tags {
 				if t == st {
-					continue TagLoop
+					continue tagLoop
 				}
 			}
-			continue ServiceLoop
+			continue serviceLoop
 		}
 
 		// add siblings

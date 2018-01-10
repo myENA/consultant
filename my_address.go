@@ -48,27 +48,26 @@ func GetMyAddress() (string, error) {
 			continue
 		}
 
+		// We looked for an interface name and we found it
 		addrs, err := iface.Addrs()
 		if err != nil {
 			return "", err
 		}
 
-		for _, addr := range addrs {
-			// bit kludgey to go via the CIDR but see no other way
-			cidr := addr.String()
-			ip, _, err := net.ParseCIDR(cidr)
-			if err != nil {
-				return "", err
-			}
-			// don't report loopback or ipv6 addresses
-			if !ip.IsLoopback() && ip.To4() != nil {
-				switch {
-				case block192.Contains(ip):
-					return ip.String(), nil
-				case block172.Contains(ip):
-					return ip.String(), nil
-				case block10.Contains(ip):
-					return ip.String(), nil
+		// Look for interfaces in a list of prioritized netblocks
+		for _,bl := range []*net.IPNet{block172,block10,block192} {
+			for _, addr := range addrs {
+				// bit kludgy to go via the CIDR but see no other way
+				cidr := addr.String()
+				ip, _, err := net.ParseCIDR(cidr)
+				if err != nil {
+					return "", err
+				}
+				// don't report loopback or ipv6 addresses
+				if !ip.IsLoopback() && ip.To4() != nil {
+					if bl.Contains(ip) {
+						return ip.String(),nil
+					}
 				}
 			}
 		}

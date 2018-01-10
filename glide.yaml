@@ -1,7 +1,8 @@
 package: github.com/myENA/consultant
 import:
   - package: github.com/hashicorp/consul
-    version: ">=v0.8.2"
-
+    version: ">=v1.0.1"
   - package: github.com/stretchr/testify
     version: v1.1.*
+  - package: "github.com/renstrom/shortuuid"
+    version: "v2.0.*"

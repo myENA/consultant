@@ -4,5 +4,3 @@ import:
     version: ">=v1.0.1"
   - package: github.com/stretchr/testify
     version: v1.1.*
-  - package: "github.com/renstrom/shortuuid"
-    version: "v2.0.*"

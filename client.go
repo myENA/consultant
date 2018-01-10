@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"github.com/hashicorp/consul/api"
-	"github.com/renstrom/shortuuid"
 	"math/rand"
 	"net/url"
 	"os"
@@ -308,7 +307,7 @@ func (c *Client) SimpleServiceRegister(reg *SimpleServiceRegistration) (string, 
 		// Form a unique service id
 		var tail string
 		if reg.RandomID {
-			tail = shortuuid.New()
+			tail = randstr(12)
 		} else {
 			tail = strings.ToLower(c.myHost)
 		}

@@ -24,7 +24,7 @@ func randstr(n int) string {
 		case 0:
 			buff[i] = rnb[rand.Int63()%rnbl]
 		default:
-			buff[i] = rlb[rand.Int63()&rlbl]
+			buff[i] = rlb[rand.Int63()%rlbl]
 		}
 	}
 	return string(buff)

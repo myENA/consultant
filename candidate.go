@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"github.com/hashicorp/consul/api"
-	"github.com/renstrom/shortuuid"
 	"math/rand"
 	"net"
 	"regexp"
@@ -76,7 +75,7 @@ func NewCandidate(client *Client, id, key, ttl string) (*Candidate, error) {
 
 	// begin session entry construction
 	c.sessionEntry = &api.SessionEntry{
-		Name:     fmt.Sprintf("leader-%s-%s-%s", id, c.client.MyNode(), shortuuid.New()),
+		Name:     fmt.Sprintf("leader-%s-%s-%s", id, c.client.MyNode(), randstr(12)),
 		Behavior: api.SessionBehaviorDelete,
 	}
 
@@ -541,7 +540,6 @@ type CandidateSessionParts struct {
 
 // ParseCandidateSessionName is provided so you don't have to parse it yourself :)
 func ParseCandidateSessionName(name string) (*CandidateSessionParts, error) {
-	// fmt.Sprintf("leader-%s-%s-%s", id, c.client.MyNode(), shortuuid.New()),
 	split := strings.Split(name, "-")
 	if 4 != len(split) {
 		return nil, fmt.Errorf("expected four parts in session name \"%s\", saw only \"%d\"", name, len(split))

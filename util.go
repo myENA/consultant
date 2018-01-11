@@ -10,8 +10,8 @@ const (
 )
 
 var (
-	rnbl = int64(len(rnb))
-	rlbl = int64(len(rlb))
+	rnbl = int64(10)
+	rlbl = int64(52)
 )
 
 func randstr(n int) string {

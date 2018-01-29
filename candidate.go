@@ -13,7 +13,7 @@ func updateCompatibility(u chan<- bool) candidate.WatchFunc {
 	if u == nil {
 		u = make(chan bool, 1)
 	}
-	return func(e bool) { u <- e }
+	return func(up candidate.ElectionUpdate) { u <- up.Elected }
 }
 
 // NewCandidate creates a new Candidate
@@ -34,7 +34,12 @@ func NewCandidate(client *Client, candidateID, key, ttl string) (*Candidate, err
 			return nil, fmt.Errorf("unable to initialize client: %s", err)
 		}
 	}
-	c, err := candidate.New(client.Client, candidateID, key, ttl)
+	c, err := candidate.New(&candidate.Config{
+		KVKey:      key,
+		ID:         candidateID,
+		SessionTTL: ttl,
+		Client:     client.Client,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -47,7 +52,7 @@ func NewCandidate(client *Client, candidateID, key, ttl string) (*Candidate, err
 // Register returns a channel for updates in leader status -
 // only one message per candidate instance will be sent
 //
-// DEPRECATED:  Will be removed in a future release
+// DEPRECATED:  Use Watch()
 func (c *Candidate) RegisterUpdate(id string) (string, chan bool) {
 	u := make(chan bool, 1)
 	id = c.Watch(id, updateCompatibility(u))
@@ -56,30 +61,40 @@ func (c *Candidate) RegisterUpdate(id string) (string, chan bool) {
 
 // DeregisterUpdate will remove an update chan from this candidate
 //
-// DEPRECATED:  Will be removed in a future release
+// DEPRECATED:  Use Unwatch()
 func (c *Candidate) DeregisterUpdate(id string) {
 	c.Unwatch(id)
 }
 
 // DeregisterUpdates will empty out the map of update channels
 //
-// DEPRECATED:  Will be removed in a future release
+// DEPRECATED:  Use RemoveWatchers()
 func (c *Candidate) DeregisterUpdates() {
 	c.RemoveWatchers()
 }
 
 // CandidateSessionParts will be removed in a future release.
+//
+// DEPRECATED: Use candidate.SessionParts
 type CandidateSessionParts struct {
-	*candidate.SessionParts
+	*candidate.SessionNameParts
+	Prefix     string
+	ID         string
+	RandomUUID string
 }
 
 // ParseCandidateSessionName is provided so you don't have to parse it yourself :)
 //
-// DEPRECATED: Will be removed in a future release
+// DEPRECATED: Use candidate.ParseSessionName
 func ParseCandidateSessionName(name string) (*CandidateSessionParts, error) {
 	sp, err := candidate.ParseSessionName(name)
 	if err != nil {
 		return nil, err
 	}
-	return &CandidateSessionParts{SessionParts: sp}, nil
+	return &CandidateSessionParts{
+		SessionNameParts: sp,
+		Prefix:           candidate.SessionKeyPrefix,
+		ID:               sp.CandidateID,
+		RandomUUID:       sp.RandomID,
+	}, nil
 }

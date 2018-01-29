@@ -5,7 +5,7 @@ import (
 	"sync"
 )
 
-type WatchFunc func(elected bool)
+type WatchFunc func(update ElectionUpdate)
 
 type watchers struct {
 	mu    sync.Mutex
@@ -47,13 +47,13 @@ func (c *watchers) RemoveAll() {
 }
 
 // notifyWatchers is a thread safe update of leader status
-func (c *watchers) notify(state bool) {
+func (c *watchers) notify(update *ElectionUpdate) {
 	c.mu.Lock()
 
 	// TODO: is there a reason to make this blocking? Methods should be quick and elected status churn is prevented elsewhere.
 	for _, watcher := range c.funcs {
 		go func(w WatchFunc) {
-			w(state)
+			w(*update)
 		}(watcher)
 	}
 

@@ -3,8 +3,9 @@ package consultant_test
 import (
 	"fmt"
 	"github.com/hashicorp/consul/api"
-	"github.com/hashicorp/consul/testutil"
+	cst "github.com/hashicorp/consul/testutil"
 	"github.com/myENA/consultant"
+	"github.com/myENA/consultant/testutil"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 	"reflect"
@@ -21,7 +22,7 @@ const (
 type ManagedServiceTestSuite struct {
 	suite.Suite
 
-	server *testutil.TestServer
+	server *cst.TestServer
 	client *consultant.Client
 }
 
@@ -30,7 +31,7 @@ func TestManagedService(t *testing.T) {
 }
 
 func (ms *ManagedServiceTestSuite) SetupTest() {
-	ms.server, ms.client = makeServerAndClient(ms.T(), nil)
+	ms.server, ms.client = testutil.MakeServerAndClient(ms.T(), nil)
 }
 
 func (ms *ManagedServiceTestSuite) TearDownTest() {

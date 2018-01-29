@@ -17,39 +17,99 @@ const (
 	StateRunning
 )
 
+const (
+	DefaultTTL = "30s"
+)
+
 type (
 	Update struct {
-		ID      string
-		Name    string
-		Renewed time.Time
-		Error   error
+		ID          string
+		Name        string
+		LastRenewed time.Time
+		Error       error
+		State       State
 	}
 
 	UpdateFunc func(Update)
+
+	Config struct {
+		// Key [suggested]
+		//
+		// Implementation-specific Key to be placed in session key.
+		Key string
+
+		// TTL [optional]
+		//
+		// Session TTL, defaults to value of DefaultTTL
+		TTL string
+
+		// Behavior [optional]
+		//
+		// Session timeout behavior, defaults to "release"
+		Behavior string
+
+		// Log [optional]
+		//
+		// Logger for this session.  One will be created if value is empty
+		Log log.DebugLogger
+
+		// Client [optional]
+		//
+		// Consul API client, default will be created if not provided
+		Client *api.Client
+
+		// UpdateFunc [optional]
+		//
+		// Callback to be executed after session state change
+		UpdateFunc UpdateFunc
+	}
 
 	Session struct {
 		mu     sync.Mutex
 		log    log.DebugLogger
 		client *api.Client
 
-		node        string
-		candidateID string
+		node string
+		key  string
 
-		id          string
-		name        string
-		ttl         time.Duration
+		id       string
+		name     string
+		ttl      time.Duration
+		behavior string
+
 		interval    time.Duration
 		lastRenewed time.Time
 
 		stop  chan chan struct{}
 		state State
 
-		onUpdate UpdateFunc
+		updateFunc UpdateFunc
 	}
 )
 
-func New(log log.DebugLogger, client *api.Client, candidateID, ttl string, onUpdate UpdateFunc) (*Session, error) {
+func New(conf *Config) (*Session, error) {
+	var key, ttl, behavior string
+	var client *api.Client
+	var l log.DebugLogger
 	var err error
+
+	if conf != nil {
+		key = conf.Key
+		ttl = conf.TTL
+		behavior = conf.Behavior
+		l = conf.Log
+		client = conf.Client
+	}
+
+	if behavior == "" {
+		behavior = api.SessionBehaviorRelease
+	} else {
+		switch behavior {
+		case api.SessionBehaviorDelete, api.SessionBehaviorRelease:
+		default:
+			return nil, fmt.Errorf("\"%s\" is not a valid session behavior", behavior)
+		}
+	}
 
 	if client == nil {
 		client, err = api.NewClient(api.DefaultConfig())
@@ -58,8 +118,16 @@ func New(log log.DebugLogger, client *api.Client, candidateID, ttl string, onUpd
 		}
 	}
 
+	if l == nil {
+		if key == "" {
+			l = log.New(fmt.Sprintf("session-%s", util.RandStr(8)))
+		} else {
+			l = log.New(fmt.Sprintf("session-%s", key))
+		}
+	}
+
 	if ttl == "" {
-		ttl = "30s"
+		ttl = DefaultTTL
 	}
 
 	ttlTD, err := time.ParseDuration(ttl)
@@ -74,27 +142,23 @@ func New(log log.DebugLogger, client *api.Client, candidateID, ttl string, onUpd
 		ttlTD = 86400 * time.Second
 	}
 
-	interval := time.Duration(ttlTD.Nanoseconds() / 2)
-	if interval.Nanoseconds() < int64(time.Second) {
-		interval = time.Second
-	}
-
-	log.Debugf("Lock interval: %d seconds", int64(ttlTD.Seconds()))
-	log.Debugf("Session renew interval: %d seconds", int64(interval.Seconds()))
-
 	cs := &Session{
-		log:         log,
-		client:      client,
-		candidateID: candidateID,
-		ttl:         ttlTD,
-		interval:    interval,
-		stop:        make(chan chan struct{}, 1),
-		onUpdate:    onUpdate,
+		log:        l,
+		client:     client,
+		key:        key,
+		ttl:        ttlTD,
+		behavior:   behavior,
+		interval:   time.Duration(ttlTD.Nanoseconds() / 2),
+		stop:       make(chan chan struct{}, 1),
+		updateFunc: conf.UpdateFunc,
 	}
 
 	if cs.node, err = client.Agent().NodeName(); err != nil {
 		return nil, fmt.Errorf("unable to determine node: %s", err)
 	}
+
+	l.Debugf("Lock interval: %d seconds", int64(ttlTD.Seconds()))
+	l.Debugf("Session renew interval: %d seconds", int64(cs.interval.Seconds()))
 
 	return cs, nil
 }
@@ -114,17 +178,19 @@ func (cs *Session) Name() string {
 }
 
 func (cs *Session) TTL() time.Duration {
-	cs.mu.Lock()
-	ttl := cs.ttl
-	cs.mu.Unlock()
-	return ttl
+	return cs.ttl
+}
+
+func (cs *Session) Key() string {
+	return cs.key
+}
+
+func (cs *Session) Behavior() string {
+	return cs.behavior
 }
 
 func (cs *Session) RenewInterval() time.Duration {
-	cs.mu.Lock()
-	i := cs.interval
-	cs.mu.Unlock()
-	return i
+	return cs.interval
 }
 
 func (cs *Session) LastRenewed() time.Time {
@@ -147,8 +213,19 @@ func (cs *Session) Run() {
 		cs.mu.Unlock()
 		return
 	}
+
 	cs.state = StateRunning
+
+	// try to create session immediately
+	if err := cs.create(); err != nil {
+		cs.log.Printf(
+			"Unable to perform initial session creation, will try again in \"%d\" seconds: %s",
+			int64(cs.interval.Seconds()),
+			err)
+	}
+
 	cs.mu.Unlock()
+
 	go cs.maintain()
 }
 
@@ -176,33 +253,32 @@ func (cs *Session) State() State {
 
 // sendUpdate will attempt to notify whoever cares that the session has been created / refreshed / errored
 // Caller MUST hold lock!
-func (cs *Session) sendUpdate(err error) {
-	if cs.onUpdate == nil {
+func (cs *Session) sendUpdate(up Update) {
+	if cs.updateFunc == nil {
 		return
 	}
-
-	cs.onUpdate(Update{
-		ID:      cs.id,
-		Name:    cs.name,
-		Renewed: cs.lastRenewed,
-		Error:   err,
-	})
+	cs.updateFunc(up)
 }
 
 // create will attempt to do just that. Caller MUST hold lock!
 func (cs *Session) create() error {
-	name := fmt.Sprintf("leader-%s-%s-%s", cs.candidateID, cs.node, util.RandStr(12))
+	var name string
+
+	if cs.key == "" {
+		name = fmt.Sprintf("%s_%s", cs.node, util.RandStr(12))
+	} else {
+		name = fmt.Sprintf("%s_%s_%s", cs.key, cs.node, util.RandStr(12))
+	}
 
 	cs.log.Debugf("Attempting to create Consul Session \"%s\"...", name)
 
 	se := &api.SessionEntry{
 		Name:     name,
-		Behavior: api.SessionBehaviorDelete,
+		Behavior: cs.behavior,
 		TTL:      cs.ttl.String(),
 	}
 
 	sid, _, err := cs.client.Session().Create(se, nil)
-
 	if err != nil {
 		cs.id = ""
 		cs.name = ""
@@ -211,8 +287,6 @@ func (cs *Session) create() error {
 		cs.name = name
 		cs.lastRenewed = time.Now()
 	}
-
-	cs.sendUpdate(err)
 
 	return err
 }
@@ -233,24 +307,13 @@ func (cs *Session) renew() error {
 		cs.lastRenewed = time.Now()
 	}
 
-	cs.sendUpdate(err)
-
 	return err
 }
 
 func (cs *Session) maintain() {
 	var stopped chan struct{}
+	var up Update
 	var err error
-
-	// try to create session immediately
-	cs.mu.Lock()
-	if err = cs.create(); err != nil {
-		cs.log.Printf(
-			"Unable to perform initial session creation, will try again in \"%d\" seconds: %s",
-			int64(cs.interval.Seconds()),
-			err)
-	}
-	cs.mu.Unlock()
 
 	intervalTicker := time.NewTicker(cs.interval)
 
@@ -266,33 +329,59 @@ maintaining:
 			} else if err = cs.renew(); err != nil {
 				cs.log.Printf("Unable to renew Consul Session: %s", err)
 			}
+
+			// create update behind lock
+			up = Update{
+				ID:          cs.id,
+				Name:        cs.name,
+				LastRenewed: cs.lastRenewed,
+				Error:       err,
+				State:       cs.state,
+			}
+
 			cs.mu.Unlock()
+
+			//send update after unlock
+			cs.sendUpdate(up)
 
 		case stopped = <-cs.stop:
 			break maintaining
 		}
 	}
 
-	cs.mu.Lock()
+	cs.log.Debug("Stopping session...")
 
 	intervalTicker.Stop()
 
-	if cs.id != "" {
-		if _, err = cs.client.Session().Destroy(cs.id, nil); err != nil {
-			cs.log.Printf("Unable to destroy session \"%s\": %s", cs.id, err)
+	cs.mu.Lock()
+
+	// store most recent session id
+	sid := cs.id
+
+	// modify state
+	cs.id = ""
+	cs.name = ""
+	cs.state = StateStopped
+
+	// prepare final update
+	up = Update{LastRenewed: cs.lastRenewed, State: StateStopped}
+
+	cs.mu.Unlock()
+
+	// if there was a session id, attempt to destroy it.
+	if sid != "" {
+		if _, err = cs.client.Session().Destroy(sid, nil); err != nil {
+			cs.log.Printf("Unable to destroy session \"%s\": %s", sid, err)
 		}
 	}
 
-	cs.id = ""
-	cs.name = ""
-	cs.lastRenewed = time.Time{}
-
-	// for good measure...
-	cs.state = StateStopped
-
+	// just in case...
 	if stopped != nil {
 		stopped <- struct{}{}
 	}
 
-	cs.mu.Unlock()
+	// send final update asynchronously, don't much care if they're around to receive it.
+	go cs.sendUpdate(up)
+
+	cs.log.Print("Session stopped")
 }

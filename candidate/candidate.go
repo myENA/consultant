@@ -7,6 +7,7 @@ import (
 	"github.com/hashicorp/consul/api"
 	"github.com/myENA/consultant/candidate/session"
 	"github.com/myENA/consultant/log"
+	"github.com/myENA/consultant/util"
 	"net"
 	"regexp"
 	"strings"
@@ -22,70 +23,135 @@ const (
 )
 
 const (
-	validCandidateIDRegex = `[a-zA-Z0-9:._-]+` // only allow certain characters in an ID
+	IDRegex = `^[a-zA-Z0-9:.-]+$` // only allow certain characters in an ID
+
+	SessionKeyPrefix = "candidate-"
+	sessionKeyFormat = SessionKeyPrefix + "%s"
 )
 
 var (
-	validCandidateIDTest = regexp.MustCompile(validCandidateIDRegex)
-	InvalidCandidateID   = fmt.Errorf("vandidate ID must obey \"%s\"", validCandidateIDRegex)
+	validCandidateIDTest = regexp.MustCompile(IDRegex)
+	InvalidCandidateID   = fmt.Errorf("candidate ID must obey \"%s\"", IDRegex)
 )
 
-type Candidate struct {
-	mu  sync.Mutex
-	log log.DebugLogger
-
-	client *api.Client
-
-	id       string
-	session  *session.Session
-	watchers *watchers
-
-	kvKey string
-	ttl   time.Duration
-
-	elected bool
-	state   State
-	resign  chan chan struct{}
-}
-
-// New creates a new Candidate
-//
-// - "client" must be a valid api client
-//
-// - "candidateID" should be an implementation-relevant unique identifier for this candidate
-//
-// - "kvKey" must be the full path to a KV, it will be created if it doesn't already exist
-//
-// - "sessionTTL" is the duration to set on the kv session ttl, will default to 30s if not specified
-func New(client *api.Client, candidateID, kvKey, sessionTTL string) (*Candidate, error) {
-	var err error
-
-	if client == nil {
-		client, err = api.NewClient(api.DefaultConfig())
-		if err != nil {
-			return nil, err
-		}
+type (
+	// LeaderKVValue is the body of the acquired KV
+	LeaderKVValue struct {
+		// Candidate is
+		Candidate string
+		Acquired  time.Time
 	}
 
-	candidateID = strings.TrimSpace(candidateID)
-	if candidateID == "" || !validCandidateIDTest.MatchString(candidateID) {
-		return nil, InvalidCandidateID
+	// ElectionUpdate is sent to watchers on election state change
+	ElectionUpdate struct {
+		// Elected tracks whether this specific candidate has been elected
+		Elected bool
+		// State tracks the current state of this candidate
+		State State
+	}
+
+	Config struct {
+		// KVKey [required]
+		//
+		// Must be the key to attempt to acquire a session lock on.  This key must be considered ephemeral, and not contain
+		// anything you don't want overwritten / destroyed.
+		KVKey string
+
+		// ID [suggested]
+		//
+		// Should be a unique identifier that makes sense within the scope of your implementation.
+		// If left blank it will attempt to use the local IP address, otherwise a random string will be generated.
+		ID string
+
+		// SessionTTL [optional]
+		//
+		// The duration of time a given candidate can be elected without re-trying.  A "good" value for this depends
+		// entirely upon your implementation.  Keep in mind that once the KVKey lock is acquired with the session, it will
+		// remain locked until either the specified session TTL is up or Resign() is explicitly called.
+		//
+		// If not defined, will default to value of session.DefaultTTL
+		SessionTTL string
+
+		// Client [optional]
+		//
+		// Consul API client.  If not specified, one will be created using api.DefaultConfig()
+		Client *api.Client
+	}
+
+	Candidate struct {
+		mu  sync.Mutex
+		log log.DebugLogger
+
+		client *api.Client
+
+		id       string
+		session  *session.Session
+		watchers *watchers
+
+		kvKey string
+		ttl   time.Duration
+
+		elected bool
+		state   State
+		resign  chan chan struct{}
+	}
+)
+
+func New(conf *Config) (*Candidate, error) {
+	var id, kvKey, sessionTTL string
+	var client *api.Client
+	var err error
+
+	if conf != nil {
+		kvKey = conf.KVKey
+		id = conf.ID
+		sessionTTL = conf.SessionTTL
+		client = conf.Client
 	}
 
 	if kvKey == "" {
 		return nil, errors.New("key cannot be empty")
 	}
 
+	if client == nil {
+		client, err = api.NewClient(api.DefaultConfig())
+		if err != nil {
+			return nil, fmt.Errorf("unable to create consul api client: %s", err)
+		}
+	}
+
+	id = strings.TrimSpace(id)
+	if id == "" {
+		if addr, err := util.MyAddress(); err != nil {
+			id = util.RandStr(8)
+		} else {
+			id = addr
+		}
+	}
+
+	if !validCandidateIDTest.MatchString(id) {
+		return nil, InvalidCandidateID
+	}
+
 	c := &Candidate{
-		log:      log.New(fmt.Sprintf("candidate-%s", candidateID)),
+		log:      log.New(fmt.Sprintf("candidate-%s", id)),
 		client:   client,
-		id:       candidateID,
+		id:       id,
 		watchers: newWatchers(),
 		kvKey:    kvKey,
 		resign:   make(chan chan struct{}, 1),
 	}
 
-	c.session, err = session.New(c.log, client, c.id, sessionTTL, c.sessionUpdate)
+	sessionConfig := &session.Config{
+		Key:        fmt.Sprintf(sessionKeyFormat, c.id),
+		TTL:        sessionTTL,
+		Behavior:   api.SessionBehaviorDelete,
+		Log:        c.log,
+		Client:     client,
+		UpdateFunc: c.sessionUpdate,
+	}
+
+	c.session, err = session.New(sessionConfig)
 	if err != nil {
 		return nil, err
 	}
@@ -113,7 +179,6 @@ func (c *Candidate) Resign() {
 		c.mu.Unlock()
 		return
 	}
-
 	c.state = StateResigned
 	c.mu.Unlock()
 
@@ -160,20 +225,20 @@ func (c *Candidate) LeaderIP() (net.IP, error) {
 // Return the leader of a foreign datacenter, assuming its ID can be interpreted as an IP address
 func (c *Candidate) ForeignLeaderIP(dc string) (net.IP, error) {
 	leaderSession, err := c.ForeignLeaderService(dc)
-	if nil != err {
-		return nil, fmt.Errorf("leaderAddress() Error getting leader address: %s", err)
+	if err != nil {
+		return nil, fmt.Errorf("unable to fetch leader address: %s", err)
 	}
 
 	// parse session name
 	parts, err := ParseSessionName(leaderSession.Name)
-	if nil != err {
-		return nil, fmt.Errorf("leaderAddress() Unable to parse leader session name: %s", err)
+	if err != nil {
+		return nil, fmt.Errorf("unable to parse leader session name: %s", err)
 	}
 
 	// attempt to validate value
-	ip := net.ParseIP(parts.ID)
+	ip := net.ParseIP(parts.CandidateID)
 	if nil == ip {
-		return nil, fmt.Errorf("leaderAddress() Unable to parse IP address from \"%s\"", parts.ID)
+		return nil, fmt.Errorf("unable to parse IP address from \"%s\"", parts.CandidateID)
 	}
 
 	return ip, nil
@@ -192,7 +257,7 @@ func (c *Candidate) ForeignLeaderService(dc string) (*api.SessionEntry, error) {
 	}
 
 	kv, _, err = c.client.KV().Get(c.kvKey, qo)
-	if nil != err {
+	if err != nil {
 		return nil, err
 	}
 
@@ -225,29 +290,65 @@ func (c *Candidate) RemoveWatchers() {
 	c.watchers.RemoveAll()
 }
 
-// Wait will block until a leader has been elected, regardless of candidate.
-func (c *Candidate) Wait() {
+// WaitFor will wait for a candidate to be elected or until duration has passed
+func (c *Candidate) WaitFor(td time.Duration) error {
 	var err error
 
+	timer := time.NewTimer(td)
+
+waitLoop:
 	for {
-		// attempt to locate current leader
-		if _, err = c.LeaderService(); nil == err {
-			break
+		select {
+		case <-timer.C:
+			err = errors.New("expire time breached")
+			// attempt to locate current leader
+		default:
+			if _, err = c.LeaderService(); nil == err {
+				break waitLoop
+			}
+			c.log.Debugf("Error locating leader service: %s", err)
 		}
 
-		c.log.Debugf("Error locating leader service: %s", err)
-
-		// if session empty, assume no leader elected yet and try again
 		time.Sleep(time.Second * 1)
 	}
+
+	if !timer.Stop() {
+		<-timer.C
+	}
+
+	return err
+}
+
+// WaitUntil will for a candidate to be elected or until the deadline is breached
+func (c *Candidate) WaitUntil(t time.Time) error {
+	now := time.Now()
+	if now.After(t) {
+		return errors.New("t must represent a time in the future")
+	}
+
+	return c.WaitFor(t.Sub(now))
+}
+
+// Wait will block until a leader has been elected, regardless of candidate.
+func (c *Candidate) Wait() {
+	c.WaitFor(1<<63 - 1)
 }
 
 func (c *Candidate) sessionUpdate(update session.Update) {
 	c.mu.Lock()
-	if update.Error != nil {
-		c.log.Printf("Session update errored, leaving election: %s", update.Error)
-	}
+	state := c.state
+	elected := c.elected
 	c.mu.Unlock()
+
+	if state == StateRunning {
+		if update.State == session.StateStopped {
+			c.log.Print("Session is stopping, will leave resign")
+			c.Resign()
+		} else if elected && update.Error != nil {
+			c.log.Printf("Session errored, will resign: %s", update.Error)
+			c.Resign()
+		}
+	}
 }
 
 // acquire will attempt to do just that.  Caller must hold lock!
@@ -255,10 +356,7 @@ func (c *Candidate) acquire(sid string) (bool, error) {
 	var err error
 	var elected bool
 
-	kvpValue := struct {
-		Candidate string
-		Acquired  time.Time
-	}{
+	kvpValue := &LeaderKVValue{
 		Candidate: c.id,
 		Acquired:  time.Now(),
 	}
@@ -281,9 +379,14 @@ func (c *Candidate) lockRunner() {
 	var sid string
 	var elected bool
 	var resigned chan struct{}
+	var updated bool
 	var err error
 
 	c.session.Run()
+
+	up := &ElectionUpdate{
+		State: StateRunning,
+	}
 
 	interval := c.session.RenewInterval()
 
@@ -294,15 +397,22 @@ acquisition:
 		select {
 		case <-acquireTicker.C:
 			c.mu.Lock()
+
 			if sid = c.session.ID(); sid == "" {
 				c.log.Debugf("Session does not exist, will try locking again in \"%d\" seconds...", int64(interval.Seconds()))
 			} else if elected, err = c.acquire(sid); err != nil {
 				c.log.Printf("Error attempting to acquire lock: %s", err)
 			}
-			if elected != c.elected {
+
+			if updated = elected != c.elected; updated {
+				// modify state
 				c.elected = elected
-				c.watchers.notify(elected)
+
+				// send notifications
+				up.Elected = elected
+				c.watchers.notify(up)
 			}
+
 			c.mu.Unlock()
 
 		case resigned = <-c.resign:
@@ -310,24 +420,31 @@ acquisition:
 		}
 	}
 
-	c.mu.Lock()
+	c.log.Debug("Resigning...")
 
 	acquireTicker.Stop()
 
-	c.log.Debug("Resigning...")
+	c.mu.Lock()
 
+	// modify state
 	c.elected = false
-	c.session.Stop()
-	c.watchers.notify(false)
-
-	// for good measure..
 	c.state = StateResigned
 
+	// send notifications
+	up.Elected = false
+	up.State = StateResigned
+	c.watchers.notify(up)
+
+	// release lock before the final steps so the object is usable
+	c.mu.Unlock()
+
+	// stop session, this might block for a bit
+	c.session.Stop()
+
+	// notify our caller that we've finished with resignation
 	if resigned != nil {
 		resigned <- struct{}{}
 	}
 
 	c.log.Print("Resigned")
-
-	c.mu.Unlock()
 }

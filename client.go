@@ -67,7 +67,7 @@ func NewClient(conf *api.Config) (*Client, error) {
 		c.log.Printf("Unable to determine hostname: %s", err)
 	}
 
-	if c.myAddr, err = GetMyAddress(); err != nil {
+	if c.myAddr, err = util.MyAddress(); err != nil {
 		c.log.Printf("Unable to determine ip address: %s", err)
 	}
 
@@ -129,7 +129,7 @@ func (c *Client) EnsureKey(key string, options *api.QueryOptions) (*api.KVPair, 
 // the resulting list
 func (c *Client) PickService(service, tag string, passingOnly bool, options *api.QueryOptions) (*api.ServiceEntry, *api.QueryMeta, error) {
 	svcs, qm, err := c.Health().Service(service, tag, passingOnly, options)
-	if nil != err {
+	if err != nil {
 		return nil, nil, err
 	}
 
@@ -252,7 +252,7 @@ func strSlicesEqual(a, b []string) bool {
 // attempt to construct a *net.URL from the resulting service information
 func (c *Client) BuildServiceURL(protocol, serviceName, tag string, passingOnly bool, options *api.QueryOptions) (*url.URL, error) {
 	svc, _, err := c.PickService(serviceName, tag, passingOnly, options)
-	if nil != err {
+	if err != nil {
 		return nil, err
 	}
 	if nil == svc {

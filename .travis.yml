@@ -17,6 +17,7 @@ install:
 
 before_script:
   - go vet ./
+  - go vet ./candidate
 
 script:
-  - go test -v
+  - go test ./... -v

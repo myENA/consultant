@@ -15,7 +15,7 @@ func (c *Client) ManagedServiceRegister(reg *SimpleServiceRegistration) (*Manage
 	reg.EnableTagOverride = true
 
 	sid, err := c.SimpleServiceRegister(reg)
-	if nil != err {
+	if err != nil {
 		return nil, err
 	}
 
@@ -95,7 +95,7 @@ func (ms *ManagedService) NewCandidate(key, ttl string, wait bool) (*Candidate, 
 	}
 
 	candidate, err := NewCandidate(ms.client, ms.client.MyAddr(), key, ttl)
-	if nil != err {
+	if err != nil {
 		ms.mu.Unlock()
 		return nil, err
 	}
@@ -139,7 +139,7 @@ func (ms *ManagedService) NewSiblingLocator(allowStale bool) (*SiblingLocator, e
 		Token:       ms.client.config.Token,
 	})
 
-	if nil != err {
+	if err != nil {
 		ms.mu.Unlock()
 		return nil, err
 	}
@@ -179,7 +179,7 @@ func (ms *ManagedService) AddTags(tags ...string) error {
 
 	// locate current definition as it exists within consul
 	currentDefs, _, err := ms.client.Catalog().Service(serviceName, serviceID, nil)
-	if nil != err {
+	if err != nil {
 		ms.mu.Unlock()
 		return err
 	}
@@ -259,7 +259,7 @@ func (ms *ManagedService) RemoveTags(tags ...string) error {
 
 	// locate current definition as it exists in consul...
 	currentDefs, _, err := ms.client.Catalog().Service(serviceName, serviceID, nil)
-	if nil != err {
+	if err != nil {
 		ms.mu.Unlock()
 		return err
 	}

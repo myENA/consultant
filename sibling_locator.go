@@ -189,7 +189,7 @@ func (sl *SiblingLocator) StartWatcher(passingOnly bool) error {
 
 	// try to build watchplan
 	sl.wp, err = WatchService(sl.config.ServiceName, tag, passingOnly, sl.config.AllowStale, sl.config.Datacenter, sl.config.Token)
-	if nil != err {
+	if err != nil {
 		sl.mu.Unlock()
 		return fmt.Errorf("unable to create watch plan: %v", err)
 	}
@@ -247,7 +247,7 @@ func (sl *SiblingLocator) Current(passingOnly, sendToCallbacks bool) (Siblings, 
 		Token:      sl.config.Token,
 		AllowStale: sl.config.AllowStale,
 	})
-	if nil != err {
+	if err != nil {
 		return nil, fmt.Errorf("unable to locate current siblings: %v", err)
 	}
 

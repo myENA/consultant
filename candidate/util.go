@@ -2,27 +2,27 @@ package candidate
 
 import (
 	"fmt"
+	"github.com/myENA/consultant/candidate/session"
 	"strings"
 )
 
-type SessionParts struct {
-	Prefix     string
-	ID         string
-	NodeName   string
-	RandomUUID string
+type SessionNameParts struct {
+	session.NameParts
+	CandidateID string
 }
 
-// ParseCandidateSessionName is provided so you don't have to parse it yourself :)
-func ParseSessionName(name string) (*SessionParts, error) {
-	split := strings.Split(name, "-")
-	if 4 != len(split) {
-		return nil, fmt.Errorf("expected four parts in session name \"%s\", saw only \"%d\"", name, len(split))
+func ParseSessionName(name string) (*SessionNameParts, error) {
+	sn, err := session.ParseName(name)
+	if err != nil {
+		return nil, err
 	}
 
-	return &SessionParts{
-		Prefix:     split[0],
-		ID:         split[1],
-		NodeName:   split[2],
-		RandomUUID: split[3],
+	if !strings.HasPrefix(sn.Key, SessionKeyPrefix) {
+		return nil, fmt.Errorf("session key \"%s\" does not have expected prefix \"%s\"", sn.Key, SessionKeyPrefix)
+	}
+
+	return &SessionNameParts{
+		NameParts:   *sn,
+		CandidateID: sn.Key[len(SessionKeyPrefix):],
 	}, nil
 }

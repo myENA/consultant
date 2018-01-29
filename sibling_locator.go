@@ -1,10 +1,10 @@
 package consultant
 
 import (
+	"errors"
 	"fmt"
 	"github.com/hashicorp/consul/api"
 	"github.com/hashicorp/consul/watch"
-	"github.com/pkg/errors"
 	"math"
 	"reflect"
 	"strconv"
@@ -22,7 +22,7 @@ type SiblingCallback func(index uint64, siblings Siblings)
 type Sibling struct {
 	Node    api.Node
 	Service api.AgentService
-	Checks  []api.HealthCheck
+	Checks  api.HealthChecks
 }
 
 // Siblings is provided to any callbacks
@@ -30,9 +30,8 @@ type Siblings []Sibling
 
 // SiblingLocatorConfig is used to construct a SiblingLocator.  All values except ServiceTags are required.
 type SiblingLocatorConfig struct {
-	Client      *Client // REQUIRED consultant client
-	ServiceID   string  // REQUIRED ID of service you want to find siblings for.  Used to exclude local service from responses
-	ServiceName string  // REQUIRED name of service
+	ServiceID   string // REQUIRED ID of service you want to find siblings for.  Used to exclude local service from responses
+	ServiceName string // REQUIRED name of service
 
 	NodeName    string   // OPTIONAL name of node where service was registered.  Used to exclude local service from responses.  Will use node client is connected to if not defined.
 	ServiceTags []string // OPTIONAL tags to require when looking for siblings
@@ -44,32 +43,26 @@ type SiblingLocatorConfig struct {
 // SiblingLocator provides a way for a local service to find other services registered in Consul that share it's name
 // and tags (if any).
 type SiblingLocator struct {
+	mu sync.Mutex
+
+	client *Client
 	config *SiblingLocatorConfig
 
 	callbacks        map[string]SiblingCallback
-	callbacksLock    *sync.RWMutex
 	lazyCallbackName uint64
 
-	wp        *watch.Plan
-	wpLock    *sync.Mutex
-	wpRunning bool
+	wp *watch.Plan
 
 	logSlug      string
 	logSlugSlice []interface{}
 }
 
-func NewSiblingLocator(config SiblingLocatorConfig) (*SiblingLocator, error) {
-	// client must be defined
-	if nil == config.Client {
-		return nil, errors.New("\"Client\" cannot be empty")
-	}
-
+func NewSiblingLocator(client *Client, config SiblingLocatorConfig) (*SiblingLocator, error) {
 	// construct new sibling locator
 	sl := &SiblingLocator{
-		config:        &config,
-		callbacks:     make(map[string]SiblingCallback),
-		callbacksLock: new(sync.RWMutex),
-		wpLock:        new(sync.Mutex),
+		client:    client,
+		config:    &config,
+		callbacks: make(map[string]SiblingCallback),
 	}
 
 	// verify service id is set
@@ -87,19 +80,19 @@ func NewSiblingLocator(config SiblingLocatorConfig) (*SiblingLocator, error) {
 	// verify node name is set, using client node if not
 	sl.config.NodeName = strings.TrimSpace(sl.config.NodeName)
 	if "" == sl.config.NodeName {
-		sl.config.NodeName = sl.config.Client.MyNode()
+		sl.config.NodeName = sl.client.MyNode()
 	}
 
 	// verify datacenter is set, using client datacenter if not
 	sl.config.Datacenter = strings.TrimSpace(sl.config.Datacenter)
 	if "" == sl.config.Datacenter {
-		sl.config.Datacenter = sl.config.Client.config.Datacenter
+		sl.config.Datacenter = sl.client.config.Datacenter
 	}
 
 	// verify token is set, using client token if not
 	sl.config.Token = strings.TrimSpace(sl.config.Token)
 	if "" == sl.config.Token {
-		sl.config.Token = sl.config.Client.config.Token
+		sl.config.Token = sl.client.config.Token
 	}
 
 	// create copy of tags, if necessary
@@ -112,7 +105,7 @@ func NewSiblingLocator(config SiblingLocatorConfig) (*SiblingLocator, error) {
 	}
 
 	// set up log slugs
-	sl.logSlug = fmt.Sprintf("[sibling-locator-%s]", sl.config.ServiceName)
+	sl.logSlug = fmt.Sprintf("[sibling-locator-%s] ", sl.config.ServiceName)
 	sl.logSlugSlice = []interface{}{sl.logSlug}
 
 	return sl, nil
@@ -121,7 +114,6 @@ func NewSiblingLocator(config SiblingLocatorConfig) (*SiblingLocator, error) {
 // NewSiblingLocatorWithCatalogService will construct a SiblingLocator from a consul api catalog service struct
 func NewSiblingLocatorWithCatalogService(c *Client, cs *api.CatalogService) (*SiblingLocator, error) {
 	conf := &SiblingLocatorConfig{
-		Client:      c,
 		NodeName:    cs.Node,
 		ServiceID:   cs.ServiceID,
 		ServiceName: cs.ServiceName,
@@ -134,13 +126,12 @@ func NewSiblingLocatorWithCatalogService(c *Client, cs *api.CatalogService) (*Si
 		copy(conf.ServiceTags, cs.ServiceTags)
 	}
 
-	return NewSiblingLocator(*conf)
+	return NewSiblingLocator(c, *conf)
 }
 
 // NewSiblingLocatorWithAgentService will construct a SiblingLocator from a consul api node and agent service struct
 func NewSiblingLocatorWithAgentService(c *Client, n *api.Node, as *api.AgentService) (*SiblingLocator, error) {
 	conf := &SiblingLocatorConfig{
-		Client:      c,
 		NodeName:    n.Node,
 		ServiceID:   as.ID,
 		ServiceName: as.Service,
@@ -153,28 +144,29 @@ func NewSiblingLocatorWithAgentService(c *Client, n *api.Node, as *api.AgentServ
 		copy(conf.ServiceTags, as.Tags)
 	}
 
-	return NewSiblingLocator(*conf)
+	return NewSiblingLocator(c, *conf)
 }
 
 func (sl *SiblingLocator) AddCallback(name string, cb SiblingCallback) string {
-	sl.callbacksLock.Lock()
-	defer sl.callbacksLock.Unlock()
+	sl.mu.Lock()
 
 	name = strings.TrimSpace(name)
-	if "" == name {
+	if name == "" {
 		name = strconv.FormatUint(sl.lazyCallbackName, 10)
 		sl.lazyCallbackName++
 	}
 
 	sl.callbacks[name] = cb
 
+	sl.mu.Unlock()
+
 	return name
 }
 
 func (sl *SiblingLocator) RemoveCallback(name string) {
-	sl.callbacksLock.Lock()
-	defer sl.callbacksLock.Unlock()
+	sl.mu.Lock()
 	delete(sl.callbacks, name)
+	sl.mu.Unlock()
 }
 
 // StartWatcher will spin up a Consul WatchPlan that watches for other registered services with the same name
@@ -182,11 +174,11 @@ func (sl *SiblingLocator) RemoveCallback(name string) {
 //
 // - passingOnly will limit the response to only registrations deemed "healthy"
 func (sl *SiblingLocator) StartWatcher(passingOnly bool) error {
-	sl.wpLock.Lock()
-	defer sl.wpLock.Unlock()
-
-	if sl.wpRunning {
-		return errors.New("Watcher already running")
+	sl.mu.Lock()
+	if sl.wp != nil && !sl.wp.IsStopped() {
+		sl.logPrint("watcher is already running")
+		sl.mu.Unlock()
+		return nil
 	}
 
 	var err error
@@ -199,32 +191,43 @@ func (sl *SiblingLocator) StartWatcher(passingOnly bool) error {
 	// try to build watchplan
 	sl.wp, err = WatchService(sl.config.ServiceName, tag, passingOnly, sl.config.AllowStale, sl.config.Datacenter, sl.config.Token)
 	if nil != err {
-		return fmt.Errorf("Unable to create watch plan: %v", err)
+		sl.mu.Unlock()
+		return fmt.Errorf("unable to create watch plan: %v", err)
 	}
+	sl.wp.Handler = sl.watchHandler
 
-	// run watchplan until it returns something
-	go sl.runWatcher(sl.config.Client.config.Address)
+	go func() {
+		err := sl.wp.Run(sl.client.config.Address)
+		sl.mu.Lock()
+		if err != nil {
+			sl.logPrintf("Watch Plan stopped with error: %s", err)
+		} else {
+			sl.logPrint("Watch Plan stopped without error")
+		}
+		sl.wp = nil
+		sl.mu.Unlock()
+	}()
+
+	sl.mu.Unlock()
 
 	return nil
 }
 
 // RemoveCallbacks will empty out the map of registered callbacks
 func (sl *SiblingLocator) RemoveCallbacks() {
-	sl.callbacksLock.Lock()
-	defer sl.callbacksLock.Unlock()
+	sl.mu.Lock()
 	sl.callbacks = make(map[string]SiblingCallback)
+	sl.mu.Unlock()
 }
 
 // StopWatcher will stop the sibling watchplan.  If the plan was previously stopped, this is a noop.
 func (sl *SiblingLocator) StopWatcher() {
-	sl.wpLock.Lock()
-	defer sl.wpLock.Unlock()
-
-	if nil != sl.wp {
+	sl.mu.Lock()
+	if sl.wp != nil && !sl.wp.IsStopped() {
 		sl.wp.Stop()
-		sl.wpRunning = false
 		sl.wp = nil
 	}
+	sl.mu.Unlock()
 }
 
 // Current will immediately execute a Health().Service() call, returning and optionally sending the result to
@@ -240,13 +243,13 @@ func (sl *SiblingLocator) Current(passingOnly, sendToCallbacks bool) (Siblings, 
 		tag = sl.config.ServiceTags[0]
 	}
 
-	svcs, _, err := sl.config.Client.Health().Service(sl.config.ServiceName, tag, passingOnly, &api.QueryOptions{
+	svcs, _, err := sl.client.Health().Service(sl.config.ServiceName, tag, passingOnly, &api.QueryOptions{
 		Datacenter: sl.config.Datacenter,
 		Token:      sl.config.Token,
 		AllowStale: sl.config.AllowStale,
 	})
 	if nil != err {
-		return nil, fmt.Errorf("Unable to locate current siblings: %v", err)
+		return nil, fmt.Errorf("unable to locate current siblings: %v", err)
 	}
 
 	if sendToCallbacks {
@@ -254,29 +257,6 @@ func (sl *SiblingLocator) Current(passingOnly, sendToCallbacks bool) (Siblings, 
 	}
 
 	return buildSiblingList(sl.config.NodeName, sl.config.ServiceID, sl.config.ServiceTags, svcs), nil
-}
-
-func (sl *SiblingLocator) runWatcher(address string) {
-	// set handler
-	sl.wp.Handler = sl.watchHandler
-
-	// blocks until error or closed
-	err := sl.wp.Run(address)
-
-	// lock
-	sl.wpLock.Lock()
-	defer sl.wpLock.Unlock()
-
-	// record error
-	if nil != err {
-		sl.logPrintf("WatchPlan stopped with error: %v", err)
-	}
-
-	// set running to false
-	sl.wpRunning = false
-
-	// nil out watchplan
-	sl.wp = nil
 }
 
 func (sl *SiblingLocator) watchHandler(index uint64, data interface{}) {
@@ -292,12 +272,11 @@ func (sl *SiblingLocator) watchHandler(index uint64, data interface{}) {
 }
 
 func (sl *SiblingLocator) sendToCallbacks(index uint64, svcs []*api.ServiceEntry) {
-	sl.callbacksLock.RLock()
-	defer sl.callbacksLock.RUnlock()
-
+	sl.mu.Lock()
 	for _, receiver := range sl.callbacks {
 		go receiver(index, buildSiblingList(sl.config.NodeName, sl.config.ServiceID, sl.config.ServiceTags, svcs))
 	}
+	sl.mu.Unlock()
 }
 
 func (sl *SiblingLocator) logPrintf(format string, v ...interface{}) {
@@ -308,52 +287,24 @@ func (sl *SiblingLocator) logPrint(v ...interface{}) {
 	log.Print(append(sl.logSlugSlice, v...)...)
 }
 
-func (sl *SiblingLocator) logPrintln(v ...interface{}) {
-	log.Println(append(sl.logSlugSlice, v...)...)
-}
-
-func (sl *SiblingLocator) logFatalf(format string, v ...interface{}) {
-	log.Fatalf(fmt.Sprintf("%s %s", sl.logSlug, format), v...)
-}
-
-func (sl *SiblingLocator) logFatal(v ...interface{}) {
-	log.Fatal(append(sl.logSlugSlice, v...)...)
-}
-
-func (sl *SiblingLocator) logFatalln(v ...interface{}) {
-	log.Fatalln(append(sl.logSlugSlice, v...)...)
-}
-
-func (sl *SiblingLocator) logPanicf(format string, v ...interface{}) {
-	log.Panicf(fmt.Sprintf("%s %s", sl.logSlug, format), v...)
-}
-
-func (sl *SiblingLocator) logPanic(v ...interface{}) {
-	log.Panic(append(sl.logSlugSlice, v...)...)
-}
-
-func (sl *SiblingLocator) logPanicln(v ...interface{}) {
-	log.Panicln(append(sl.logSlugSlice, v...)...)
-}
-
 func buildSiblingList(localNode, localID string, tags []string, svcs []*api.ServiceEntry) Siblings {
 	siblings := make(Siblings, 0)
 
-ServiceLoop:
+serviceLoop:
 	for _, svc := range svcs {
 		// omit myself
 		if svc.Node.Node == localNode && svc.Service.ID == localID {
-			continue ServiceLoop
+			continue serviceLoop
 		}
 
-	TagLoop:
+	tagLoop:
 		for _, t := range tags {
 			for _, st := range svc.Service.Tags {
 				if t == st {
-					continue TagLoop
+					continue tagLoop
 				}
 			}
-			continue ServiceLoop
+			continue serviceLoop
 		}
 
 		// add siblings
@@ -383,9 +334,10 @@ func buildSibling(svc *api.ServiceEntry) Sibling {
 	copy(tmp1, service.Tags)
 	service.Tags = tmp1
 
-	checks := make([]api.HealthCheck, len(svc.Checks))
+	checks := make(api.HealthChecks, len(svc.Checks))
 	for i, c := range svc.Checks {
-		checks[i] = *c
+		checks[i] = new(api.HealthCheck)
+		*checks[i] = *c
 	}
 
 	return Sibling{

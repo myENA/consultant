@@ -4,10 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"github.com/hashicorp/consul/api"
-	"github.com/renstrom/shortuuid"
 	"math/rand"
 	"net/url"
 	"os"
+	"sort"
 	"strings"
 )
 
@@ -25,6 +25,22 @@ type Client struct {
 	logSlugSlice []interface{}
 }
 
+type TagsOption int
+
+const (
+	// TagsAll means all tags passed must be present, though other tags are okay
+	TagsAll TagsOption = iota
+
+	// TagsAny means any service having at least one of the tags are returned
+	TagsAny
+
+	// TagsExactly means that the service tags must match those passed exactly
+	TagsExactly
+
+	// TagsExclude means skip services that match any tags passed
+	TagsExclude
+)
+
 // NewClient constructs a new consultant client.
 func NewClient(conf *api.Config) (*Client, error) {
 	var err error
@@ -35,13 +51,13 @@ func NewClient(conf *api.Config) (*Client, error) {
 
 	client := &Client{
 		config:       *conf,
-		logSlug:      "[consultant-client]",
-		logSlugSlice: []interface{}{"[consultant-client]"},
+		logSlug:      "[consultant-client] ",
+		logSlugSlice: []interface{}{"[consultant-client] "},
 	}
 
 	client.Client, err = api.NewClient(conf)
 	if err != nil {
-		return nil, fmt.Errorf("Unable to create Consul API Client: %s", err)
+		return nil, fmt.Errorf("unable to create Consul API Client: %s", err)
 	}
 
 	if client.myHost, err = os.Hostname(); err != nil {
@@ -53,7 +69,7 @@ func NewClient(conf *api.Config) (*Client, error) {
 	}
 
 	if client.myNode, err = client.Agent().NodeName(); err != nil {
-		return nil, fmt.Errorf("Unable to determine local Consul node name: %s", err)
+		return nil, fmt.Errorf("unable to determine local Consul node name: %s", err)
 	}
 
 	return client, nil
@@ -122,6 +138,113 @@ func (c *Client) PickService(service, tag string, passingOnly bool, options *api
 	return nil, qm, nil
 }
 
+// ServiceByTags - this wraps the consul Health().Service() call, adding the tagsOption parameter and accepting a
+// slice of tags.  tagsOption should be one of the following:
+//
+//     TagsAll - this will return only services that have all the specified tags present.
+//     TagsExactly - like TagsAll, but will return only services that match exactly the tags specified, no more.
+//     TagsAny - this will return services that match any of the tags specified.
+//     TagsExclude - this will return services don't have any of the tags specified.
+func (c *Client) ServiceByTags(service string, tags []string, tagsOption TagsOption, passingOnly bool, options *api.QueryOptions) ([]*api.ServiceEntry, *api.QueryMeta, error) {
+	var (
+		retv, tmpv []*api.ServiceEntry
+		qm         *api.QueryMeta
+		err        error
+	)
+
+	tag := ""
+
+	// Grab the initial payload
+	switch tagsOption {
+	case TagsAll, TagsExactly:
+		if len(tags) > 0 {
+			tag = tags[0]
+		}
+		fallthrough
+	case TagsAny, TagsExclude:
+		tmpv, qm, err = c.Health().Service(service, tag, passingOnly, options)
+	default:
+		return nil, nil, fmt.Errorf("invalid value for tagsOption: %d", tagsOption)
+	}
+
+	if err != nil {
+		return retv, qm, err
+	}
+
+	var tagsMap map[string]bool
+	if tagsOption != TagsExactly {
+		tagsMap = make(map[string]bool)
+		for _, t := range tags {
+			tagsMap[t] = true
+		}
+	}
+
+	// Filter payload.
+OUTER:
+	for _, se := range tmpv {
+		switch tagsOption {
+		case TagsExactly:
+			if !strSlicesEqual(tags, se.Service.Tags) {
+				continue OUTER
+			}
+		case TagsAll:
+			if len(se.Service.Tags) < len(tags) {
+				continue OUTER
+			}
+			// Consul allows duplicate tags, so this workaround.  Boo.
+			mc := 0
+			dedupeMap := make(map[string]bool)
+			for _, t := range se.Service.Tags {
+				if tagsMap[t] && !dedupeMap[t] {
+					mc++
+					dedupeMap[t] = true
+				}
+			}
+			if mc != len(tagsMap) {
+				continue OUTER
+			}
+		case TagsAny, TagsExclude:
+			found := false
+			for _, t := range se.Service.Tags {
+				if tagsMap[t] {
+					found = true
+					break
+				}
+			}
+			if tagsOption == TagsAny {
+				if !found && len(tags) > 0 {
+					continue OUTER
+				}
+			} else if found { // TagsExclude
+				continue OUTER
+			}
+
+		}
+		retv = append(retv, se)
+	}
+
+	return retv, qm, err
+}
+
+// determines if a and b contain the same elements (order doesn't matter)
+func strSlicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	ac := make([]string, len(a))
+	bc := make([]string, len(b))
+	copy(ac, a)
+	copy(bc, b)
+	sort.Strings(ac)
+	sort.Strings(bc)
+	for i, v := range ac {
+		if bc[i] != v {
+			return false
+		}
+	}
+	return true
+}
+
 // BuildServiceURL will attempt to locate a healthy instance of the specified service name + tag combination, then
 // attempt to construct a *net.URL from the resulting service information
 func (c *Client) BuildServiceURL(protocol, serviceName, tag string, passingOnly bool, options *api.QueryOptions) (*url.URL, error) {
@@ -130,7 +253,7 @@ func (c *Client) BuildServiceURL(protocol, serviceName, tag string, passingOnly 
 		return nil, err
 	}
 	if nil == svc {
-		return nil, fmt.Errorf("No services registered as \"%s\" with tag \"%s\" found.", serviceName, tag)
+		return nil, fmt.Errorf("no services registered as \"%s\" with tag \"%s\" found", serviceName, tag)
 	}
 
 	return url.Parse(fmt.Sprintf("%s://%s:%d", protocol, svc.Service.Address, svc.Service.Port))
@@ -168,7 +291,7 @@ func (c *Client) SimpleServiceRegister(reg *SimpleServiceRegistration) (string, 
 		return "", errors.New("\"Name\" cannot be blank")
 	}
 	if strings.Contains(serviceName, " ") {
-		return "", fmt.Errorf("Specified service name \"%s\" is invalid, service names cannot contain spaces", serviceName)
+		return "", fmt.Errorf("name \"%s\" is invalid, service names cannot contain spaces", serviceName)
 	}
 
 	// Come on, guys...valid ports plz...
@@ -184,7 +307,7 @@ func (c *Client) SimpleServiceRegister(reg *SimpleServiceRegistration) (string, 
 		// Form a unique service id
 		var tail string
 		if reg.RandomID {
-			tail = shortuuid.New()
+			tail = randstr(12)
 		} else {
 			tail = strings.ToLower(c.myHost)
 		}
@@ -208,10 +331,6 @@ func (c *Client) SimpleServiceRegister(reg *SimpleServiceRegistration) (string, 
 		Address:           address,
 		Checks:            api.AgentServiceChecks{},
 		EnableTagOverride: reg.EnableTagOverride,
-	}
-
-	if (reg.CheckPath != "" || reg.CheckTCP) && reg.Interval == "" {
-		return "", errors.New("you must specify Interval when registering a service with health check(s)")
 	}
 
 	// allow port override
@@ -239,7 +358,7 @@ func (c *Client) SimpleServiceRegister(reg *SimpleServiceRegistration) (string, 
 		// build check
 		checkHTTP = &api.AgentServiceCheck{
 			HTTP:     checkURL.String(),
-			Interval: reg.Interval,
+			Interval: interval,
 		}
 
 		// add http check
@@ -270,32 +389,4 @@ func (c *Client) logPrintf(format string, v ...interface{}) {
 
 func (c *Client) logPrint(v ...interface{}) {
 	log.Print(append(c.logSlugSlice, v...)...)
-}
-
-func (c *Client) logPrintln(v ...interface{}) {
-	log.Println(append(c.logSlugSlice, v...)...)
-}
-
-func (c *Client) logFatalf(format string, v ...interface{}) {
-	log.Fatalf(fmt.Sprintf("%s %s", c.logSlug, format), v...)
-}
-
-func (c *Client) logFatal(v ...interface{}) {
-	log.Fatal(append(c.logSlugSlice, v...)...)
-}
-
-func (c *Client) logFatalln(v ...interface{}) {
-	log.Fatalln(append(c.logSlugSlice, v...)...)
-}
-
-func (c *Client) logPanicf(format string, v ...interface{}) {
-	log.Panicf(fmt.Sprintf("%s %s", c.logSlug, format), v...)
-}
-
-func (c *Client) logPanic(v ...interface{}) {
-	log.Panic(append(c.logSlugSlice, v...)...)
-}
-
-func (c *Client) logPanicln(v ...interface{}) {
-	log.Panicln(append(c.logSlugSlice, v...)...)
 }

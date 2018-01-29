@@ -1,11 +1,6 @@
 package: github.com/myENA/consultant
 import:
-  - package: github.com/myENA/go-helpers
-  - package: github.com/myENA/go-stdlogger
-  - package: github.com/renstrom/shortuuid
-
   - package: github.com/hashicorp/consul
-    version: ">=v0.8.2"
-
+    version: ">=v1.0.1"
   - package: github.com/stretchr/testify
     version: v1.1.*

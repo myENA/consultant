@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"github.com/hashicorp/consul/api"
+	"github.com/myENA/consultant/log"
+	"github.com/myENA/consultant/util"
 	"math/rand"
 	"net/url"
 	"os"
@@ -13,6 +15,8 @@ import (
 
 type Client struct {
 	*api.Client
+
+	log log.DebugLogger
 
 	config api.Config
 
@@ -49,30 +53,29 @@ func NewClient(conf *api.Config) (*Client, error) {
 		return nil, errors.New("config cannot be nil")
 	}
 
-	client := &Client{
-		config:       *conf,
-		logSlug:      "[consultant-client] ",
-		logSlugSlice: []interface{}{"[consultant-client] "},
+	c := &Client{
+		config: *conf,
+		log:    log.New("consultant-client"),
 	}
 
-	client.Client, err = api.NewClient(conf)
+	c.Client, err = api.NewClient(conf)
 	if err != nil {
 		return nil, fmt.Errorf("unable to create Consul API Client: %s", err)
 	}
 
-	if client.myHost, err = os.Hostname(); err != nil {
-		client.logPrintf("Unable to determine hostname: %s", err)
+	if c.myHost, err = os.Hostname(); err != nil {
+		c.log.Printf("Unable to determine hostname: %s", err)
 	}
 
-	if client.myAddr, err = GetMyAddress(); err != nil {
-		client.logPrintf("Unable to determine ip address: %s", err)
+	if c.myAddr, err = GetMyAddress(); err != nil {
+		c.log.Printf("Unable to determine ip address: %s", err)
 	}
 
-	if client.myNode, err = client.Agent().NodeName(); err != nil {
+	if c.myNode, err = c.Agent().NodeName(); err != nil {
 		return nil, fmt.Errorf("unable to determine local Consul node name: %s", err)
 	}
 
-	return client, nil
+	return c, nil
 }
 
 // NewDefaultClient creates a new client with default configuration values
@@ -307,7 +310,7 @@ func (c *Client) SimpleServiceRegister(reg *SimpleServiceRegistration) (string, 
 		// Form a unique service id
 		var tail string
 		if reg.RandomID {
-			tail = randstr(12)
+			tail = util.RandStr(12)
 		} else {
 			tail = strings.ToLower(c.myHost)
 		}
@@ -381,12 +384,4 @@ func (c *Client) SimpleServiceRegister(reg *SimpleServiceRegistration) (string, 
 
 	// return registered service
 	return serviceID, nil
-}
-
-func (c *Client) logPrintf(format string, v ...interface{}) {
-	log.Printf(fmt.Sprintf("%s %s", c.logSlug, format), v...)
-}
-
-func (c *Client) logPrint(v ...interface{}) {
-	log.Print(append(c.logSlugSlice, v...)...)
 }

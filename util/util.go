@@ -1,4 +1,4 @@
-package consultant
+package util
 
 import (
 	"math/rand"
@@ -14,7 +14,7 @@ var (
 	rlbl = int64(len(rlb))
 )
 
-func randstr(n int) string {
+func RandStr(n int) string {
 	if n <= 0 {
 		n = 12
 	}

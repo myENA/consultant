@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"github.com/hashicorp/consul/api"
 	"github.com/hashicorp/consul/watch"
+	"github.com/myENA/consultant/log"
 	"math"
 	"reflect"
 	"strconv"
@@ -46,15 +47,14 @@ type SiblingLocator struct {
 	mu sync.Mutex
 
 	client *Client
+	log    log.Logger
+
 	config *SiblingLocatorConfig
 
 	callbacks        map[string]SiblingCallback
 	lazyCallbackName uint64
 
 	wp *watch.Plan
-
-	logSlug      string
-	logSlugSlice []interface{}
 }
 
 func NewSiblingLocator(client *Client, config SiblingLocatorConfig) (*SiblingLocator, error) {
@@ -105,8 +105,7 @@ func NewSiblingLocator(client *Client, config SiblingLocatorConfig) (*SiblingLoc
 	}
 
 	// set up log slugs
-	sl.logSlug = fmt.Sprintf("[sibling-locator-%s] ", sl.config.ServiceName)
-	sl.logSlugSlice = []interface{}{sl.logSlug}
+	sl.log = log.New(fmt.Sprintf("sibling-locator-%s", sl.config.ServiceName))
 
 	return sl, nil
 }
@@ -176,7 +175,7 @@ func (sl *SiblingLocator) RemoveCallback(name string) {
 func (sl *SiblingLocator) StartWatcher(passingOnly bool) error {
 	sl.mu.Lock()
 	if sl.wp != nil && !sl.wp.IsStopped() {
-		sl.logPrint("watcher is already running")
+		sl.log.Print("watcher is already running")
 		sl.mu.Unlock()
 		return nil
 	}
@@ -200,9 +199,9 @@ func (sl *SiblingLocator) StartWatcher(passingOnly bool) error {
 		err := sl.wp.Run(sl.client.config.Address)
 		sl.mu.Lock()
 		if err != nil {
-			sl.logPrintf("Watch Plan stopped with error: %s", err)
+			sl.log.Printf("Watch Plan stopped with error: %s", err)
 		} else {
-			sl.logPrint("Watch Plan stopped without error")
+			sl.log.Print("Watch Plan stopped without error")
 		}
 		sl.wp = nil
 		sl.mu.Unlock()
@@ -262,7 +261,7 @@ func (sl *SiblingLocator) Current(passingOnly, sendToCallbacks bool) (Siblings, 
 func (sl *SiblingLocator) watchHandler(index uint64, data interface{}) {
 	svcs, ok := data.([]*api.ServiceEntry)
 	if !ok {
-		sl.logPrintf("Watch Handler expected to see \"[]*api.ServiceEntry\", got "+
+		sl.log.Printf("Watch Handler expected to see \"[]*api.ServiceEntry\", got "+
 			"\"%s\" instead...",
 			reflect.TypeOf(data).Kind().String())
 		return
@@ -277,14 +276,6 @@ func (sl *SiblingLocator) sendToCallbacks(index uint64, svcs []*api.ServiceEntry
 		go receiver(index, buildSiblingList(sl.config.NodeName, sl.config.ServiceID, sl.config.ServiceTags, svcs))
 	}
 	sl.mu.Unlock()
-}
-
-func (sl *SiblingLocator) logPrintf(format string, v ...interface{}) {
-	log.Printf(fmt.Sprintf("%s %s", sl.logSlug, format), v...)
-}
-
-func (sl *SiblingLocator) logPrint(v ...interface{}) {
-	log.Print(append(sl.logSlugSlice, v...)...)
 }
 
 func buildSiblingList(localNode, localID string, tags []string, svcs []*api.ServiceEntry) Siblings {

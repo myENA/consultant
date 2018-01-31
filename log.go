@@ -1,37 +1,23 @@
 package consultant
 
 import (
-	stdLog "log"
-	"os"
+	"github.com/myENA/consultant/log"
 )
 
+// Logger is here for compatibility and will be removed in the future
 type Logger interface {
-	Print(...interface{})
-	Printf(string, ...interface{})
+	log.Logger
 }
 
-// Accept any logger that implements the core log functions
-var (
-	log Logger
-
-	debug bool
-)
-
-// create default logger
-func init() {
-	log = stdLog.New(os.Stderr, "", stdLog.LstdFlags)
-}
-
-// SetPackageLogger allows you to override the default package logger with your own
 func SetPackageLogger(logger Logger) {
-	log = logger
+	log.SetPackageLogger(logger)
 }
 
 // Debug will enable additional logging
 func Debug() {
-	debug = true
+	log.EnableDebug()
 }
 
 func DisableDebug() {
-	debug = false
+	log.DisableDebug()
 }

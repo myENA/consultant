@@ -3,6 +3,7 @@ package consultant
 import (
 	"fmt"
 	"github.com/hashicorp/consul/api"
+	"github.com/myENA/consultant/log"
 	"github.com/myENA/go-helpers"
 	"sync"
 )
@@ -14,7 +15,7 @@ func (c *Client) ManagedServiceRegister(reg *SimpleServiceRegistration) (*Manage
 	reg.EnableTagOverride = true
 
 	sid, err := c.SimpleServiceRegister(reg)
-	if nil != err {
+	if err != nil {
 		return nil, err
 	}
 
@@ -51,8 +52,10 @@ func (m *ManagedServiceMeta) RegisteredTags() []string {
 // NOTE: Currently no sanity checking is performed against Consul itself.  If you directly modify the service definition
 // via the consul api / ui, this object will be defunct.
 type ManagedService struct {
+	mu sync.Mutex
+
+	log    log.Logger
 	client *Client
-	mu     *sync.Mutex
 
 	meta           *ManagedServiceMeta
 	candidate      *Candidate
@@ -65,15 +68,13 @@ type ManagedService struct {
 func NewManagedService(client *Client, serviceID, serviceName string, registeredTags []string) (*ManagedService, error) {
 	return &ManagedService{
 		client: client,
-		mu:     new(sync.Mutex),
+		log:    log.New(serviceID),
 		meta: &ManagedServiceMeta{
 			id:                   serviceID,
 			name:                 serviceName,
 			registeredTags:       registeredTags,
 			registeredTagsLength: len(registeredTags),
 		},
-		logSlug:      fmt.Sprintf("[%s]", serviceID),
-		logSlugSlice: []interface{}{fmt.Sprintf("[%s]", serviceID)},
 	}, nil
 }
 
@@ -94,7 +95,7 @@ func (ms *ManagedService) NewCandidate(key, ttl string, wait bool) (*Candidate, 
 	}
 
 	candidate, err := NewCandidate(ms.client, ms.client.MyAddr(), key, ttl)
-	if nil != err {
+	if err != nil {
 		ms.mu.Unlock()
 		return nil, err
 	}
@@ -138,7 +139,7 @@ func (ms *ManagedService) NewSiblingLocator(allowStale bool) (*SiblingLocator, e
 		Token:       ms.client.config.Token,
 	})
 
-	if nil != err {
+	if err != nil {
 		ms.mu.Unlock()
 		return nil, err
 	}
@@ -178,7 +179,7 @@ func (ms *ManagedService) AddTags(tags ...string) error {
 
 	// locate current definition as it exists within consul
 	currentDefs, _, err := ms.client.Catalog().Service(serviceName, serviceID, nil)
-	if nil != err {
+	if err != nil {
 		ms.mu.Unlock()
 		return err
 	}
@@ -201,13 +202,13 @@ func (ms *ManagedService) AddTags(tags ...string) error {
 
 	// if none were added, log and return
 	if 0 == additions {
-		ms.logPrint("No new tags were found, will not execute update")
+		ms.log.Print("No new tags were found, will not execute watchers")
 		ms.mu.Unlock()
 		return nil
 	}
 
 	// log and try to update
-	ms.logPrintf("\"%d\" new tags found, updating registration...", additions)
+	ms.log.Printf("\"%d\" new tags found, updating registration...", additions)
 	err = ms.client.Agent().ServiceRegister(&api.AgentServiceRegistration{
 		ID:                def.ServiceID,
 		Name:              def.ServiceName,
@@ -258,7 +259,7 @@ func (ms *ManagedService) RemoveTags(tags ...string) error {
 
 	// locate current definition as it exists in consul...
 	currentDefs, _, err := ms.client.Catalog().Service(serviceName, serviceID, nil)
-	if nil != err {
+	if err != nil {
 		ms.mu.Unlock()
 		return err
 	}
@@ -279,13 +280,13 @@ func (ms *ManagedService) RemoveTags(tags ...string) error {
 	// build new tag slice
 	newTags, removed := helpers.RemoveStringsFromSlice(def.ServiceTags, okt)
 	if 0 == removed {
-		ms.logPrint("No tags were removed, will not execute update")
+		ms.log.Printf("No tags were removed, will not execute watchers")
 		ms.mu.Unlock()
 		return nil
 	}
 
 	// log and try to update
-	ms.logPrintf("\"%d\" tags were removed, updating registration...", removed)
+	ms.log.Printf("\"%d\" tags were removed, updating registration...", removed)
 	err = ms.client.Agent().ServiceRegister(&api.AgentServiceRegistration{
 		ID:                def.ServiceID,
 		Name:              def.ServiceName,
@@ -314,12 +315,4 @@ func (ms *ManagedService) Deregister() error {
 	ms.mu.Unlock()
 
 	return err
-}
-
-func (ms *ManagedService) logPrintf(format string, v ...interface{}) {
-	log.Printf(fmt.Sprintf("%s %s", ms.logSlug, format), v...)
-}
-
-func (ms *ManagedService) logPrint(v ...interface{}) {
-	log.Print(append(ms.logSlugSlice, v...)...)
 }

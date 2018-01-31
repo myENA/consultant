@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"github.com/hashicorp/consul/api"
 	"github.com/myENA/consultant"
+	"github.com/myENA/consultant/testutil"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 	"log"
@@ -22,7 +23,7 @@ const (
 type SiblingLocatorTestSuite struct {
 	suite.Suite
 
-	localCluster *testConsulCluster
+	localCluster *testutil.TestConsulCluster
 
 	locators []*consultant.SiblingLocator
 	results  [][]consultant.Siblings
@@ -36,8 +37,8 @@ func TestSiblingLocator_Current(t *testing.T) {
 func (sls *SiblingLocatorTestSuite) SetupTest() {
 	var err error
 
-	sls.localCluster, err = makeCluster(sls.T(), siblingLocatorClusterCount)
-	if nil != err {
+	sls.localCluster, err = testutil.MakeCluster(sls.T(), siblingLocatorClusterCount)
+	if err != nil {
 		log.Fatalf("Unable to initialize test consul cluster: %v", err)
 	}
 
@@ -58,7 +59,7 @@ func (sls *SiblingLocatorTestSuite) TearDownTest() {
 	}
 
 	if nil != sls.localCluster {
-		sls.localCluster.shutdown()
+		sls.localCluster.Shutdown()
 		sls.localCluster = nil
 	}
 }
@@ -69,10 +70,10 @@ func (sls *SiblingLocatorTestSuite) TearDownSuite() {
 
 func (sls *SiblingLocatorTestSuite) TestCurrent() {
 	for i := 0; i < siblingLocatorClusterCount; i++ {
-		err := sls.localCluster.client(i).Agent().ServiceRegister(&api.AgentServiceRegistration{
+		err := sls.localCluster.Client(i).Agent().ServiceRegister(&api.AgentServiceRegistration{
 			Name:    siblingLocatorServiceName,
 			Address: siblingLocatorServiceAddr,
-			Port:    randomPort(),
+			Port:    testutil.RandomPort(),
 		})
 
 		require.Nil(sls.T(), err, fmt.Sprintf("Unable to register service \"%d\": %v", i, err))
@@ -82,15 +83,15 @@ func (sls *SiblingLocatorTestSuite) TestCurrent() {
 	time.Sleep(quorumWaitDuration)
 
 	for i := 0; i < siblingLocatorClusterCount; i++ {
-		svcs, _, err := sls.localCluster.client(i).Catalog().Service(siblingLocatorServiceName, "", nil)
+		svcs, _, err := sls.localCluster.Client(i).Catalog().Service(siblingLocatorServiceName, "", nil)
 		require.Nil(sls.T(), err, fmt.Sprintf("Unable to locate services in node \"%d\": %v", i, err))
 
 		require.Len(sls.T(), svcs, siblingLocatorClusterCount, fmt.Sprintf("Expected to see \"%d\" services, saw \"%d\"", siblingLocatorClusterCount, len(svcs)))
 
 		for _, svc := range svcs {
-			if svc.Node == sls.localCluster.server(i).Config.NodeName && svc.ServiceName == siblingLocatorServiceName {
+			if svc.Node == sls.localCluster.Server(i).Config.NodeName && svc.ServiceName == siblingLocatorServiceName {
 				var err error
-				sls.locators[i], err = consultant.NewSiblingLocatorWithCatalogService(sls.localCluster.client(i), svc)
+				sls.locators[i], err = consultant.NewSiblingLocatorWithCatalogService(sls.localCluster.Client(i), svc)
 				require.Nil(sls.T(), err, fmt.Sprintf("Unable to create locator for node \"%d\": %v", i, err))
 
 				sls.results[i] = make([]consultant.Siblings, 0)
@@ -104,7 +105,7 @@ func (sls *SiblingLocatorTestSuite) TestCurrent() {
 			}
 		}
 
-		require.NotNil(sls.T(), sls.locators[i], fmt.Sprintf("Unable to locate service for node \"%s\"", sls.localCluster.server(i).Config.NodeName))
+		require.NotNil(sls.T(), sls.locators[i], fmt.Sprintf("Unable to locate service for node \"%s\"", sls.localCluster.Server(i).Config.NodeName))
 	}
 
 	// spread the word
@@ -131,10 +132,10 @@ func (sls *SiblingLocatorTestSuite) TestCurrent() {
 
 func (sls *SiblingLocatorTestSuite) TestWatchers() {
 	for i := 0; i < siblingLocatorClusterCount; i++ {
-		err := sls.localCluster.client(i).Agent().ServiceRegister(&api.AgentServiceRegistration{
+		err := sls.localCluster.Client(i).Agent().ServiceRegister(&api.AgentServiceRegistration{
 			Name:    siblingLocatorServiceName,
 			Address: siblingLocatorServiceAddr,
-			Port:    randomPort(),
+			Port:    testutil.RandomPort(),
 		})
 
 		require.Nil(sls.T(), err, fmt.Sprintf("Unable to register service \"%d\": %v", i, err))
@@ -144,15 +145,15 @@ func (sls *SiblingLocatorTestSuite) TestWatchers() {
 	time.Sleep(quorumWaitDuration)
 
 	for i := 0; i < siblingLocatorClusterCount; i++ {
-		svcs, _, err := sls.localCluster.client(i).Catalog().Service(siblingLocatorServiceName, "", nil)
+		svcs, _, err := sls.localCluster.Client(i).Catalog().Service(siblingLocatorServiceName, "", nil)
 		require.Nil(sls.T(), err, fmt.Sprintf("Unable to locate services in node \"%d\": %v", i, err))
 
 		require.Len(sls.T(), svcs, siblingLocatorClusterCount, fmt.Sprintf("Expected to see \"%d\" services, saw \"%d\"", siblingLocatorClusterCount, len(svcs)))
 
 		for _, svc := range svcs {
-			if svc.Node == sls.localCluster.server(i).Config.NodeName && svc.ServiceName == siblingLocatorServiceName {
+			if svc.Node == sls.localCluster.Server(i).Config.NodeName && svc.ServiceName == siblingLocatorServiceName {
 				var err error
-				sls.locators[i], err = consultant.NewSiblingLocatorWithCatalogService(sls.localCluster.client(i), svc)
+				sls.locators[i], err = consultant.NewSiblingLocatorWithCatalogService(sls.localCluster.Client(i), svc)
 				require.Nil(sls.T(), err, fmt.Sprintf("Unable to create locator for node \"%d\": %v", i, err))
 
 				sls.results[i] = make([]consultant.Siblings, 0)
@@ -167,7 +168,7 @@ func (sls *SiblingLocatorTestSuite) TestWatchers() {
 			}
 		}
 
-		require.NotNil(sls.T(), sls.locators[i], fmt.Sprintf("Unable to locate service for node \"%s\"", sls.localCluster.server(i).Config.NodeName))
+		require.NotNil(sls.T(), sls.locators[i], fmt.Sprintf("Unable to locate service for node \"%s\"", sls.localCluster.Server(i).Config.NodeName))
 	}
 
 	for i := 0; i < siblingLocatorClusterCount; i++ {
@@ -179,7 +180,7 @@ func (sls *SiblingLocatorTestSuite) TestWatchers() {
 	time.Sleep(quorumWaitDuration)
 
 	sls.locators[0].StopWatcher()
-	err := sls.localCluster.client(0).Agent().ServiceDeregister(siblingLocatorServiceName)
+	err := sls.localCluster.Client(0).Agent().ServiceDeregister(siblingLocatorServiceName)
 	require.Nil(sls.T(), err, fmt.Sprintf("Unable to deregister service on node \"1\": %v", err))
 
 	// wait for quorum service deregistration and watcher callbacks to finish

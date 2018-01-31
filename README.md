@@ -23,7 +23,7 @@ With a multi-service setup, there are times where might want one service to be r
 This task can range from being considered the leader of the entire cluster of services OR simply a single sub-task
 that must run atomically.
 
-Look [![here]](https://godoc.org/github.com/myENA/consultant#Candidate) for some basic documentation.
+Look [![here]](https://godoc.org/github.com/myENA/consultant/candidate#Candidate) for some basic documentation.
 
 ## Managed Services
 [![ManagedService]](https://godoc.org/github.com/myENA/consultant#ManagedService) is a lightweight lifecycle manager for Consul services.

@@ -282,10 +282,14 @@ func (cs *Session) create() error {
 	if err != nil {
 		cs.id = ""
 		cs.name = ""
-	} else {
+	} else if sid != "" {
 		cs.id = sid
 		cs.name = name
 		cs.lastRenewed = time.Now()
+	} else {
+		cs.id = ""
+		cs.name = ""
+		err = errors.New("internal error creating session")
 	}
 
 	return err
@@ -302,9 +306,13 @@ func (cs *Session) renew() error {
 	if err != nil {
 		cs.id = ""
 		cs.name = ""
-	} else {
+	} else if se != nil {
 		cs.id = se.ID
 		cs.lastRenewed = time.Now()
+	} else {
+		cs.id = ""
+		cs.name = ""
+		err = errors.New("internal error renewing session")
 	}
 
 	return err

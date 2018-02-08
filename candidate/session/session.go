@@ -92,6 +92,7 @@ func New(conf *Config) (*Session, error) {
 	var client *api.Client
 	var l log.DebugLogger
 	var err error
+	var updateFunc UpdateFunc
 
 	if conf != nil {
 		key = conf.Key
@@ -99,6 +100,7 @@ func New(conf *Config) (*Session, error) {
 		behavior = conf.Behavior
 		l = conf.Log
 		client = conf.Client
+		updateFunc = conf.UpdateFunc
 	}
 
 	if behavior == "" {
@@ -150,7 +152,7 @@ func New(conf *Config) (*Session, error) {
 		behavior:   behavior,
 		interval:   time.Duration(ttlTD.Nanoseconds() / 2),
 		stop:       make(chan chan struct{}, 1),
-		updateFunc: conf.UpdateFunc,
+		updateFunc: updateFunc,
 	}
 
 	if cs.node, err = client.Agent().NodeName(); err != nil {

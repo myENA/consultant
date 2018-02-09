@@ -332,6 +332,11 @@ maintaining:
 		select {
 		case <-intervalTicker.C:
 			cs.mu.Lock()
+			if !cs.lastRenewed.IsZero() && time.Now().Sub(cs.lastRenewed) > cs.ttl {
+				cs.id = ""
+				cs.name = ""
+				cs.log.Printf("Last renewed time (%s) is >= ttl (%s), creating new session...", cs.lastRenewed.Format(time.RFC822), cs.ttl)
+			}
 			if cs.id == "" {
 				if err = cs.create(); err != nil {
 					cs.log.Printf("Unable to create Consul Session: %s", err)

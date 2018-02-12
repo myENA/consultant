@@ -290,6 +290,17 @@ func (c *Candidate) RemoveWatchers() {
 	c.watchers.RemoveAll()
 }
 
+// UpdateWatchers will immediately push the current state of this Candidate to all currently registered Watchers
+func (c *Candidate) UpdateWatchers() {
+	c.mu.Lock()
+	up := ElectionUpdate{
+		Elected: c.elected,
+		State:   c.state,
+	}
+	c.watchers.notify(&up)
+	c.mu.Unlock()
+}
+
 // WaitFor will wait for a candidate to be elected or until duration has passed
 func (c *Candidate) WaitFor(td time.Duration) error {
 	var err error

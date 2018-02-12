@@ -334,6 +334,17 @@ func (c *Candidate) Wait() {
 	c.WaitFor(1<<63 - 1)
 }
 
+func (c *Candidate) State() State {
+	c.mu.Lock()
+	s := c.state
+	c.mu.Unlock()
+	return s
+}
+
+func (c *Candidate) Running() bool {
+	return c.State() == StateRunning
+}
+
 func (c *Candidate) sessionUpdate(update session.Update) {
 	c.mu.Lock()
 	state := c.state
@@ -407,6 +418,11 @@ acquisition:
 			if updated = elected != c.elected; updated {
 				// modify state
 				c.elected = elected
+				if elected {
+					c.log.Debug("We have lost the election")
+				} else {
+					c.log.Debug("We have won the election")
+				}
 
 				// send notifications
 				up.Elected = elected

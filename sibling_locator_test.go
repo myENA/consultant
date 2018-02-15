@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 	"log"
+	"sync"
 	"testing"
 	"time"
 )
@@ -26,7 +27,6 @@ type SiblingLocatorTestSuite struct {
 	localCluster *testutil.TestConsulCluster
 
 	locators []*consultant.SiblingLocator
-	results  [][]consultant.Siblings
 }
 
 func TestSiblingLocator_Current(t *testing.T) {
@@ -43,7 +43,6 @@ func (sls *SiblingLocatorTestSuite) SetupTest() {
 	}
 
 	sls.locators = make([]*consultant.SiblingLocator, siblingLocatorClusterCount)
-	sls.results = make([][]consultant.Siblings, siblingLocatorClusterCount)
 }
 
 // TearDownTest is run after each test method
@@ -69,6 +68,9 @@ func (sls *SiblingLocatorTestSuite) TearDownSuite() {
 }
 
 func (sls *SiblingLocatorTestSuite) TestCurrent() {
+	resultsMu := sync.Mutex{}
+	results := make([][]consultant.Siblings, siblingLocatorClusterCount)
+
 	for i := 0; i < siblingLocatorClusterCount; i++ {
 		err := sls.localCluster.Client(i).Agent().ServiceRegister(&api.AgentServiceRegistration{
 			Name:    siblingLocatorServiceName,
@@ -94,12 +96,16 @@ func (sls *SiblingLocatorTestSuite) TestCurrent() {
 				sls.locators[i], err = consultant.NewSiblingLocatorWithCatalogService(sls.localCluster.Client(i), svc)
 				require.Nil(sls.T(), err, fmt.Sprintf("Unable to create locator for node \"%d\": %v", i, err))
 
-				sls.results[i] = make([]consultant.Siblings, 0)
+				resultsMu.Lock()
+				results[i] = make([]consultant.Siblings, 0)
+				resultsMu.Unlock()
 
 				// :|
 				func(i int, locator *consultant.SiblingLocator) {
 					locator.AddCallback("", func(_ uint64, siblings consultant.Siblings) {
-						sls.results[i] = append(sls.results[i], siblings)
+						resultsMu.Lock()
+						results[i] = append(results[i], siblings)
+						resultsMu.Unlock()
 					})
 				}(i, sls.locators[i])
 			}
@@ -118,19 +124,26 @@ func (sls *SiblingLocatorTestSuite) TestCurrent() {
 
 	// Should only have 1 entry
 	for i := 0; i < siblingLocatorClusterCount; i++ {
-		require.Len(sls.T(), sls.results[i], 1, fmt.Sprintf("Expected \"results[%d]\" to be length 1, saw \"%d\"", i, len(sls.results[i])))
+		resultsMu.Lock()
+		require.Len(sls.T(), results[i], 1, fmt.Sprintf("Expected \"results[%d]\" to be length 1, saw \"%d\"", i, len(results[i])))
+		resultsMu.Unlock()
 	}
 
 	for i := 0; i < siblingLocatorClusterCount; i++ {
-		require.Len(sls.T(), sls.results[i][0], siblingLocatorClusterCount-1, fmt.Sprintf(
+		resultsMu.Lock()
+		require.Len(sls.T(), results[i][0], siblingLocatorClusterCount-1, fmt.Sprintf(
 			"Expected node \"%d\" result \"0\" length \"%d\", saw \"%d\"",
 			i,
 			siblingLocatorClusterCount-1,
-			len(sls.results[i][0])))
+			len(results[i][0])))
+		resultsMu.Unlock()
 	}
 }
 
 func (sls *SiblingLocatorTestSuite) TestWatchers() {
+	resultsMu := sync.Mutex{}
+	results := make([][]consultant.Siblings, siblingLocatorClusterCount)
+
 	for i := 0; i < siblingLocatorClusterCount; i++ {
 		err := sls.localCluster.Client(i).Agent().ServiceRegister(&api.AgentServiceRegistration{
 			Name:    siblingLocatorServiceName,
@@ -156,12 +169,16 @@ func (sls *SiblingLocatorTestSuite) TestWatchers() {
 				sls.locators[i], err = consultant.NewSiblingLocatorWithCatalogService(sls.localCluster.Client(i), svc)
 				require.Nil(sls.T(), err, fmt.Sprintf("Unable to create locator for node \"%d\": %v", i, err))
 
-				sls.results[i] = make([]consultant.Siblings, 0)
+				resultsMu.Lock()
+				results[i] = make([]consultant.Siblings, 0)
+				resultsMu.Unlock()
 
 				// :|
 				func(i int, locator *consultant.SiblingLocator) {
 					locator.AddCallback("", func(_ uint64, siblings consultant.Siblings) {
-						sls.results[i] = append(sls.results[i], siblings)
+						resultsMu.Lock()
+						results[i] = append(results[i], siblings)
+						resultsMu.Unlock()
 					})
 				}(i, sls.locators[i])
 
@@ -186,21 +203,23 @@ func (sls *SiblingLocatorTestSuite) TestWatchers() {
 	// wait for quorum service deregistration and watcher callbacks to finish
 	time.Sleep(quorumWaitDuration)
 
+	resultsMu.Lock()
 	require.Len(
 		sls.T(),
-		sls.results[1],
-		len(sls.results[2]),
+		results[1],
+		len(results[2]),
 		fmt.Sprintf(
 			"Expected node 1 and 2 to have same result length, saw: \"%d\" \"%d\"",
-			len(sls.results[0]),
-			len(sls.results[2])))
+			len(results[0]),
+			len(results[2])))
 
 	require.Len(
 		sls.T(),
-		sls.results[0],
-		len(sls.results[1])-1,
+		results[0],
+		len(results[1])-1,
 		fmt.Sprintf(
 			"Expected node 0 results to be 1 less than node 1, saw: \"%d\" \"%d\"",
-			len(sls.results[0]),
-			len(sls.results[1])))
+			len(results[0]),
+			len(results[1])))
+	resultsMu.Unlock()
 }

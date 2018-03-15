@@ -23,4 +23,4 @@ script:
   - go test ./candidate/session -v -race
   - go test ./candidate -v -race
   - go test ./util -v -race
-  - go test -v -race
+  - go test -v

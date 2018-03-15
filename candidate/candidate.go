@@ -37,9 +37,7 @@ var (
 type (
 	// LeaderKVValue is the body of the acquired KV
 	LeaderKVValue struct {
-		// Candidate is
-		Candidate string
-		Acquired  time.Time
+		LeaderAddress string
 	}
 
 	// ElectionUpdate is sent to watchers on election state change
@@ -222,26 +220,23 @@ func (c *Candidate) LeaderIP() (net.IP, error) {
 
 }
 
-// Return the leader of a foreign datacenter, assuming its ID can be interpreted as an IP address
+// ForeignLeaderIP will attempt to parse the body of the locked kv key to locate the current leader
 func (c *Candidate) ForeignLeaderIP(dc string) (net.IP, error) {
-	leaderSession, err := c.ForeignLeaderService(dc)
+
+	kv, _, err := c.client.KV().Get(c.kvKey, &api.QueryOptions{Datacenter: dc})
 	if err != nil {
-		return nil, fmt.Errorf("unable to fetch leader address: %s", err)
+		return nil, err
+	} else if kv == nil || len(kv.Value) == 0 {
+		return nil, errors.New("no leader has been elected")
 	}
 
-	// parse session name
-	parts, err := ParseSessionName(leaderSession.Name)
-	if err != nil {
-		return nil, fmt.Errorf("unable to parse leader session name: %s", err)
+	info := &LeaderKVValue{}
+	if err = json.Unmarshal(kv.Value, info); err == nil && info.LeaderAddress != "" {
+		if ip := net.ParseIP(info.LeaderAddress); ip != nil {
+			return ip, nil
+		}
 	}
-
-	// attempt to validate value
-	ip := net.ParseIP(parts.CandidateID)
-	if nil == ip {
-		return nil, fmt.Errorf("unable to parse IP address from \"%s\"", parts.CandidateID)
-	}
-
-	return ip, nil
+	return nil, fmt.Errorf("key \"%s\" had unexpected value \"%s\" for \"LeaderAddress\"", c.kvKey, string(kv.Value))
 }
 
 // ForeignLeaderService will attempt to locate the leader's session entry in a datacenter of your choosing
@@ -250,13 +245,7 @@ func (c *Candidate) ForeignLeaderService(dc string) (*api.SessionEntry, error) {
 	var se *api.SessionEntry
 	var err error
 
-	qo := &api.QueryOptions{}
-
-	if "" != dc {
-		qo.Datacenter = dc
-	}
-
-	kv, _, err = c.client.KV().Get(c.kvKey, qo)
+	kv, _, err = c.client.KV().Get(c.kvKey, &api.QueryOptions{Datacenter: dc})
 	if err != nil {
 		return nil, err
 	}
@@ -266,7 +255,7 @@ func (c *Candidate) ForeignLeaderService(dc string) (*api.SessionEntry, error) {
 	}
 
 	if kv.Session != "" {
-		se, _, err = c.client.Session().Info(kv.Session, qo)
+		se, _, err = c.client.Session().Info(kv.Session, &api.QueryOptions{Datacenter: dc})
 		if nil != se {
 			return se, nil
 		}
@@ -379,8 +368,7 @@ func (c *Candidate) acquire(sid string) (bool, error) {
 	var elected bool
 
 	kvpValue := &LeaderKVValue{
-		Candidate: c.id,
-		Acquired:  time.Now(),
+		LeaderAddress: c.id,
 	}
 
 	kvp := &api.KVPair{

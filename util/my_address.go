@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net"
 	"os"
+	"sync"
 )
 
 // These are set on init
@@ -11,6 +12,9 @@ var (
 	block10  *net.IPNet
 	block172 *net.IPNet
 	block192 *net.IPNet
+
+	myAddress   string
+	myAddressMu sync.RWMutex
 )
 
 func init() {
@@ -25,12 +29,18 @@ func init() {
 	if _, block192, err = net.ParseCIDR("192.168.0.0/16"); err != nil {
 		panic(err.Error())
 	}
+
 }
 
-// MyAddress searches available interfaces (skip loopback) and returns the first
-// private ipv4 address found giving preference to smaller RFC1918 blocks: 192.168.0.0/16 < 172.16.0.0/12 < 10.0.0.0/8
-func MyAddress() (string, error) {
-	myAddress := os.Getenv("CONSUL_SERVICE_ADDR")
+func tryFindAddr() (string, error) {
+	myAddressMu.Lock()
+	defer myAddressMu.Unlock()
+
+	if myAddress != "" {
+		addr := myAddress
+		return addr, nil
+	}
+	myAddress = os.Getenv("CONSUL_SERVICE_ADDR")
 	if myAddress != "" {
 		return myAddress, nil
 	}
@@ -74,4 +84,24 @@ func MyAddress() (string, error) {
 	}
 
 	return "", errors.New("no valid interfaces found")
+}
+
+// MyAddress searches available interfaces (skip loopback) and returns the first
+// private ipv4 address found giving preference to smaller RFC1918 blocks: 192.168.0.0/16 < 172.16.0.0/12 < 10.0.0.0/8
+func MyAddress() (string, error) {
+	myAddressMu.RLock()
+	if myAddress == "" {
+		myAddressMu.RUnlock()
+		return tryFindAddr()
+	}
+	addr := myAddress
+	myAddressMu.RUnlock()
+	return addr, nil
+}
+
+// SetMyAddress allows you to manually specify an address to use for various parts of Consultant
+func SetMyAddress(addr string) {
+	myAddressMu.Lock()
+	myAddress = addr
+	myAddressMu.Unlock()
 }

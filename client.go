@@ -5,12 +5,12 @@ import (
 	"fmt"
 	"github.com/hashicorp/consul/api"
 	"github.com/myENA/consultant/log"
+	"github.com/myENA/consultant/service"
 	"github.com/myENA/consultant/util"
 	"math/rand"
 	"net/url"
-	"os"
 	"sort"
-	"strings"
+	"sync"
 )
 
 type Client struct {
@@ -20,8 +20,11 @@ type Client struct {
 
 	config api.Config
 
-	myAddr string
-	myHost string
+	myAddress   string
+	myAddressMu sync.RWMutex
+
+	myHostname   string
+	myHostnameMu sync.RWMutex
 
 	myNode string
 
@@ -29,7 +32,7 @@ type Client struct {
 	logSlugSlice []interface{}
 }
 
-type TagsOption int
+type TagsOption service.TagsOption
 
 const (
 	// TagsAll means all tags passed must be present, though other tags are okay
@@ -63,14 +66,6 @@ func NewClient(conf *api.Config) (*Client, error) {
 		return nil, fmt.Errorf("unable to create Consul API Client: %s", err)
 	}
 
-	if c.myHost, err = os.Hostname(); err != nil {
-		c.log.Printf("Unable to determine hostname: %s", err)
-	}
-
-	if c.myAddr, err = util.MyAddress(); err != nil {
-		c.log.Printf("Unable to determine ip address: %s", err)
-	}
-
 	if c.myNode, err = c.Agent().NodeName(); err != nil {
 		return nil, fmt.Errorf("unable to determine local Consul node name: %s", err)
 	}
@@ -88,24 +83,44 @@ func (c *Client) Config() api.Config {
 	return c.config
 }
 
-// MyAddr returns either the self-determine or set IP address of our host
+// MyAddr will either return the address returned by util.MyAddress() or the value set by client.SetMyAddr()
 func (c *Client) MyAddr() string {
-	return c.myAddr
+	var addr string
+	c.myAddressMu.RLock()
+	if c.myAddress == "" {
+		addr, _ = util.MyAddress()
+	} else {
+		addr = c.myAddress
+	}
+	c.myAddressMu.RUnlock()
+	return addr
 }
 
-// SetMyAddr allows you to manually specify the IP address of our host
+// SetMyAddr allows you to manually specify the IP address of our host for this client
 func (c *Client) SetMyAddr(myAddr string) {
-	c.myAddr = myAddr
+	c.myAddressMu.Lock()
+	c.myAddress = myAddr
+	c.myAddressMu.Unlock()
 }
 
-// MyHost returns either the self-determined or set name of our host
+// MyHost will either return the value returned by util.MyHostname() or the value set by client.SetMyHost()
 func (c *Client) MyHost() string {
-	return c.myHost
+	var hostname string
+	c.myHostnameMu.RLock()
+	if c.myHostname == "" {
+		hostname, _ = util.MyHostname()
+	} else {
+		hostname = c.myHostname
+	}
+	c.myHostnameMu.RUnlock()
+	return hostname
 }
 
-// SetMyHost allows you to to manually specify the name of our host
+// SetMyHost allows you to to manually specify the name of our host for this client
 func (c *Client) SetMyHost(myHost string) {
-	c.myHost = myHost
+	c.myHostnameMu.Lock()
+	c.myHostname = myHost
+	c.myHostnameMu.Unlock()
 }
 
 // MyNode returns the name of the Consul Node this client is connected to
@@ -149,84 +164,7 @@ func (c *Client) PickService(service, tag string, passingOnly bool, options *api
 //     TagsAny - this will return services that match any of the tags specified.
 //     TagsExclude - this will return services don't have any of the tags specified.
 func (c *Client) ServiceByTags(service string, tags []string, tagsOption TagsOption, passingOnly bool, options *api.QueryOptions) ([]*api.ServiceEntry, *api.QueryMeta, error) {
-	var (
-		retv, tmpv []*api.ServiceEntry
-		qm         *api.QueryMeta
-		err        error
-	)
 
-	tag := ""
-
-	// Grab the initial payload
-	switch tagsOption {
-	case TagsAll, TagsExactly:
-		if len(tags) > 0 {
-			tag = tags[0]
-		}
-		fallthrough
-	case TagsAny, TagsExclude:
-		tmpv, qm, err = c.Health().Service(service, tag, passingOnly, options)
-	default:
-		return nil, nil, fmt.Errorf("invalid value for tagsOption: %d", tagsOption)
-	}
-
-	if err != nil {
-		return retv, qm, err
-	}
-
-	var tagsMap map[string]bool
-	if tagsOption != TagsExactly {
-		tagsMap = make(map[string]bool)
-		for _, t := range tags {
-			tagsMap[t] = true
-		}
-	}
-
-	// Filter payload.
-OUTER:
-	for _, se := range tmpv {
-		switch tagsOption {
-		case TagsExactly:
-			if !strSlicesEqual(tags, se.Service.Tags) {
-				continue OUTER
-			}
-		case TagsAll:
-			if len(se.Service.Tags) < len(tags) {
-				continue OUTER
-			}
-			// Consul allows duplicate tags, so this workaround.  Boo.
-			mc := 0
-			dedupeMap := make(map[string]bool)
-			for _, t := range se.Service.Tags {
-				if tagsMap[t] && !dedupeMap[t] {
-					mc++
-					dedupeMap[t] = true
-				}
-			}
-			if mc != len(tagsMap) {
-				continue OUTER
-			}
-		case TagsAny, TagsExclude:
-			found := false
-			for _, t := range se.Service.Tags {
-				if tagsMap[t] {
-					found = true
-					break
-				}
-			}
-			if tagsOption == TagsAny {
-				if !found && len(tags) > 0 {
-					continue OUTER
-				}
-			} else if found { // TagsExclude
-				continue OUTER
-			}
-
-		}
-		retv = append(retv, se)
-	}
-
-	return retv, qm, err
 }
 
 // determines if a and b contain the same elements (order doesn't matter)
@@ -263,14 +201,15 @@ func (c *Client) BuildServiceURL(protocol, serviceName, tag string, passingOnly 
 }
 
 // SimpleServiceRegistration describes a service that we want to register
+// DEPRECATED in favor of service.SimpleRegistration
 type SimpleServiceRegistration struct {
 	Name string // [required] name to register service under
 	Port int    // [required] external port to advertise for service consumers
 
 	ID                string   // [optional] specific id for service, will be generated if not set
 	RandomID          bool     // [optional] if ID is not set, use a random uuid if true, or hostname if false
-	Address           string   // [optional] determined automatically by Register() if not set
-	Tags              []string // [optional] desired tags: Register() adds serviceId
+	Address           string   // [optional] determined automatically by RegisterSimple() if not set
+	Tags              []string // [optional] desired tags: RegisterSimple() adds serviceId
 	CheckTCP          bool     // [optional] if true register a TCP check
 	CheckPath         string   // [optional] register an http check with this path if set
 	CheckScheme       string   // [optional] override the http check scheme (default: http)
@@ -280,108 +219,22 @@ type SimpleServiceRegistration struct {
 }
 
 // SimpleServiceRegister is a helper method to ease consul service registration
+// DEPRECATED in favor of service.RegisterSimple
 func (c *Client) SimpleServiceRegister(reg *SimpleServiceRegistration) (string, error) {
-	var err error                        // generic error holder
-	var serviceID string                 // local service identifier
-	var address string                   // service host address
-	var interval string                  // check interval
-	var checkHTTP *api.AgentServiceCheck // http type check
-	var serviceName string               // service registration name
-
-	// Perform some basic service name cleanup and validation
-	serviceName = strings.TrimSpace(reg.Name)
-	if serviceName == "" {
-		return "", errors.New("\"Name\" cannot be blank")
-	}
-	if strings.Contains(serviceName, " ") {
-		return "", fmt.Errorf("name \"%s\" is invalid, service names cannot contain spaces", serviceName)
-	}
-
-	// Come on, guys...valid ports plz...
-	if reg.Port <= 0 {
-		return "", fmt.Errorf("%d is not a valid port", reg.Port)
-	}
-
-	if address = reg.Address; address == "" {
-		address = c.myAddr
-	}
-
-	if serviceID = reg.ID; serviceID == "" {
-		// Form a unique service id
-		var tail string
-		if reg.RandomID {
-			tail = util.RandStr(12)
-		} else {
-			tail = strings.ToLower(c.myHost)
-		}
-		serviceID = fmt.Sprintf("%s-%s", serviceName, tail)
-	}
-
-	if interval = reg.Interval; interval == "" {
-		// set a default interval
-		interval = "30s"
-	}
-
-	// The serviceID is added in order to ensure detection in ServiceMonitor()
-	tags := append(reg.Tags, serviceID)
-
-	// Set up the service registration struct
-	asr := &api.AgentServiceRegistration{
-		ID:                serviceID,
-		Name:              serviceName,
-		Tags:              tags,
-		Port:              reg.Port,
-		Address:           address,
-		Checks:            api.AgentServiceChecks{},
-		EnableTagOverride: reg.EnableTagOverride,
-	}
-
-	// allow port override
-	checkPort := reg.CheckPort
-	if checkPort <= 0 {
-		checkPort = reg.Port
-	}
-
-	// build http check if specified
-	if reg.CheckPath != "" {
-
-		// allow scheme override
-		checkScheme := reg.CheckScheme
-		if checkScheme == "" {
-			checkScheme = "http"
-		}
-
-		// build check url
-		checkURL := &url.URL{
-			Scheme: checkScheme,
-			Host:   fmt.Sprintf("%s:%d", address, checkPort),
-			Path:   reg.CheckPath,
-		}
-
-		// build check
-		checkHTTP = &api.AgentServiceCheck{
-			HTTP:     checkURL.String(),
-			Interval: interval,
-		}
-
-		// add http check
-		asr.Checks = append(asr.Checks, checkHTTP)
-	}
-
-	// build tcp check if specified
-	if reg.CheckTCP {
-		// create tcp check definition
-		asr.Checks = append(asr.Checks, &api.AgentServiceCheck{
-			TCP:      fmt.Sprintf("%s:%d", address, checkPort),
-			Interval: interval,
-		})
-	}
-
-	// register and check error
-	if err = c.Agent().ServiceRegister(asr); err != nil {
-		return "", err
-	}
-
-	// return registered service
-	return serviceID, nil
+	return service.RegisterSimple(
+		&service.SimpleRegistration{
+			Name:              reg.Name,
+			Port:              reg.Port,
+			ID:                reg.ID,
+			RandomID:          reg.RandomID,
+			Address:           reg.Address,
+			EnableTagOverride: reg.EnableTagOverride,
+			Tags:              reg.Tags,
+			CheckPort:         reg.CheckPort,
+			CheckInterval:     reg.Interval,
+			CheckTCP:          reg.CheckTCP,
+			CheckPath:         reg.CheckPath,
+			CheckScheme:       reg.CheckScheme,
+		},
+		nil)
 }

@@ -7,27 +7,16 @@ import (
 	"github.com/myENA/consultant/log"
 	"github.com/myENA/consultant/service"
 	"github.com/myENA/consultant/util"
-	"math/rand"
 	"net/url"
-	"sort"
-	"sync"
 )
 
 type Client struct {
 	*api.Client
 
-	log log.DebugLogger
-
 	config api.Config
-
-	myAddress   string
-	myAddressMu sync.RWMutex
-
-	myHostname   string
-	myHostnameMu sync.RWMutex
-
 	myNode string
 
+	log          log.DebugLogger
 	logSlug      string
 	logSlugSlice []interface{}
 }
@@ -85,42 +74,26 @@ func (c *Client) Config() api.Config {
 
 // MyAddr will either return the address returned by util.MyAddress() or the value set by client.SetMyAddr()
 func (c *Client) MyAddr() string {
-	var addr string
-	c.myAddressMu.RLock()
-	if c.myAddress == "" {
-		addr, _ = util.MyAddress()
-	} else {
-		addr = c.myAddress
-	}
-	c.myAddressMu.RUnlock()
+	addr, _ := util.MyAddress()
 	return addr
 }
 
-// SetMyAddr allows you to manually specify the IP address of our host for this client
+// SetMyAddr allows you to manually specify the IP address of our host
+// DEPRECATED - use util.SetMyAddress()
 func (c *Client) SetMyAddr(myAddr string) {
-	c.myAddressMu.Lock()
-	c.myAddress = myAddr
-	c.myAddressMu.Unlock()
+	util.SetMyAddress(myAddr)
 }
 
 // MyHost will either return the value returned by util.MyHostname() or the value set by client.SetMyHost()
 func (c *Client) MyHost() string {
-	var hostname string
-	c.myHostnameMu.RLock()
-	if c.myHostname == "" {
-		hostname, _ = util.MyHostname()
-	} else {
-		hostname = c.myHostname
-	}
-	c.myHostnameMu.RUnlock()
+	hostname, _ := util.MyHostname()
 	return hostname
 }
 
-// SetMyHost allows you to to manually specify the name of our host for this client
+// SetMyHost allows you to to manually specify the name of our host
+// DEPRECATED - use util.SetMyHostname()
 func (c *Client) SetMyHost(myHost string) {
-	c.myHostnameMu.Lock()
-	c.myHostname = myHost
-	c.myHostnameMu.Unlock()
+	util.SetMyHostname(myHost)
 }
 
 // MyNode returns the name of the Consul Node this client is connected to
@@ -142,18 +115,14 @@ func (c *Client) EnsureKey(key string, options *api.QueryOptions) (*api.KVPair, 
 
 // PickService will attempt to locate any registered service with a name + tag combination and return one at random from
 // the resulting list
-func (c *Client) PickService(service, tag string, passingOnly bool, options *api.QueryOptions) (*api.ServiceEntry, *api.QueryMeta, error) {
-	svcs, qm, err := c.Health().Service(service, tag, passingOnly, options)
-	if err != nil {
-		return nil, nil, err
-	}
+func (c *Client) PickService(name, tag string, passingOnly bool, options *api.QueryOptions) (*api.ServiceEntry, *api.QueryMeta, error) {
+	return service.Pick(name, tag, passingOnly, options, c.Client)
+}
 
-	svcLen := len(svcs)
-	if 0 < svcLen {
-		return svcs[rand.Intn(svcLen)], qm, nil
-	}
-
-	return nil, qm, nil
+// EnsureService will attempt to Pick a service based on the provided criteria, instead returning an error if none are
+// found
+func (c *Client) EnsureService(name, tag string, passingOnly bool, options *api.QueryOptions) (*api.ServiceEntry, *api.QueryMeta, error) {
+	return service.Ensure(name, tag, passingOnly, options, c.Client)
 }
 
 // ServiceByTags - this wraps the consul Health().Service() call, adding the tagsOption parameter and accepting a
@@ -163,27 +132,8 @@ func (c *Client) PickService(service, tag string, passingOnly bool, options *api
 //     TagsExactly - like TagsAll, but will return only services that match exactly the tags specified, no more.
 //     TagsAny - this will return services that match any of the tags specified.
 //     TagsExclude - this will return services don't have any of the tags specified.
-func (c *Client) ServiceByTags(service string, tags []string, tagsOption TagsOption, passingOnly bool, options *api.QueryOptions) ([]*api.ServiceEntry, *api.QueryMeta, error) {
-
-}
-
-// determines if a and b contain the same elements (order doesn't matter)
-func strSlicesEqual(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	ac := make([]string, len(a))
-	bc := make([]string, len(b))
-	copy(ac, a)
-	copy(bc, b)
-	sort.Strings(ac)
-	sort.Strings(bc)
-	for i, v := range ac {
-		if bc[i] != v {
-			return false
-		}
-	}
-	return true
+func (c *Client) ServiceByTags(name string, tags []string, tagsOption TagsOption, passingOnly bool, options *api.QueryOptions) ([]*api.ServiceEntry, *api.QueryMeta, error) {
+	return service.ByTags(name, tags, service.TagsOption(tagsOption), passingOnly, options, c.Client)
 }
 
 // BuildServiceURL will attempt to locate a healthy instance of the specified service name + tag combination, then
@@ -219,7 +169,7 @@ type SimpleServiceRegistration struct {
 }
 
 // SimpleServiceRegister is a helper method to ease consul service registration
-// DEPRECATED in favor of service.RegisterSimple
+// DEPRECATED - use client.RegisterSimpleService
 func (c *Client) SimpleServiceRegister(reg *SimpleServiceRegistration) (string, error) {
 	return service.RegisterSimple(
 		&service.SimpleRegistration{
@@ -236,5 +186,9 @@ func (c *Client) SimpleServiceRegister(reg *SimpleServiceRegistration) (string, 
 			CheckPath:         reg.CheckPath,
 			CheckScheme:       reg.CheckScheme,
 		},
-		nil)
+		c.Client)
+}
+
+func (c *Client) RegisterSimpleService(reg *service.SimpleRegistration) (string, error) {
+	return service.RegisterSimple(reg, c.Client)
 }

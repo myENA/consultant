@@ -1,8 +1,11 @@
 package service
 
 import (
+	"errors"
 	"fmt"
 	"github.com/hashicorp/consul/api"
+	"math/rand"
+	"sort"
 )
 
 type TagsOption int
@@ -21,19 +24,14 @@ const (
 	TagsExclude
 )
 
-func ByTags(service string, tags []string, tagsOption TagsOption, passingOnly bool, options *api.QueryOptions, client *api.Client) ([]*api.ServiceEntry, *api.QueryMeta, error) {
+func ByTags(name string, tags []string, tagsOption TagsOption, passingOnly bool, options *api.QueryOptions, client *api.Client) ([]*api.ServiceEntry, *api.QueryMeta, error) {
 	var (
 		retv, tmpv []*api.ServiceEntry
 		qm         *api.QueryMeta
 		err        error
 	)
 
-	if client == nil {
-		if defaultClient == nil {
-
-		}
-		client = defaultClient
-	}
+	client = apiClient(client)
 
 	tag := ""
 
@@ -45,7 +43,7 @@ func ByTags(service string, tags []string, tagsOption TagsOption, passingOnly bo
 		}
 		fallthrough
 	case TagsAny, TagsExclude:
-		tmpv, qm, err = c.Health().Service(service, tag, passingOnly, options)
+		tmpv, qm, err = client.Health().Service(name, tag, passingOnly, options)
 	default:
 		return nil, nil, fmt.Errorf("invalid value for tagsOption: %d", tagsOption)
 	}
@@ -107,4 +105,50 @@ OUTER:
 	}
 
 	return retv, qm, err
+}
+
+// determines if a and b contain the same elements (order doesn't matter)
+func strSlicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	ac := make([]string, len(a))
+	bc := make([]string, len(b))
+	copy(ac, a)
+	copy(bc, b)
+	sort.Strings(ac)
+	sort.Strings(bc)
+	for i, v := range ac {
+		if bc[i] != v {
+			return false
+		}
+	}
+	return true
+}
+
+// Pick will attempt to pick one service at random from a list of services based on the provided criteria.  If no
+// services are returned, you will see a nil entry and a nil error
+func Pick(name, tag string, passingOnly bool, options *api.QueryOptions, client *api.Client) (*api.ServiceEntry, *api.QueryMeta, error) {
+	client = apiClient(client)
+	svcs, qm, err := client.Health().Service(name, tag, passingOnly, options)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	svcLen := len(svcs)
+	if 0 < svcLen {
+		return svcs[rand.Intn(svcLen)], qm, nil
+	}
+
+	return nil, qm, nil
+}
+
+// Ensure will attempt to Pick a service based on the provided criteria, however if no service is found it will return
+// an error.
+func Ensure(name, tag string, passingOnly bool, options *api.QueryOptions, client *api.Client) (*api.ServiceEntry, *api.QueryMeta, error) {
+	if svc, qm, err := Pick(name, tag, passingOnly, options, client); err == nil && svc == nil {
+		return nil, qm, errors.New("no service found")
+	} else {
+		return svc, qm, err
+	}
 }

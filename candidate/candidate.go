@@ -77,7 +77,7 @@ type (
 	}
 
 	Candidate struct {
-		mu  sync.Mutex
+		mu  sync.RWMutex
 		log log.DebugLogger
 
 		client *api.Client
@@ -203,9 +203,9 @@ func (c *Candidate) SessionTTL() time.Duration {
 
 // Elected will return true if this candidate's session is "locking" the kv
 func (c *Candidate) Elected() bool {
-	c.mu.Lock()
+	c.mu.RLock()
 	el := c.elected
-	c.mu.Unlock()
+	c.mu.RUnlock()
 	return el
 }
 
@@ -281,13 +281,13 @@ func (c *Candidate) RemoveWatchers() {
 
 // UpdateWatchers will immediately push the current state of this Candidate to all currently registered Watchers
 func (c *Candidate) UpdateWatchers() {
-	c.mu.Lock()
+	c.mu.RLock()
 	up := ElectionUpdate{
 		Elected: c.elected,
 		State:   c.state,
 	}
 	c.watchers.notify(&up)
-	c.mu.Unlock()
+	c.mu.RUnlock()
 }
 
 // WaitFor will wait for a candidate to be elected or until duration has passed
@@ -304,16 +304,15 @@ waitLoop:
 			// attempt to locate current leader
 		default:
 			if _, err = c.LeaderService(); nil == err {
+				if !timer.Stop() {
+					<-timer.C
+				}
 				break waitLoop
 			}
 			c.log.Debugf("Error locating leader service: %s", err)
 		}
 
 		time.Sleep(time.Second * 1)
-	}
-
-	if !timer.Stop() {
-		<-timer.C
 	}
 
 	return err
@@ -335,9 +334,9 @@ func (c *Candidate) Wait() {
 }
 
 func (c *Candidate) State() State {
-	c.mu.Lock()
+	c.mu.RLock()
 	s := c.state
-	c.mu.Unlock()
+	c.mu.RUnlock()
 	return s
 }
 
@@ -346,10 +345,10 @@ func (c *Candidate) Running() bool {
 }
 
 func (c *Candidate) sessionUpdate(update session.Update) {
-	c.mu.Lock()
+	c.mu.RLock()
 	state := c.state
 	elected := c.elected
-	c.mu.Unlock()
+	c.mu.RUnlock()
 
 	if state == StateRunning {
 		if update.State == session.StateStopped {

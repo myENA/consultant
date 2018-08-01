@@ -355,7 +355,7 @@ func (c *Candidate) Running() bool {
 }
 
 func (c *Candidate) sessionUpdate(update session.Update) {
-	if c.session == nil && c.session.ID() == update.ID {
+	if c.session != nil && c.session.ID() == update.ID {
 		if c.Running() {
 			c.sessionUpdateChan <- update
 		} else {

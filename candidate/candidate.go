@@ -498,6 +498,9 @@ acquisition:
 						c.session.Run()
 					}
 				}
+			} else {
+				c.log.Debugf("Session Update: Received %#v", sessionUpdate)
+				updated = false
 			}
 
 			c.mu.Unlock()
@@ -509,9 +512,9 @@ acquisition:
 		// if updated
 		if updated {
 			if elected {
-				c.log.Debug("Acquire tick: We have won the election")
+				c.log.Debug("We have won the election")
 			} else {
-				c.log.Debug("Acquire tick: We have lost the election")
+				c.log.Debug("We have lost the election")
 			}
 
 			// send notifications

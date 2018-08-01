@@ -5,6 +5,7 @@ import (
 	"github.com/hashicorp/consul/api"
 	cst "github.com/hashicorp/consul/testutil"
 	"github.com/myENA/consultant"
+	"github.com/myENA/consultant/candidate"
 	"github.com/myENA/consultant/testutil"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
@@ -194,8 +195,8 @@ func (cs *CandidateTestSuite) TestSimpleElectionCycle() {
 			leader.ID))
 
 	leadersFound = 0
-	for i, candidate := range []*consultant.Candidate{candidate1, candidate2, candidate3} {
-		if leaderCandidate == candidate {
+	for i, cand := range []*consultant.Candidate{candidate1, candidate2, candidate3} {
+		if leaderCandidate == cand {
 			leadersFound = 1
 			continue
 		}
@@ -207,7 +208,32 @@ func (cs *CandidateTestSuite) TestSimpleElectionCycle() {
 
 		require.False(
 			cs.T(),
-			candidate.Elected(),
+			cand.Elected(),
 			fmt.Sprintf("Candidate \"%d\" is not elected but says that it is...", i))
 	}
+}
+
+func (cs *CandidateTestSuite) TestSessionAnarchy() {
+	cand := cs.makeCandidate(1)
+	cand.Watch("", func(update candidate.ElectionUpdate) {
+		cs.T().Logf("Update received: %#v", update)
+	})
+	cand.Wait()
+
+	sid := cand.SessionID()
+	require.NotEmpty(cs.T(), sid, "Expected sid to contain value")
+
+	cs.client.Session().Destroy(sid, nil)
+
+	require.Equal(
+		cs.T(),
+		candidate.StateRunning,
+		cand.State(),
+		"Expected candidate state to still be %d after session destroyed",
+		candidate.StateRunning)
+
+	cand.Wait()
+
+	require.NotEmpty(cs.T(), cand.SessionID(), "Expected new session id")
+	require.NotEqual(cs.T(), sid, cand.SessionID(), "Expected new session id")
 }

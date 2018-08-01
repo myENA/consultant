@@ -89,9 +89,12 @@ type (
 		kvKey string
 		ttl   time.Duration
 
-		elected bool
+		elected *bool
 		state   State
 		resign  chan chan struct{}
+
+		sessionTTL        string
+		sessionUpdateChan chan session.Update
 	}
 )
 
@@ -138,19 +141,14 @@ func New(conf *Config) (*Candidate, error) {
 		watchers: newWatchers(),
 		kvKey:    kvKey,
 		resign:   make(chan chan struct{}, 1),
+
+		elected: new(bool),
+
+		sessionUpdateChan: make(chan session.Update, 1),
+		sessionTTL:        sessionTTL,
 	}
 
-	sessionConfig := &session.Config{
-		Key:        fmt.Sprintf(sessionKeyFormat, c.id),
-		TTL:        sessionTTL,
-		Behavior:   api.SessionBehaviorDelete,
-		Log:        c.log,
-		Client:     client,
-		UpdateFunc: c.sessionUpdate,
-	}
-
-	c.session, err = session.New(sessionConfig)
-	if err != nil {
+	if c.session, err = c.createSession(); err != nil {
 		return nil, err
 	}
 
@@ -204,7 +202,12 @@ func (c *Candidate) SessionTTL() time.Duration {
 // Elected will return true if this candidate's session is "locking" the kv
 func (c *Candidate) Elected() bool {
 	c.mu.Lock()
-	el := c.elected
+	var el bool
+	if c.elected == nil {
+		el = false
+	} else {
+		el = *c.elected
+	}
 	c.mu.Unlock()
 	return el
 }
@@ -282,8 +285,14 @@ func (c *Candidate) RemoveWatchers() {
 // UpdateWatchers will immediately push the current state of this Candidate to all currently registered Watchers
 func (c *Candidate) UpdateWatchers() {
 	c.mu.Lock()
+	var el bool
+	if c.elected == nil {
+		el = false
+	} else {
+		el = *c.elected
+	}
 	up := ElectionUpdate{
-		Elected: c.elected,
+		Elected: el,
 		State:   c.state,
 	}
 	c.watchers.notify(&up)
@@ -323,7 +332,7 @@ waitLoop:
 func (c *Candidate) WaitUntil(t time.Time) error {
 	now := time.Now()
 	if now.After(t) {
-		return errors.New("t must represent a time in the future")
+		return errors.New("\"t\" must represent a time in the future")
 	}
 
 	return c.WaitFor(t.Sub(now))
@@ -346,19 +355,14 @@ func (c *Candidate) Running() bool {
 }
 
 func (c *Candidate) sessionUpdate(update session.Update) {
-	c.mu.Lock()
-	state := c.state
-	elected := c.elected
-	c.mu.Unlock()
-
-	if state == StateRunning {
-		if update.State == session.StateStopped {
-			c.log.Print("Session is stopping, will leave resign")
-			c.Resign()
-		} else if elected && update.Error != nil {
-			c.log.Printf("Session errored, will resign: %s", update.Error)
-			c.Resign()
+	if c.session == nil && c.session.ID() == update.ID {
+		if c.Running() {
+			c.sessionUpdateChan <- update
+		} else {
+			c.log.Printf("We are no longer in the running, cannot process session update: %#v", update)
 		}
+	} else {
+		c.log.Printf("Received update from rogue session: %s", update.ID)
 	}
 }
 
@@ -385,13 +389,29 @@ func (c *Candidate) acquire(sid string) (bool, error) {
 	return elected, err
 }
 
+func (c *Candidate) createSession() (*session.Session, error) {
+	sessionConfig := &session.Config{
+		Key:        fmt.Sprintf(sessionKeyFormat, c.id),
+		TTL:        c.sessionTTL,
+		Behavior:   api.SessionBehaviorDelete,
+		Log:        c.log,
+		Client:     c.client,
+		UpdateFunc: c.sessionUpdate,
+	}
+	return session.New(sessionConfig)
+}
+
 func (c *Candidate) lockRunner() {
 	var sid string
 	var elected bool
 	var resigned chan struct{}
 	var updated bool
+	var sessionUpdate session.Update
 	var err error
 
+	sessionErrorsSeen, sessionStoppedUpdatesSeen := 0, 0
+
+	// run initial session
 	c.session.Run()
 
 	up := &ElectionUpdate{
@@ -408,30 +428,95 @@ acquisition:
 		case <-acquireTicker.C:
 			c.mu.Lock()
 
-			if sid = c.session.ID(); sid == "" {
-				c.log.Debugf("Session does not exist, will try locking again in \"%d\" seconds...", int64(interval.Seconds()))
+			if c.session == nil {
+				// it is possible for the session to be nil if the sessionUpdate case is unable to recreate upon error
+				// threshold being met
+
+				// set elected state to false, will be updated later.
+				elected = false
+
+				// only send an update if a previous election attempt was successful and our state changed
+				updated = c.elected != nil && *c.elected != elected
+
+				c.log.Print("Acquire tick: No session, will try to create...")
+				if c.session, err = c.createSession(); err != nil {
+					c.log.Printf("Acquire tick: Error creating session, will try again in %d seconds. Err: %s", int64(interval.Seconds()), err)
+				} else {
+					c.session.Run()
+					c.log.Printf("Acquire tick: Session created successfully")
+				}
+			} else if sid = c.session.ID(); sid == "" {
+				// this should only ever happen very early on in the election process
+				elected = false
+				updated = c.elected != nil && *c.elected != elected
+				c.log.Debugf("Acquire tick: Session does not exist, will try locking again in %d seconds...", int64(interval.Seconds()))
 			} else if elected, err = c.acquire(sid); err != nil {
-				c.log.Printf("Error attempting to acquire lock: %s", err)
+				// most likely hit due to transport error.
+				elected = false
+				updated = c.elected != nil && *c.elected != elected
+				c.log.Printf("Acquire tick: Error attempting to acquire lock: %s", err)
+			} else {
+				updated = c.elected == nil || *c.elected != elected
+				*c.elected = elected
 			}
 
-			if updated = elected != c.elected; updated {
-				// modify state
-				c.elected = elected
-				if elected {
-					c.log.Debug("We have lost the election")
-				} else {
-					c.log.Debug("We have won the election")
-				}
+			c.mu.Unlock()
 
-				// send notifications
-				up.Elected = elected
-				c.watchers.notify(up)
+		case sessionUpdate = <-c.sessionUpdateChan:
+			c.mu.Lock()
+
+			// if there was an update either creating or renewing our session
+			if sessionUpdate.Error != nil {
+				sessionErrorsSeen++
+				sessionStoppedUpdatesSeen = 0
+
+				c.log.Printf("Session Update: Error (%d in a row): %s", sessionErrorsSeen, sessionUpdate.Error)
+
+				// if we breach this threshold, stop our current session and attempt to make a new one next pass
+				if sessionErrorsSeen >= 2 {
+					c.log.Print("Session Update: 2 successive errors seen, will construct new session")
+					c.session.Stop()
+					elected = false
+					updated = c.elected != nil && *c.elected != elected
+					c.session = nil
+				}
+			} else if sessionUpdate.State == session.StateStopped {
+				sessionStoppedUpdatesSeen++
+				sessionErrorsSeen = 0
+
+				elected = false
+				updated = c.elected != nil && *c.elected != elected
+
+				c.log.Printf("Session Update: Stopped state seen (%d in row): %#v", sessionStoppedUpdatesSeen, sessionUpdate)
+
+				if sessionStoppedUpdatesSeen >= 2 {
+					c.log.Print("Session Update: Stopped state seen 2 successive times, will construct new session")
+					if c.session, err = c.createSession(); err != nil {
+						c.log.Printf("Unable to recreate  will try again in %d seconds.  Err: %s.", int64(interval.Seconds()), err)
+					} else {
+						c.log.Print("Session created successfully")
+						c.session.Run()
+					}
+				}
 			}
 
 			c.mu.Unlock()
 
 		case resigned = <-c.resign:
 			break acquisition
+		}
+
+		// if updated
+		if updated {
+			if elected {
+				c.log.Debug("Acquire tick: We have won the election")
+			} else {
+				c.log.Debug("Acquire tick: We have lost the election")
+			}
+
+			// send notifications
+			up.Elected = elected
+			c.watchers.notify(up)
 		}
 	}
 
@@ -442,7 +527,7 @@ acquisition:
 	c.mu.Lock()
 
 	// modify state
-	c.elected = false
+	*c.elected = false
 	c.state = StateResigned
 
 	// send notifications

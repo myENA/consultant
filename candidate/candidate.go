@@ -477,7 +477,6 @@ acquisition:
 					c.log.Print("Session Update: 2 successive errors seen, will construct new session")
 					c.session.Stop()
 					elected = false
-					updated = c.elected != nil && *c.elected != elected
 					c.session = nil
 				}
 			} else if sessionUpdate.State == session.StateStopped {
@@ -485,7 +484,6 @@ acquisition:
 				sessionErrorsSeen = 0
 
 				elected = false
-				updated = c.elected != nil && *c.elected != elected
 
 				c.log.Printf("Session Update: Stopped state seen (%d in row): %#v", sessionStoppedUpdatesSeen, sessionUpdate)
 
@@ -501,6 +499,8 @@ acquisition:
 			} else {
 				c.log.Debugf("Session Update: Received %#v", sessionUpdate)
 			}
+
+			updated = c.elected != nil && *c.elected != elected
 
 			c.mu.Unlock()
 

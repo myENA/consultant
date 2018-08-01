@@ -424,6 +424,7 @@ func (c *Candidate) lockRunner() {
 
 acquisition:
 	for {
+		updated = false
 		select {
 		case <-acquireTicker.C:
 			c.mu.Lock()
@@ -457,7 +458,6 @@ acquisition:
 				c.log.Printf("Acquire tick: Error attempting to acquire lock: %s", err)
 			} else {
 				updated = c.elected == nil || *c.elected != elected
-				*c.elected = elected
 			}
 
 			c.mu.Unlock()
@@ -500,7 +500,6 @@ acquisition:
 				}
 			} else {
 				c.log.Debugf("Session Update: Received %#v", sessionUpdate)
-				updated = false
 			}
 
 			c.mu.Unlock()
@@ -516,6 +515,9 @@ acquisition:
 			} else {
 				c.log.Debug("We have lost the election")
 			}
+
+			// update internal state
+			*c.elected = elected
 
 			// send notifications
 			up.Elected = elected

@@ -215,8 +215,15 @@ func (cs *CandidateTestSuite) TestSimpleElectionCycle() {
 
 func (cs *CandidateTestSuite) TestSessionAnarchy() {
 	cand := cs.makeCandidate(1)
+
+	updates := make([]candidate.ElectionUpdate, 0)
+	updatesMu := sync.Mutex{}
+
 	cand.Watch("", func(update candidate.ElectionUpdate) {
+		updatesMu.Lock()
 		cs.T().Logf("Update received: %#v", update)
+		updates = append(updates, update)
+		updatesMu.Unlock()
 	})
 	cand.Wait()
 
@@ -236,4 +243,8 @@ func (cs *CandidateTestSuite) TestSessionAnarchy() {
 
 	require.NotEmpty(cs.T(), cand.SessionID(), "Expected new session id")
 	require.NotEqual(cs.T(), sid, cand.SessionID(), "Expected new session id")
+
+	updatesMu.Lock()
+	require.Len(cs.T(), updates, 3, "Expected to see 3 updates")
+	updatesMu.Unlock()
 }

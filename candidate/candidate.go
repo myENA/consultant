@@ -203,9 +203,7 @@ func (c *Candidate) SessionTTL() time.Duration {
 func (c *Candidate) Elected() bool {
 	c.mu.Lock()
 	var el bool
-	if c.elected == nil {
-		el = false
-	} else {
+	if c.elected != nil {
 		el = *c.elected
 	}
 	c.mu.Unlock()
@@ -286,16 +284,14 @@ func (c *Candidate) RemoveWatchers() {
 func (c *Candidate) UpdateWatchers() {
 	c.mu.Lock()
 	var el bool
-	if c.elected == nil {
-		el = false
-	} else {
+	if c.elected != nil {
 		el = *c.elected
 	}
 	up := ElectionUpdate{
 		Elected: el,
 		State:   c.state,
 	}
-	c.watchers.notify(&up)
+	c.watchers.notify(up)
 	c.mu.Unlock()
 }
 
@@ -414,6 +410,7 @@ func (c *Candidate) lockRunner() {
 	// run initial session
 	c.session.Run()
 
+	// this is a long-lived object whose state is updated per iteration below.
 	up := &ElectionUpdate{
 		State: StateRunning,
 	}
@@ -521,7 +518,7 @@ acquisition:
 
 			// send notifications
 			up.Elected = elected
-			c.watchers.notify(up)
+			c.watchers.notify(*up)
 		}
 	}
 
@@ -538,7 +535,7 @@ acquisition:
 	// send notifications
 	up.Elected = false
 	up.State = StateResigned
-	c.watchers.notify(up)
+	c.watchers.notify(*up)
 
 	// release lock before the final steps so the object is usable
 	c.mu.Unlock()

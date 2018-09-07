@@ -537,11 +537,26 @@ acquisition:
 	up.State = StateResigned
 	c.watchers.notify(*up)
 
+	done := make(chan struct{})
+
+	// test for session nil, if so spin up new routine that waits for session to be destroyed.
+	// TODO: do something more clever with the session's update system instead of this chan?
+	if c.session != nil {
+		go func() {
+			// stop session, this might block for a bit
+			c.session.Stop()
+			done <- struct{}{}
+		}()
+	} else {
+		done <- struct{}{}
+	}
+
 	// release lock before the final steps so the object is usable
 	c.mu.Unlock()
 
-	// stop session, this might block for a bit
-	c.session.Stop()
+	// if need be, wait for session to term
+	<-done
+	close(done)
 
 	// notify our caller that we've finished with resignation
 	if resigned != nil {

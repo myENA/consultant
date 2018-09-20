@@ -39,13 +39,11 @@ func NewCandidate(client *Client, candidateID, key, ttl string) (*Candidate, err
 		ID:         candidateID,
 		SessionTTL: ttl,
 		Client:     client.Client,
+		AutoRun:    true,
 	})
 	if err != nil {
 		return nil, err
 	}
-
-	c.Run()
-
 	return &Candidate{Candidate: c}, nil
 }
 

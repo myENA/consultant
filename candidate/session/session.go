@@ -62,6 +62,11 @@ type (
 		//
 		// Callback to be executed after session state change
 		UpdateFunc UpdateFunc
+
+		// AutoRun [optional]
+		//
+		// Whether the session should start immediately after successful construction
+		AutoRun bool
 	}
 
 	Session struct {
@@ -80,7 +85,7 @@ type (
 		interval    time.Duration
 		lastRenewed time.Time
 
-		stop  chan chan struct{}
+		stop  chan chan error
 		state State
 
 		updateFunc UpdateFunc
@@ -88,11 +93,14 @@ type (
 )
 
 func New(conf *Config) (*Session, error) {
-	var key, ttl, behavior string
-	var client *api.Client
-	var l log.DebugLogger
-	var err error
-	var updateFunc UpdateFunc
+	var (
+		key, ttl, behavior string
+		client             *api.Client
+		l                  log.DebugLogger
+		updateFunc         UpdateFunc
+		autoRun            bool
+		err                error
+	)
 
 	if conf != nil {
 		key = conf.Key
@@ -101,6 +109,7 @@ func New(conf *Config) (*Session, error) {
 		l = conf.Log
 		client = conf.Client
 		updateFunc = conf.UpdateFunc
+		autoRun = conf.AutoRun
 	}
 
 	if behavior == "" {
@@ -150,8 +159,8 @@ func New(conf *Config) (*Session, error) {
 		key:        key,
 		ttl:        ttlTD,
 		behavior:   behavior,
-		interval:   time.Duration(ttlTD.Nanoseconds() / 2),
-		stop:       make(chan chan struct{}, 1),
+		interval:   time.Duration(int64(ttlTD) / 2),
+		stop:       make(chan chan error, 1),
 		updateFunc: updateFunc,
 	}
 
@@ -161,6 +170,11 @@ func New(conf *Config) (*Session, error) {
 
 	l.Debugf("Lock interval: %d seconds", int64(ttlTD.Seconds()))
 	l.Debugf("Session renew interval: %d seconds", int64(cs.interval.Seconds()))
+
+	if autoRun {
+		l.Debug("AutoRun enabled")
+		cs.Run()
+	}
 
 	return cs, nil
 }
@@ -212,10 +226,13 @@ func (cs *Session) Running() bool {
 func (cs *Session) Run() {
 	cs.mu.Lock()
 	if cs.state == StateRunning {
+		// if our state is already running, just continue to do so.
+		cs.log.Debug("Run() called but I'm already running")
 		cs.mu.Unlock()
 		return
 	}
 
+	// modify state
 	cs.state = StateRunning
 
 	// try to create session immediately
@@ -226,24 +243,27 @@ func (cs *Session) Run() {
 			err)
 	}
 
+	// release lock before beginning maintenance loop
 	cs.mu.Unlock()
 
 	go cs.maintain()
 }
 
-func (cs *Session) Stop() {
+func (cs *Session) Stop() error {
 	cs.mu.Lock()
 	if cs.state == StateStopped {
+		cs.log.Debug("Stop() called but I'm already stopped")
 		cs.mu.Unlock()
-		return
+		return nil
 	}
 	cs.state = StateStopped
 	cs.mu.Unlock()
 
-	stopped := make(chan struct{}, 1)
+	stopped := make(chan error, 1)
 	cs.stop <- stopped
-	<-stopped
+	err := <-stopped
 	close(stopped)
+	return err
 }
 
 func (cs *Session) State() State {
@@ -251,15 +271,6 @@ func (cs *Session) State() State {
 	s := cs.state
 	cs.mu.Unlock()
 	return s
-}
-
-// sendUpdate will attempt to notify whoever cares that the session has been created / refreshed / errored
-// Caller MUST hold lock!
-func (cs *Session) sendUpdate(up Update) {
-	if cs.updateFunc == nil {
-		return
-	}
-	cs.updateFunc(up)
 }
 
 // create will attempt to do just that. Caller MUST hold lock!
@@ -320,10 +331,26 @@ func (cs *Session) renew() error {
 	return err
 }
 
+// destroy will attempt to destroy the upstream session and removes internal references to it.
+// caller MUST hold lock!
+func (cs *Session) destroy() error {
+	sid := cs.id
+	cs.id = ""
+	cs.name = ""
+	cs.lastRenewed = time.Time{}
+	_, err := cs.client.Session().Destroy(sid, nil)
+	return err
+}
+
+// TODO: improve updates to include the action taken this loop, and whether it is the last action to be taken this loop
+// i.e., destroy / renew can happen in the same loop as create.
 func (cs *Session) maintain() {
-	var stopped chan struct{}
-	var up Update
-	var err error
+	var (
+		sid, name string
+		stopped   chan error
+		up        Update
+		err       error
+	)
 
 	intervalTicker := time.NewTicker(cs.interval)
 
@@ -332,17 +359,46 @@ maintaining:
 		select {
 		case <-intervalTicker.C:
 			cs.mu.Lock()
-			if !cs.lastRenewed.IsZero() && time.Now().Sub(cs.lastRenewed) > cs.ttl {
-				cs.id = ""
-				cs.name = ""
-				cs.log.Printf("Last renewed time (%s) is >= ttl (%s), creating new session...", cs.lastRenewed.Format(time.RFC822), cs.ttl)
-			}
-			if cs.id == "" {
-				if err = cs.create(); err != nil {
-					cs.log.Printf("Unable to create Consul Session: %s", err)
+			if cs.id != "" {
+				// if we were previously able to create an upstream session...
+				sid, name = cs.id, cs.name
+				if !cs.lastRenewed.IsZero() && time.Now().Sub(cs.lastRenewed) > cs.ttl {
+					// if we have a session but the last time we were able to successfully renew it was beyond the TTL,
+					// attempt to destroy and allow re-creation down below
+					cs.log.Printf(
+						"Last renewed time (%s) is > ttl (%s), expiring upstream session %q (%q)...",
+						cs.lastRenewed.Format(time.RFC822),
+						cs.ttl,
+						cs.name,
+						cs.id,
+					)
+					if err = cs.destroy(); err != nil {
+						cs.log.Debugf(
+							"Error destroying expired upstream session %q (%q). This can probably be ignored: %s",
+							name,
+							sid,
+							err,
+						)
+					}
+				} else if err = cs.renew(); err != nil {
+					// if error during renewal
+					cs.log.Printf("Unable to renew Consul Session: %s", err)
+					// TODO: possibly attempt to destroy the session at this point?  the above timeout test statement
+					// should eventually be hit if this continues to fail...
+				} else {
+					// session should be in a happy state.
+					cs.log.Debugf("Upstream session %q (%q) renewed", cs.name, cs.id)
 				}
-			} else if err = cs.renew(); err != nil {
-				cs.log.Printf("Unable to renew Consul Session: %s", err)
+			}
+
+			if cs.id == "" {
+				// if this is the first iteration of the loop or if an error occurred above, test and try to create
+				// a new session
+				if err = cs.create(); err != nil {
+					cs.log.Printf("Unable to create upstream session: %s", err)
+				} else {
+					cs.log.Debugf("New upstream session %q (%q) created.", cs.name, cs.id)
+				}
 			}
 
 			// create update behind lock
@@ -357,7 +413,8 @@ maintaining:
 			cs.mu.Unlock()
 
 			//send update after unlock
-			cs.sendUpdate(up)
+			// TODO: should this block?
+			go sendUpdate(cs.updateFunc, up)
 
 		case stopped = <-cs.stop:
 			break maintaining
@@ -370,33 +427,41 @@ maintaining:
 
 	cs.mu.Lock()
 
-	// store most recent session id
-	sid := cs.id
+	// localize most recent upstream session info
+	sid = cs.id
+	name = cs.name
+	lastRenewed := cs.lastRenewed
 
-	// modify state
-	cs.id = ""
-	cs.name = ""
-	cs.state = StateStopped
-
-	// prepare final update
-	up = Update{LastRenewed: cs.lastRenewed, State: StateStopped}
-
-	cs.mu.Unlock()
-
-	// if there was a session id, attempt to destroy it.
-	if sid != "" {
-		if _, err = cs.client.Session().Destroy(sid, nil); err != nil {
-			cs.log.Printf("Unable to destroy session \"%s\": %s", sid, err)
+	if cs.id != "" {
+		// if we have a reference to an upstream session id, attempt to destroy it.
+		if derr := cs.destroy(); derr != nil {
+			msg := fmt.Sprintf("Error destroying upstream session %q (%q) during shutdown: %s", name, sid, derr)
+			log.Print(msg)
+			if err != nil {
+				// if there was an existing error, append this error to it to be sent along the Stop() resp chan
+				err = fmt.Errorf("%s; %s", err, msg)
+			}
+		} else {
+			log.Printf("Upstream session %q (%q) destroyed", name, sid)
 		}
 	}
 
+	// set our state to stopped, preventing further interaction.
+	cs.state = StateStopped
+
+	// prepare final update
+	up = Update{LastRenewed: lastRenewed, State: StateStopped}
+
+	cs.mu.Unlock()
+
 	// just in case...
 	if stopped != nil {
-		stopped <- struct{}{}
+		// send along the last seen error, whatever it was.
+		stopped <- err
 	}
 
-	// send final update asynchronously, don't much care if they're around to receive it.
-	go cs.sendUpdate(up)
+	// send final update
+	go sendUpdate(cs.updateFunc, up)
 
 	cs.log.Print("Session stopped")
 }

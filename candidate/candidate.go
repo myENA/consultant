@@ -377,7 +377,7 @@ func (c *Candidate) sessionUpdate(update session.Update) {
 		select {
 		case c.sessionUpdateChan <- update:
 		default:
-			c.log.Printf("Unable to push session update onto channel.  Update: %#v")
+			c.log.Printf("Unable to push session update onto channel.  Update: %#v", update)
 		}
 	} else {
 		c.mu.Unlock()

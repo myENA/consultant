@@ -161,3 +161,60 @@ func (ss *SessionTestSuite) TestSession_Run() {
 		require.Nil(ss.T(), up.Error, "Expected Error to be nil, saw: %s", up.Error)
 	}
 }
+
+func (ss *SessionTestSuite) TestSession_AutoRun() {
+	var err error
+
+	ss.session, err = session.New(ss.config(&session.Config{TTL: testTTL, AutoRun: true}))
+	require.Nil(ss.T(), err, "Error constructing session: %s", err)
+
+	require.True(ss.T(), ss.session.Running(), "AutoRun session not automatically started")
+}
+
+func (ss *SessionTestSuite) TestSession_SessionKilled() {
+	var (
+		initialID string
+		err       error
+	)
+
+	upChan := make(chan session.Update, 1)
+	updateFunc := func(up session.Update) {
+		upChan <- up
+	}
+
+	ss.session, err = session.New(ss.config(&session.Config{TTL: testTTL, UpdateFunc: updateFunc}))
+	require.Nil(ss.T(), err, "Error constructing session: %s", err)
+
+	ss.session.Run()
+
+TestLoop:
+	for i := 0; ; i++ {
+		select {
+		case up := <-upChan:
+			if i == 0 {
+				if up.ID == "" {
+					ss.FailNowf("Expected to have session on first pass", "Session create failed: %#v", up)
+					break TestLoop
+				}
+				initialID = up.ID
+				// take a nap...
+				time.Sleep(time.Second)
+				if _, err := ss.client.Session().Destroy(up.ID, nil); err != nil {
+					ss.FailNowf("Failed to arbitrarily destroy session", "Error: %s", err)
+					break TestLoop
+				}
+			} else if i == 1 {
+				if up.ID == "" {
+					ss.FailNowf("Expected to have new session on 2nd pass", "Session create failed: %#v", up)
+					break TestLoop
+				}
+				if up.ID == initialID {
+					ss.FailNowf("Expected different upstream session id", "Initial: %q; New: %q", initialID, up.ID)
+					break TestLoop
+				}
+				// if we got a new id, great!
+				break TestLoop
+			}
+		}
+	}
+}

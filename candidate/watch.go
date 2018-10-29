@@ -47,13 +47,13 @@ func (c *watchers) RemoveAll() {
 }
 
 // notifyWatchers is a thread safe update of leader status
-func (c *watchers) notify(update *ElectionUpdate) {
+func (c *watchers) notify(update ElectionUpdate) {
 	c.mu.Lock()
 
 	// TODO: is there a reason to make this blocking? Methods should be quick and elected status churn is prevented elsewhere.
 	for _, watcher := range c.funcs {
 		go func(w WatchFunc) {
-			w(*update)
+			w(update)
 		}(watcher)
 	}
 

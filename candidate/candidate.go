@@ -74,10 +74,15 @@ type (
 		//
 		// Consul API client.  If not specified, one will be created using api.DefaultConfig()
 		Client *api.Client
+
+		// AutoRun [optional]
+		//
+		// If set to true, the Candidate will immediately enter its election pool after successful construction
+		AutoRun bool
 	}
 
 	Candidate struct {
-		mu  sync.RWMutex
+		mu  sync.Mutex
 		log log.DebugLogger
 
 		client *api.Client
@@ -89,22 +94,29 @@ type (
 		kvKey string
 		ttl   time.Duration
 
-		elected bool
+		elected *bool
 		state   State
 		resign  chan chan struct{}
+
+		sessionTTL        string
+		sessionUpdateChan chan session.Update
 	}
 )
 
 func New(conf *Config) (*Candidate, error) {
-	var id, kvKey, sessionTTL string
-	var client *api.Client
-	var err error
+	var (
+		id, kvKey, sessionTTL string
+		client                *api.Client
+		autoRun               bool
+		err                   error
+	)
 
 	if conf != nil {
 		kvKey = conf.KVKey
 		id = conf.ID
 		sessionTTL = conf.SessionTTL
 		client = conf.Client
+		autoRun = conf.AutoRun
 	}
 
 	if kvKey == "" {
@@ -138,20 +150,21 @@ func New(conf *Config) (*Candidate, error) {
 		watchers: newWatchers(),
 		kvKey:    kvKey,
 		resign:   make(chan chan struct{}, 1),
+
+		elected: new(bool),
+
+		sessionUpdateChan: make(chan session.Update, 1),
+		sessionTTL:        sessionTTL,
 	}
 
-	sessionConfig := &session.Config{
-		Key:        fmt.Sprintf(sessionKeyFormat, c.id),
-		TTL:        sessionTTL,
-		Behavior:   api.SessionBehaviorDelete,
-		Log:        c.log,
-		Client:     client,
-		UpdateFunc: c.sessionUpdate,
-	}
-
-	c.session, err = session.New(sessionConfig)
-	if err != nil {
+	// attempt to create persistent session manager...
+	if c.session, err = c.createSession(); err != nil {
 		return nil, err
+	}
+
+	if autoRun {
+		c.log.Debug("AutoRun enabled")
+		c.Run()
 	}
 
 	return c, nil
@@ -203,9 +216,12 @@ func (c *Candidate) SessionTTL() time.Duration {
 
 // Elected will return true if this candidate's session is "locking" the kv
 func (c *Candidate) Elected() bool {
-	c.mu.RLock()
-	el := c.elected
-	c.mu.RUnlock()
+	c.mu.Lock()
+	var el bool
+	if c.elected != nil {
+		el = *c.elected
+	}
+	c.mu.Unlock()
 	return el
 }
 
@@ -281,18 +297,26 @@ func (c *Candidate) RemoveWatchers() {
 
 // UpdateWatchers will immediately push the current state of this Candidate to all currently registered Watchers
 func (c *Candidate) UpdateWatchers() {
-	c.mu.RLock()
+	c.mu.Lock()
+	var el bool
+	if c.elected != nil {
+		el = *c.elected
+	}
 	up := ElectionUpdate{
-		Elected: c.elected,
+		Elected: el,
 		State:   c.state,
 	}
-	c.watchers.notify(&up)
-	c.mu.RUnlock()
+	c.watchers.notify(up)
+	c.mu.Unlock()
 }
 
 // WaitFor will wait for a candidate to be elected or until duration has passed
 func (c *Candidate) WaitFor(td time.Duration) error {
 	var err error
+
+	if !c.Running() {
+		return fmt.Errorf("candidate %s is not in running", c.ID())
+	}
 
 	timer := time.NewTimer(td)
 
@@ -304,15 +328,16 @@ waitLoop:
 			// attempt to locate current leader
 		default:
 			if _, err = c.LeaderService(); nil == err {
-				if !timer.Stop() {
-					<-timer.C
-				}
 				break waitLoop
 			}
 			c.log.Debugf("Error locating leader service: %s", err)
 		}
 
 		time.Sleep(time.Second * 1)
+	}
+
+	if !timer.Stop() {
+		<-timer.C
 	}
 
 	return err
@@ -322,21 +347,21 @@ waitLoop:
 func (c *Candidate) WaitUntil(t time.Time) error {
 	now := time.Now()
 	if now.After(t) {
-		return errors.New("t must represent a time in the future")
+		return errors.New("\"t\" must represent a time in the future")
 	}
 
 	return c.WaitFor(t.Sub(now))
 }
 
 // Wait will block until a leader has been elected, regardless of candidate.
-func (c *Candidate) Wait() {
-	c.WaitFor(1<<63 - 1)
+func (c *Candidate) Wait() error {
+	return c.WaitFor(1<<63 - 1)
 }
 
 func (c *Candidate) State() State {
-	c.mu.RLock()
+	c.mu.Lock()
 	s := c.state
-	c.mu.RUnlock()
+	c.mu.Unlock()
 	return s
 }
 
@@ -344,27 +369,28 @@ func (c *Candidate) Running() bool {
 	return c.State() == StateRunning
 }
 
+// sessionUpdate is the receiver for the session update callback
 func (c *Candidate) sessionUpdate(update session.Update) {
-	c.mu.RLock()
-	state := c.state
-	elected := c.elected
-	c.mu.RUnlock()
-
-	if state == StateRunning {
-		if update.State == session.StateStopped {
-			c.log.Print("Session is stopping, will leave resign")
-			c.Resign()
-		} else if elected && update.Error != nil {
-			c.log.Printf("Session errored, will resign: %s", update.Error)
-			c.Resign()
+	c.mu.Lock()
+	if c.session.ID() == update.ID {
+		c.mu.Unlock()
+		select {
+		case c.sessionUpdateChan <- update:
+		default:
+			c.log.Printf("Unable to push session update onto channel.  Update: %#v", update)
 		}
+	} else {
+		c.mu.Unlock()
+		c.log.Printf("Received update from session %q but our local session is %q...", update.ID, c.session.ID())
 	}
 }
 
 // acquire will attempt to do just that.  Caller must hold lock!
 func (c *Candidate) acquire(sid string) (bool, error) {
-	var err error
-	var elected bool
+	var (
+		elected bool
+		err     error
+	)
 
 	kvpValue := &LeaderKVValue{
 		LeaderAddress: c.id,
@@ -384,15 +410,33 @@ func (c *Candidate) acquire(sid string) (bool, error) {
 	return elected, err
 }
 
-func (c *Candidate) lockRunner() {
-	var sid string
-	var elected bool
-	var resigned chan struct{}
-	var updated bool
-	var err error
+func (c *Candidate) createSession() (*session.Session, error) {
+	sessionConfig := &session.Config{
+		Key:        fmt.Sprintf(sessionKeyFormat, c.id),
+		TTL:        c.sessionTTL,
+		Behavior:   api.SessionBehaviorDelete,
+		Log:        c.log,
+		Client:     c.client,
+		UpdateFunc: c.sessionUpdate,
+	}
+	return session.New(sessionConfig)
+}
 
+func (c *Candidate) lockRunner() {
+	// TODO: this could stand for some further cleanup...
+	var (
+		sid                          string
+		elected, updated             bool
+		resigned                     chan struct{}
+		sessionUpdate                session.Update
+		consecutiveSessionErrorCount int
+		err                          error
+	)
+
+	// run initial session
 	c.session.Run()
 
+	// this is a long-lived object whose state is updated per iteration below.
 	up := &ElectionUpdate{
 		State: StateRunning,
 	}
@@ -403,31 +447,104 @@ func (c *Candidate) lockRunner() {
 
 acquisition:
 	for {
+		updated = false
 		select {
 		case <-acquireTicker.C:
 			c.mu.Lock()
-
-			if sid = c.session.ID(); sid == "" {
-				c.log.Debugf("Session does not exist, will try locking again in \"%d\" seconds...", int64(interval.Seconds()))
-			} else if elected, err = c.acquire(sid); err != nil {
-				c.log.Printf("Error attempting to acquire lock: %s", err)
+			if c.session.Running() {
+				// if our session manager is still running
+				if sid = c.session.ID(); sid == "" {
+					// this should only ever happen very early on in the election process
+					elected = false
+					updated = c.elected != nil && *c.elected != elected
+					c.log.Debugf("Acquire tick: Session does not exist, will try locking again in %d seconds...", int64(interval.Seconds()))
+				} else if elected, err = c.acquire(sid); err != nil {
+					// most likely hit due to transport error.
+					updated = c.elected != nil && *c.elected != elected
+					c.log.Printf("Acquire tick: Error attempting to acquire lock: %s", err)
+				} else {
+					// if c.elected is nil, indicating this is the initial election loop, or if the election state
+					// changed mark update as true
+					updated = c.elected == nil || *c.elected != elected
+				}
+			} else {
+				// if we are below the threshold, just try to restart existing session
+				c.log.Printf("Acquire tick: Session is in stopped state, attempting to restart...")
+				elected = false
+				updated = c.elected != nil && *c.elected != elected
+				c.session.Run()
 			}
 
-			if updated = elected != c.elected; updated {
-				// modify state
-				c.elected = elected
+			// if updated
+			if updated {
 				if elected {
-					c.log.Debug("We have lost the election")
-				} else {
 					c.log.Debug("We have won the election")
+				} else {
+					c.log.Debug("We have lost the election")
 				}
+
+				// update internal state
+				*c.elected = elected
 
 				// send notifications
 				up.Elected = elected
-				c.watchers.notify(up)
+				c.mu.Unlock()
+
+				c.watchers.notify(*up)
+			} else {
+				c.mu.Unlock()
 			}
 
-			c.mu.Unlock()
+		case sessionUpdate = <-c.sessionUpdateChan:
+			c.mu.Lock()
+
+			if sessionUpdate.Error != nil {
+				// if there was an update either creating or renewing our session
+				consecutiveSessionErrorCount++
+				c.log.Printf("Session Update: Error (%d in a row): %s", consecutiveSessionErrorCount, sessionUpdate.Error)
+				if sessionUpdate.State == session.StateRunning && consecutiveSessionErrorCount > 2 {
+					// if the session is still running but we've seen more than 2 errors, attempt a stop -> start cycle
+					c.log.Print("Session Update: 2 successive errors seen, stopping session")
+					if err = c.session.Stop(); err != nil {
+						c.log.Printf("Session update: Error stopping session: %s", err)
+					}
+					elected = false
+					updated = c.elected != nil && *c.elected != elected
+				}
+				// do not modify elected state here unless we've breached the threshold.  could just be a temporary
+				// issue
+			} else if sessionUpdate.State == session.StateStopped {
+				// if somehow the session state became stopped (this should basically never happen...), do not attempt
+				// to kickstart session here.  test if we need to update candidate state and notify watchers, then move
+				// on.  next acquire tick will attempt to restart session.
+				consecutiveSessionErrorCount = 0
+				elected = false
+				updated = c.elected != nil && *c.elected != elected
+				c.log.Printf("Session Update: Stopped state seen: %#v", sessionUpdate)
+			} else {
+				// if we got a non-error / non-stopped update, there is nothing to do.
+				consecutiveSessionErrorCount = 0
+				c.log.Debugf("Session Update: Received %#v", sessionUpdate)
+			}
+
+			// if updated
+			if updated {
+				// this should only ever hit if we breach the error threshold or our session stopped running
+				if elected {
+					c.log.Debug("We have won the election")
+				} else {
+					c.log.Debug("We have lost the election")
+				}
+				// update internal state
+				*c.elected = elected
+				// modify update payload
+				up.Elected = elected
+				c.mu.Unlock()
+				// send notifications after unlocking
+				c.watchers.notify(*up)
+			} else {
+				c.mu.Unlock()
+			}
 
 		case resigned = <-c.resign:
 			break acquisition
@@ -440,25 +557,30 @@ acquisition:
 
 	c.mu.Lock()
 
-	// modify state
-	c.elected = false
+	// modify internal state
+	*c.elected = false
 	c.state = StateResigned
 
 	// send notifications
 	up.Elected = false
 	up.State = StateResigned
-	c.watchers.notify(up)
+
+	if c.session != nil {
+		if err = c.session.Stop(); err != nil {
+			c.log.Printf("Error stopping session: %s", err)
+		}
+	}
 
 	// release lock before the final steps so the object is usable
 	c.mu.Unlock()
 
-	// stop session, this might block for a bit
-	c.session.Stop()
-
-	// notify our caller that we've finished with resignation
+	// just in case....
 	if resigned != nil {
+		// notify caller that we've stopped
 		resigned <- struct{}{}
 	}
+
+	c.watchers.notify(*up)
 
 	c.log.Print("Resigned")
 }

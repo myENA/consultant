@@ -32,11 +32,3 @@ func ParseName(name string) (*NameParts, error) {
 		return nil, fmt.Errorf("expected 2 or 3 parts in session name \"%s\", saw only \"%d\"", name, len(split))
 	}
 }
-
-// sendUpdate will attempt to notify whoever cares that the session state has changed
-func sendUpdate(fn UpdateFunc, up Update) {
-	if fn == nil {
-		return
-	}
-	fn(up)
-}

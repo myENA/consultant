@@ -14,6 +14,7 @@ import (
 func makeConfigCallback(cb cst.ServerConfigCallback) cst.ServerConfigCallback {
 	return func(c *cst.TestServerConfig) {
 		c.NodeName = fmt.Sprintf("%s-%s", nouns[rand.Int63()%nounLen], nouns[rand.Int63()%nounLen])
+		c.LogLevel = "ERR"
 		if cb != nil {
 			cb(c)
 		}

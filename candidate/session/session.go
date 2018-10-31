@@ -30,8 +30,6 @@ type (
 		State       State
 	}
 
-	UpdateFunc func(Update)
-
 	Config struct {
 		// Key [suggested]
 		//
@@ -61,7 +59,7 @@ type (
 		// UpdateFunc [optional]
 		//
 		// Callback to be executed after session state change
-		UpdateFunc UpdateFunc
+		UpdateFunc WatchFunc
 
 		// AutoRun [optional]
 		//
@@ -70,7 +68,7 @@ type (
 	}
 
 	Session struct {
-		mu     sync.Mutex
+		mu     sync.RWMutex
 		log    log.DebugLogger
 		client *api.Client
 
@@ -88,7 +86,7 @@ type (
 		stop  chan chan error
 		state State
 
-		updateFunc UpdateFunc
+		watchers *watchers
 	}
 )
 
@@ -97,7 +95,7 @@ func New(conf *Config) (*Session, error) {
 		key, ttl, behavior string
 		client             *api.Client
 		l                  log.DebugLogger
-		updateFunc         UpdateFunc
+		updateFunc         WatchFunc
 		autoRun            bool
 		err                error
 	)
@@ -154,14 +152,18 @@ func New(conf *Config) (*Session, error) {
 	}
 
 	cs := &Session{
-		log:        l,
-		client:     client,
-		key:        key,
-		ttl:        ttlTD,
-		behavior:   behavior,
-		interval:   time.Duration(int64(ttlTD) / 2),
-		stop:       make(chan chan error, 1),
-		updateFunc: updateFunc,
+		log:      l,
+		client:   client,
+		key:      key,
+		ttl:      ttlTD,
+		behavior: behavior,
+		interval: time.Duration(int64(ttlTD) / 2),
+		stop:     make(chan chan error, 1),
+		watchers: newWatchers(),
+	}
+
+	if updateFunc != nil {
+		cs.watchers.Add("", updateFunc)
 	}
 
 	if cs.node, err = client.Agent().NodeName(); err != nil {
@@ -180,16 +182,16 @@ func New(conf *Config) (*Session, error) {
 }
 
 func (cs *Session) ID() string {
-	cs.mu.Lock()
+	cs.mu.RLock()
 	sid := cs.id
-	cs.mu.Unlock()
+	cs.mu.RUnlock()
 	return sid
 }
 
 func (cs *Session) Name() string {
-	cs.mu.Lock()
+	cs.mu.RLock()
 	name := cs.name
-	cs.mu.Unlock()
+	cs.mu.RUnlock()
 	return name
 }
 
@@ -210,16 +212,38 @@ func (cs *Session) RenewInterval() time.Duration {
 }
 
 func (cs *Session) LastRenewed() time.Time {
-	cs.mu.Lock()
+	cs.mu.RLock()
 	t := cs.lastRenewed
-	cs.mu.Unlock()
+	cs.mu.RUnlock()
 	return t
 }
 
+// Watch allows you to register a function that will be called when the election State has changed
+func (cs *Session) Watch(id string, fn WatchFunc) string {
+	return cs.watchers.Add(id, fn)
+}
+
+// Unwatch will remove a function from the list of watchers.
+func (cs *Session) Unwatch(id string) {
+	cs.watchers.Remove(id)
+}
+
+// RemoveWatchers will clear all watchers
+func (cs *Session) RemoveWatchers() {
+	cs.watchers.RemoveAll()
+}
+
+// UpdateWatchers will immediately push the current state of this Candidate to all currently registered Watchers
+func (cs *Session) UpdateWatchers() {
+	cs.mu.RLock()
+	cs.watchers.notify(Update{cs.id, cs.name, cs.lastRenewed, nil, cs.state})
+	cs.mu.RUnlock()
+}
+
 func (cs *Session) Running() bool {
-	cs.mu.Lock()
+	cs.mu.RLock()
 	b := cs.state == StateRunning
-	cs.mu.Unlock()
+	cs.mu.RUnlock()
 	return b
 }
 
@@ -267,9 +291,9 @@ func (cs *Session) Stop() error {
 }
 
 func (cs *Session) State() State {
-	cs.mu.Lock()
+	cs.mu.RLock()
 	s := cs.state
-	cs.mu.Unlock()
+	cs.mu.RUnlock()
 	return s
 }
 
@@ -296,6 +320,7 @@ func (cs *Session) create() error {
 		cs.id = ""
 		cs.name = ""
 	} else if sid != "" {
+		cs.log.Debugf("New upstream session %q created", sid)
 		cs.id = sid
 		cs.name = name
 		cs.lastRenewed = time.Now()
@@ -342,115 +367,99 @@ func (cs *Session) destroy() error {
 	return err
 }
 
-// TODO: improve updates to include the action taken this loop, and whether it is the last action to be taken this loop
-// i.e., destroy / renew can happen in the same loop as create.
-func (cs *Session) maintain() {
+func (cs *Session) updateWatchers(err error) {
+	cs.mu.RLock()
+	cs.watchers.notify(Update{cs.id, cs.name, cs.lastRenewed, err, cs.state})
+	cs.mu.RUnlock()
+}
+
+// maintainTick is responsible for ensuring our session is kept alive in Consul
+func (cs *Session) maintainTick(tick time.Time) {
 	var (
 		sid, name string
-		stopped   chan error
-		up        Update
 		err       error
 	)
 
-	intervalTicker := time.NewTicker(cs.interval)
+	cs.mu.Lock()
 
-maintaining:
-	for {
-		select {
-		case <-intervalTicker.C:
-			cs.mu.Lock()
-			if cs.id != "" {
-				// if we were previously able to create an upstream session...
-				sid, name = cs.id, cs.name
-				if !cs.lastRenewed.IsZero() && time.Now().Sub(cs.lastRenewed) > cs.ttl {
-					// if we have a session but the last time we were able to successfully renew it was beyond the TTL,
-					// attempt to destroy and allow re-creation down below
-					cs.log.Printf(
-						"Last renewed time (%s) is > ttl (%s), expiring upstream session %q (%q)...",
-						cs.lastRenewed.Format(time.RFC822),
-						cs.ttl,
-						cs.name,
-						cs.id,
-					)
-					if err = cs.destroy(); err != nil {
-						cs.log.Debugf(
-							"Error destroying expired upstream session %q (%q). This can probably be ignored: %s",
-							name,
-							sid,
-							err,
-						)
-					}
-				} else if err = cs.renew(); err != nil {
-					// if error during renewal
-					cs.log.Printf("Unable to renew Consul Session: %s", err)
-					// TODO: possibly attempt to destroy the session at this point?  the above timeout test statement
-					// should eventually be hit if this continues to fail...
-				} else {
-					// session should be in a happy state.
-					cs.log.Debugf("Upstream session %q (%q) renewed", cs.name, cs.id)
-				}
+	if cs.id != "" {
+		// if we were previously able to create an upstream session...
+		sid, name = cs.id, cs.name
+		if !cs.lastRenewed.IsZero() && time.Now().Sub(cs.lastRenewed) > cs.ttl {
+			// if we have a session but the last time we were able to successfully renew it was beyond the TTL,
+			// attempt to destroy and allow re-creation down below
+			cs.log.Printf(
+				"maintainTick() - Last renewed time (%s) is > ttl (%s), expiring upstream session %q (%q)...",
+				cs.lastRenewed.Format(time.RFC822),
+				cs.ttl,
+				cs.name,
+				cs.id,
+			)
+			if err = cs.destroy(); err != nil {
+				cs.log.Debugf(
+					"maintainTick() - Error destroying expired upstream session %q (%q). This can probably be ignored: %s",
+					name,
+					sid,
+					err,
+				)
 			}
-
-			if cs.id == "" {
-				// if this is the first iteration of the loop or if an error occurred above, test and try to create
-				// a new session
-				if err = cs.create(); err != nil {
-					cs.log.Printf("Unable to create upstream session: %s", err)
-				} else {
-					cs.log.Debugf("New upstream session %q (%q) created.", cs.name, cs.id)
-				}
-			}
-
-			// create update behind lock
-			up = Update{
-				ID:          cs.id,
-				Name:        cs.name,
-				LastRenewed: cs.lastRenewed,
-				Error:       err,
-				State:       cs.state,
-			}
-
-			cs.mu.Unlock()
-
-			//send update after unlock
-			// TODO: should this block?
-			go sendUpdate(cs.updateFunc, up)
-
-		case stopped = <-cs.stop:
-			break maintaining
+		} else if err = cs.renew(); err != nil {
+			// if error during renewal
+			cs.log.Printf("maintainTick() - Unable to renew Consul Session: %s", err)
+			// TODO: possibly attempt to destroy the session at this point?  the above timeout test statement
+			// should eventually be hit if this continues to fail...
+		} else {
+			// session should be in a happy state.
+			cs.log.Debugf("maintainTick() - Upstream session %q (%q) renewed", cs.name, cs.id)
 		}
 	}
 
-	cs.log.Debug("Stopping session...")
+	if cs.id == "" {
+		// if this is the first iteration of the loop or if an error occurred above, test and try to create
+		// a new session
+		if err = cs.create(); err != nil {
+			cs.log.Printf("maintainTick() - Unable to create upstream session: %s", err)
+		} else {
+			cs.log.Debugf("maintainTick() - New upstream session %q (%q) created.", cs.name, cs.id)
+		}
+	}
 
-	intervalTicker.Stop()
+	cs.mu.Unlock()
+
+	//send update after unlock
+	cs.updateWatchers(err)
+}
+
+func (cs *Session) shutdown(stopped chan<- error) {
+	var (
+		sid, name string
+		err       error
+	)
 
 	cs.mu.Lock()
+
+	cs.log.Debug("shutdown() - Stopping session...")
 
 	// localize most recent upstream session info
 	sid = cs.id
 	name = cs.name
-	lastRenewed := cs.lastRenewed
 
 	if cs.id != "" {
 		// if we have a reference to an upstream session id, attempt to destroy it.
 		if derr := cs.destroy(); derr != nil {
-			msg := fmt.Sprintf("Error destroying upstream session %q (%q) during shutdown: %s", name, sid, derr)
+			msg := fmt.Sprintf("shutdown() - Error destroying upstream session %q (%q) during shutdown: %s", name, sid, derr)
 			log.Print(msg)
 			if err != nil {
 				// if there was an existing error, append this error to it to be sent along the Stop() resp chan
 				err = fmt.Errorf("%s; %s", err, msg)
 			}
 		} else {
-			log.Printf("Upstream session %q (%q) destroyed", name, sid)
+			log.Printf("shutdown() - Upstream session %q (%q) destroyed", name, sid)
 		}
 	}
 
 	// set our state to stopped, preventing further interaction.
 	cs.state = StateStopped
-
-	// prepare final update
-	up = Update{LastRenewed: lastRenewed, State: StateStopped}
 
 	cs.mu.Unlock()
 
@@ -461,7 +470,34 @@ maintaining:
 	}
 
 	// send final update
-	go sendUpdate(cs.updateFunc, up)
+	cs.updateWatchers(err)
 
-	cs.log.Print("Session stopped")
+	cs.log.Print("shutdown() - Session stopped")
+}
+
+// TODO: improve updates to include the action taken this loop, and whether it is the last action to be taken this loop
+// i.e., destroy / renew can happen in the same loop as create.
+func (cs *Session) maintain() {
+	var (
+		tick    time.Time
+		stopped chan error
+	)
+
+	intervalTicker := time.NewTicker(cs.interval)
+
+maintaining:
+	for {
+		select {
+		case tick = <-intervalTicker.C:
+			cs.maintainTick(tick)
+		case stopped = <-cs.stop:
+			break maintaining
+		}
+	}
+
+	intervalTicker.Stop()
+
+	cs.shutdown(stopped)
+
+	cs.log.Debug("maintain() - Exiting maintain loop")
 }

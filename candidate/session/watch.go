@@ -1,11 +1,11 @@
-package candidate
+package session
 
 import (
 	"github.com/myENA/consultant/util"
 	"sync"
 )
 
-type WatchFunc func(update ElectionUpdate)
+type WatchFunc func(update Update)
 
 type watchers struct {
 	mu    sync.RWMutex
@@ -47,7 +47,7 @@ func (c *watchers) RemoveAll() {
 }
 
 // notifyWatchers is a thread safe update of leader status
-func (c *watchers) notify(update ElectionUpdate) {
+func (c *watchers) notify(update Update) {
 	c.mu.RLock()
 	for _, fn := range c.funcs {
 		go fn(update)

@@ -35,12 +35,6 @@ func TestCandidate(t *testing.T) {
 	suite.Run(t, new(CandidateTestSuite))
 }
 
-func (cs *CandidateTestSuite) SetupTest() {
-	server, client := testutil.MakeServerAndClient(cs.T(), nil)
-	cs.server = server
-	cs.client = client.Client
-}
-
 func (cs *CandidateTestSuite) TearDownTest() {
 	if cs.client != nil {
 		cs.client = nil
@@ -94,7 +88,6 @@ func (cs *CandidateTestSuite) TestNew_EmptyKey() {
 func (cs *CandidateTestSuite) TestNew_EmptyID() {
 	cand, err := candidate.New(cs.configKeyed(nil))
 	require.Nil(cs.T(), err, "Error creating candidate: %s", err)
-	defer cand.Resign()
 	if myAddr, err := util.MyAddress(); err != nil {
 		require.NotZero(cs.T(), cand.ID(), "Expected Candidate ID to not be empty")
 	} else {
@@ -113,6 +106,10 @@ func (cs *CandidateTestSuite) TestNew_InvalidID() {
 }
 
 func (cs *CandidateTestSuite) TestRun_SimpleElectionCycle() {
+	server, client := testutil.MakeServerAndClient(cs.T(), nil)
+	cs.server = server
+	cs.client = client.Client
+
 	var candidate1, candidate2, candidate3, leaderCandidate *candidate.Candidate
 	var leader *api.SessionEntry
 	var err error
@@ -264,6 +261,10 @@ func (cs *CandidateTestSuite) TestRun_SimpleElectionCycle() {
 }
 
 func (cs *CandidateTestSuite) TestRun_SessionAnarchy() {
+	server, client := testutil.MakeServerAndClient(cs.T(), nil)
+	cs.server = server
+	cs.client = client.Client
+
 	cand := cs.makeCandidate(1, &candidate.Config{AutoRun: true})
 
 	updates := make([]candidate.ElectionUpdate, 0)

@@ -3,6 +3,7 @@ package consultant
 import (
 	"fmt"
 	"github.com/hashicorp/consul/api"
+	"github.com/myENA/consultant/candidate"
 	"github.com/myENA/consultant/log"
 	"github.com/myENA/go-helpers"
 	"sync"
@@ -52,30 +53,31 @@ func (m *ManagedServiceMeta) RegisteredTags() []string {
 // NOTE: Currently no sanity checking is performed against Consul itself.  If you directly modify the service definition
 // via the consul api / ui, this object will be defunct.
 type ManagedService struct {
-	mu sync.Mutex
+	mu sync.RWMutex
 
 	log    log.Logger
 	client *Client
 
-	meta           *ManagedServiceMeta
-	candidate      *Candidate
-	siblingLocator *SiblingLocator
+	meta      *ManagedServiceMeta
+	candidate *candidate.Candidate
 
 	logSlug      string
 	logSlugSlice []interface{}
 }
 
 func NewManagedService(client *Client, serviceID, serviceName string, registeredTags []string) (*ManagedService, error) {
-	return &ManagedService{
+	meta := ManagedServiceMeta{
+		id:                   serviceID,
+		name:                 serviceName,
+		registeredTags:       registeredTags,
+		registeredTagsLength: len(registeredTags),
+	}
+	ms := ManagedService{
 		client: client,
 		log:    log.New(serviceID),
-		meta: &ManagedServiceMeta{
-			id:                   serviceID,
-			name:                 serviceName,
-			registeredTags:       registeredTags,
-			registeredTagsLength: len(registeredTags),
-		},
-	}, nil
+		meta:   &meta,
+	}
+	return &ms, nil
 }
 
 // Meta returns service metadata object containing ID, Name, and the Tags that were present at registration time
@@ -86,76 +88,43 @@ func (ms *ManagedService) Meta() *ManagedServiceMeta {
 // NewCandidate will attempt to construct a Candidate for this service
 //
 // NOTE: If a Candidate was previously created, it will be halted, removed, and a new one created
-func (ms *ManagedService) NewCandidate(key, ttl string, wait bool) (*Candidate, error) {
+func (ms *ManagedService) NewCandidate(key, ttl string, wait bool) (*candidate.Candidate, error) {
 	ms.mu.Lock()
 
 	if nil != ms.candidate {
-		ms.candidate.DeregisterUpdates()
 		ms.candidate.Resign()
+		ms.candidate.RemoveWatchers()
 	}
 
-	candidate, err := NewCandidate(ms.client, ms.client.MyAddr(), key, ttl)
+	candidateConfig := candidate.Config{
+		KVKey:      key,
+		ID:         ms.client.MyAddr(),
+		SessionTTL: ttl,
+		Client:     ms.client.Client,
+	}
+
+	cand, err := candidate.New(&candidateConfig)
 	if err != nil {
 		ms.mu.Unlock()
 		return nil, err
 	}
 
 	if wait {
-		candidate.Wait()
+		cand.Wait()
 	}
-	ms.candidate = candidate
+	ms.candidate = cand
 
 	ms.mu.Unlock()
 
-	return candidate, nil
+	return cand, nil
 }
 
 // Candidate returns the current candidate for this service.  Does not create one
-func (ms *ManagedService) Candidate() *Candidate {
-	ms.mu.Lock()
-	candidate := ms.candidate
-	ms.mu.Unlock()
-	return candidate
-}
-
-// NewSiblingLocator will attempt to construct a SiblingLocator for this service.
-//
-// NOTE: If a SiblingLocator was previously created, it will be overwritten
-func (ms *ManagedService) NewSiblingLocator(allowStale bool) (*SiblingLocator, error) {
-	ms.mu.Lock()
-
-	if nil != ms.siblingLocator {
-		ms.siblingLocator.StopWatcher()
-		ms.siblingLocator.RemoveCallbacks()
-	}
-
-	siblingLocator, err := NewSiblingLocator(ms.client, SiblingLocatorConfig{
-		ServiceID:   ms.meta.ID(),
-		NodeName:    ms.client.MyNode(),
-		ServiceName: ms.meta.Name(),
-		ServiceTags: ms.meta.RegisteredTags(),
-		AllowStale:  allowStale,
-		Datacenter:  ms.client.config.Datacenter,
-		Token:       ms.client.config.Token,
-	})
-
-	if err != nil {
-		ms.mu.Unlock()
-		return nil, err
-	}
-
-	ms.siblingLocator = siblingLocator
-	ms.mu.Unlock()
-
-	return siblingLocator, nil
-}
-
-// SiblingLocator returns the current SiblingLocator for this service. Does not create one
-func (ms *ManagedService) SiblingLocator() *SiblingLocator {
-	ms.mu.Lock()
-	siblingLocator := ms.siblingLocator
-	ms.mu.Unlock()
-	return siblingLocator
+func (ms *ManagedService) Candidate() *candidate.Candidate {
+	ms.mu.RLock()
+	cand := ms.candidate
+	ms.mu.RUnlock()
+	return cand
 }
 
 // AddTags will attempt to add the provided tags to the service registration in consul

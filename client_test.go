@@ -22,8 +22,8 @@ func TestClientConstructionMethods(t *testing.T) {
 	os.Setenv(api.HTTPAddrEnvName, server.HTTPAddr)
 
 	t.Run("NewClient", func(t *testing.T) {
-		if _, err := consultant.NewClient(nil); err != nil {
-			t.Logf("NewClient err: %s", err)
+		if _, err := consultant.NewClient(nil); err == nil {
+			t.Log("Expected error with nil config")
 			t.FailNow()
 		}
 	})

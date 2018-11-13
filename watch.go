@@ -47,52 +47,117 @@ func WatchEvent(name, token, datacenter string) (*watch.Plan, error) {
 	return observe.WatchEvent(name, token, datacenter)
 }
 
-// WatchKey will attempt to create a "key" watch plan based on existing client configuration
+// WatchKey attempts to create a "key" watch plan based on existing client configuration with an index handler
 func (c *Client) WatchKey(key string, stale bool, handler watch.HandlerFunc) (*watch.Plan, error) {
 	return observe.WatchKeyHandler(key, stale, c.config.Token, c.config.Datacenter, handler)
 }
 
-// WatchKeyPrefix will attempt to create a "keyprefix" watch plan based on existing client configuration
+// WatchKeyHybrid attempts to create a "key" watch plan based on existing client configuration with a hash handler
+func (c *Client) WatchKeyHybrid(key string, stale bool, handler watch.HybridHandlerFunc) (*watch.Plan, error) {
+	return observe.WatchKeyHybridHandler(key, stale, c.config.Token, c.config.Datacenter, handler)
+}
+
+// WatchKeyPrefix attempts to create a "keyprefix" watch plan based on existing client configuration with an index
+// handler
 func (c *Client) WatchKeyPrefix(prefix string, stale bool, handler watch.HandlerFunc) (*watch.Plan, error) {
 	return observe.WatchKeyPrefixHandler(prefix, stale, c.config.Token, c.config.Datacenter, handler)
 }
 
-// WatchServices will attempt to create a "services" watch plan based on existing client configuration
+// WatchKeyPrefixHybrid attempts to create a "keyprefix" watch plan based on existing client configuration with a
+// hash handler
+func (c *Client) WatchKeyPrefixHybrid(prefix string, stale bool, handler watch.HybridHandlerFunc) (*watch.Plan, error) {
+	return observe.WatchKeyPrefixHybridHandler(prefix, stale, c.config.Token, c.config.Datacenter, handler)
+}
+
+// WatchServices attempts to create a "services" watch plan based on existing client configuration with an index
+// handler
 func (c *Client) WatchServices(stale bool, handler watch.HandlerFunc) (*watch.Plan, error) {
 	return observe.WatchServicesHandler(stale, c.config.Token, c.config.Datacenter, handler)
 }
 
-// WatchNodes will attempt to create a "nodes" watch plan based on existing client configuration
+// WatchServicesHybrid attempts to to create a "services" watch plan based on existing client configuration with a
+// hash handler
+func (c *Client) WatchServicesHybrid(stale bool, handler watch.HybridHandlerFunc) (*watch.Plan, error) {
+	return observe.WatchServicesHybridHandler(stale, c.config.Token, c.config.Datacenter, handler)
+}
+
+// WatchNodes attempts to create a "nodes" watch plan based on existing client configuration with an index handler
 func (c *Client) WatchNodes(stale bool, handler watch.HandlerFunc) (*watch.Plan, error) {
 	return observe.WatchNodesHandler(stale, c.config.Token, c.config.Datacenter, handler)
 }
 
-// WatchService will attempt to create a "service" watch plan based on existing client configuration
+// WatchNodesHybrid attempts to create a "nodes" watch plan based on existing client configuration with a hash
+// handler
+func (c *Client) WatchNodesHybrid(stale bool, handler watch.HybridHandlerFunc) (*watch.Plan, error) {
+	return observe.WatchNodesHybridHandler(stale, c.config.Token, c.config.Datacenter, handler)
+}
+
+// WatchService attempts to create a "service" watch plan based on existing client configuration with an index
+// handler
 func (c *Client) WatchService(service, tag string, passingOnly, stale bool, handler watch.HandlerFunc) (*watch.Plan, error) {
 	return observe.WatchServiceHandler(service, tag, passingOnly, stale, c.config.Token, c.config.Datacenter, handler)
 }
 
-// WatchChecks will attempt to create a "checks" watch plan based on existing client configuration
+// WatchServiceHybrid attempts to create a "service" watch plan based on existing client configuration with a hash
+// handler
+func (c *Client) WatchServiceHybrid(service, tag string, passingOnly, stale bool, handler watch.HybridHandlerFunc) (*watch.Plan, error) {
+	return observe.WatchServiceHybridHandler(service, tag, passingOnly, stale, c.config.Token, c.config.Datacenter, handler)
+}
+
+// WatchChecks attempts to create a "checks" watch plan based on existing client configuration with an index handler
 func (c *Client) WatchChecks(service, state string, stale bool, handler watch.HandlerFunc) (*watch.Plan, error) {
 	return observe.WatchChecksHandler(service, state, stale, c.config.Token, c.config.Datacenter, handler)
 }
 
-// WatchEvent will attempt to create an "event" watch plan based on existing client configuration
+// WatchChecksHybrid attempts to create a "checks" watch plan based on existing client configuration with a hash
+// handler
+func (c *Client) WatchChecksHybrid(service, state string, stale bool, handler watch.HybridHandlerFunc) (*watch.Plan, error) {
+	return observe.WatchChecksHybridHandler(service, state, stale, c.config.Token, c.config.Datacenter, handler)
+}
+
+// WatchEvent attempts to create an "event" watch plan based on existing client configuration with an index handler
 func (c *Client) WatchEvent(name string, handler watch.HandlerFunc) (*watch.Plan, error) {
 	return observe.WatchEventHandler(name, c.config.Token, c.config.Datacenter, handler)
 }
 
-// WatchConnectRoots will attempt to create a "connect_roots" watch plan based on existing client configuration
+// WatchEventHybrid attempts to create an "event" watch plan based on existing client configuration with a hash
+// handler
+func (c *Client) WatchEventHybrid(name string, handler watch.HybridHandlerFunc) (*watch.Plan, error) {
+	return observe.WatchEventHybridHandler(name, c.config.Token, c.config.Datacenter, handler)
+}
+
+// WatchConnectRoots attempts to create a "connect_roots" watch plan based on existing client configuration with an
+// index handler
 func (c *Client) WatchConnectRoots(handler watch.HandlerFunc) (*watch.Plan, error) {
 	return observe.WatchConnectRootsHandler(c.config.Token, c.config.Datacenter, handler)
 }
 
-// WatchConnectLeaf will attempt to create a "connect_leaf" watch plan based on existing client configuration
+// WatchConnectRootsHybrid attempts to create a "connect_roots" watch plan based on existing client configuration
+// with a hash handler
+func (c *Client) WatchConnectRootsHybrid(handler watch.HybridHandlerFunc) (*watch.Plan, error) {
+	return observe.WatchConnectRootsHybridHandler(c.config.Token, c.config.Datacenter, handler)
+}
+
+// WatchConnectLeaf attempts to create a "connect_leaf" watch plan based on existing client configuration with an index
+// handler
 func (c *Client) WatchConnectLeaf(service string, handler watch.HandlerFunc) (*watch.Plan, error) {
 	return observe.WatchConnectLeafHandler(service, c.config.Token, c.config.Datacenter, handler)
 }
 
-// WatchProxyConfig will attempt to create a "connect_proxy_config" watch plan based on existing client configuration
+// WatchConnectLeafHybrid attempts to create a "connect_leaf" watch plan based on existing client configuration with a
+// hash handler
+func (c *Client) WatchConnectLeafHybrid(service string, handler watch.HybridHandlerFunc) (*watch.Plan, error) {
+	return observe.WatchConnectLeafHybridHandler(service, c.config.Token, c.config.Datacenter, handler)
+}
+
+// WatchProxyConfig attempts to create a "connect_proxy_config" watch plan based on existing client configuration with
+// an index handler
 func (c *Client) WatchProxyConfig(proxyServiceID string, handler watch.HandlerFunc) (*watch.Plan, error) {
 	return observe.WatchProxyConfigHandler(proxyServiceID, c.config.Token, c.config.Datacenter, handler)
+}
+
+// WatchProxyConfigHybrid attempts to create a "connect_proxy_config" watch plan based on existing client configuration
+// with a hash handler
+func (c *Client) WatProxyConfigHybrid(proxyServiceID string, handler watch.HybridHandlerFunc) (*watch.Plan, error) {
+	return observe.WatchProxyConfigHybridHandler(proxyServiceID, c.config.Token, c.config.Datacenter, handler)
 }

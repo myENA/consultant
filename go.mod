@@ -93,7 +93,6 @@ require (
 	github.com/shirou/gopsutil v2.17.12+incompatible // indirect
 	github.com/shirou/w32 v0.0.0-20160930032740-bb4de0191aa4 // indirect
 	github.com/stretchr/objx v0.1.1 // indirect
-	github.com/stretchr/testify v1.2.2
 	github.com/tv42/httpunix v0.0.0-20150427012821-b75d8614f926 // indirect
 	golang.org/x/net v0.0.0-20181029044818-c44066c5c816 // indirect
 	google.golang.org/grpc v1.16.0 // indirect

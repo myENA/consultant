@@ -131,14 +131,14 @@ func (ms *ManagedService) Candidate() *candidate.Candidate {
 //
 // - Input is "uniqued" before processing occurs.
 // - If delta is 0, this is a no-op
-func (ms *ManagedService) AddTags(tags ...string) error {
+func (ms *ManagedService) AddTags(addList ...string) error {
 	ms.mu.Lock()
 
 	// unique-ify it
-	tags = helpers.UniqueStringSlice(tags)
+	addList = helpers.UniqueStringSlice(addList)
 
 	// if empty...
-	if 0 == len(tags) {
+	if 0 == len(addList) {
 		ms.mu.Unlock()
 		return nil
 	}
@@ -167,7 +167,7 @@ func (ms *ManagedService) AddTags(tags ...string) error {
 	def := currentDefs[0]
 
 	// Build new tag slice...
-	newTags, additions := helpers.CombineStringSlices(def.ServiceTags, tags)
+	newTags, additions := helpers.CombineStringSlices(def.ServiceTags, addList)
 
 	// if none were added, log and return
 	if 0 == additions {
@@ -197,14 +197,14 @@ func (ms *ManagedService) AddTags(tags ...string) error {
 // - You cannot remove the Service ID tag.
 // - Input is "uniqued" before processing occurs.
 // - If delta is 0, this is a no-op.
-func (ms *ManagedService) RemoveTags(tags ...string) error {
+func (ms *ManagedService) RemoveTags(removeList ...string) error {
 	ms.mu.Lock()
 
 	// unique-ify stuff
-	tags = helpers.UniqueStringSlice(tags)
+	removeList = helpers.UniqueStringSlice(removeList)
 
 	// if empty...
-	if 0 == len(tags) {
+	if 0 == len(removeList) {
 		ms.mu.Unlock()
 		return nil
 	}
@@ -214,7 +214,7 @@ func (ms *ManagedService) RemoveTags(tags ...string) error {
 
 	// ensure we don't clear out our service ID tag...
 	okt := make([]string, 0)
-	for _, tag := range tags {
+	for _, tag := range removeList {
 		if tag != serviceID {
 			okt = append(okt, tag)
 		}

@@ -1,15 +1,11 @@
 package consultant_test
 
 import (
-	"fmt"
-	"github.com/hashicorp/consul/api"
+	"testing"
+
 	cst "github.com/hashicorp/consul/testutil"
 	"github.com/myENA/consultant"
 	"github.com/myENA/consultant/testutil"
-	"github.com/stretchr/testify/require"
-	"github.com/stretchr/testify/suite"
-	"reflect"
-	"testing"
 )
 
 const (
@@ -19,127 +15,163 @@ const (
 	managedServiceAddedTag = "sandwiches!"
 )
 
-type ManagedServiceTestSuite struct {
-	suite.Suite
+func TestManagedServiceCreation(t *testing.T) {
+	var (
+		service *consultant.ManagedService
+		server  *cst.TestServer
+		client  *consultant.Client
+	)
 
-	server *cst.TestServer
-	client *consultant.Client
-}
+	t.Run("Setup", func(t *testing.T) {
+		var err error
+		// create server and client
+		server, client = testutil.MakeServerAndClient(t, nil)
 
-func TestManagedService(t *testing.T) {
-	suite.Run(t, &ManagedServiceTestSuite{})
-}
+		// register service
+		service, err = client.ManagedServiceRegister(&consultant.SimpleServiceRegistration{
+			Name: managedServiceName,
+			Port: managedServicePort,
+		})
+		if err != nil {
+			t.Logf("Error creating client: %s", err)
+			t.FailNow()
+		}
 
-func (ms *ManagedServiceTestSuite) SetupTest() {
-	ms.server, ms.client = testutil.MakeServerAndClient(ms.T(), nil)
-}
+		// verify service was added properly
+		svcs, _, err := client.Catalog().Service(managedServiceName, "", nil)
+		if err != nil {
+			t.Logf("Error fetching service list: %s", err)
+			t.FailNow()
+		}
+		if len(svcs) != 1 {
+			t.Logf("Expected exactly 1 service in catalog, saw:  %+v", svcs)
+			t.FailNow()
+		}
 
-func (ms *ManagedServiceTestSuite) TearDownTest() {
-	if nil != ms.client {
-		ms.client = nil
-	}
-
-	if nil != ms.server {
-		ms.server.Stop()
-		ms.server = nil
-	}
-}
-
-func (ms *ManagedServiceTestSuite) TearDownSuite() {
-	ms.TearDownTest()
-}
-
-func (ms *ManagedServiceTestSuite) TestManagedServiceCreation() {
-	var err error
-	var service *consultant.ManagedService
-	var svcs []*api.CatalogService
-	var tags []string
-	var tag string
-
-	service, err = ms.client.ManagedServiceRegister(&consultant.SimpleServiceRegistration{
-		Name: managedServiceName,
-		Port: managedServicePort,
+		// locate service tags
+		tags := svcs[0].ServiceTags
+		if len(tags) != 1 {
+			t.Logf("Expected exactly 1 tag on service, saw: %+v", tags)
+			t.FailNow()
+		}
+		tag := tags[0]
+		if tag != service.Meta().ID() {
+			t.Logf("Expected first tag to be %q, saw: %+v", service.Meta().ID(), tag)
+			t.FailNow()
+		}
 	})
 
-	require.Nil(ms.T(), err, fmt.Sprintf("Error creating managed service: %s", err))
+	t.Run("MutateTags_Add", func(t *testing.T) {
+		var err error
+		// attempt to add new tag
+		err = service.AddTags(managedServiceAddedTag)
+		if err != nil {
+			t.Logf("Error adding tags: %s", err)
+			t.FailNow()
+		}
 
-	require.IsType(
-		ms.T(),
-		service,
-		&consultant.ManagedService{},
-		fmt.Sprintf("Expected \"%s\", saw \"%s\"", reflect.TypeOf(&consultant.ManagedService{}), reflect.TypeOf(service)))
+		// refetch service
+		svcs, _, err := client.Catalog().Service(managedServiceName, "", nil)
+		if err != nil {
+			t.Logf("Error fetching services: %s", err)
+			t.FailNow()
+		}
+		if len(svcs) != 1 {
+			t.Logf("Expected exactly 1 service, saw: %+v", svcs)
+			t.FailNow()
+		}
 
-	// verify service was added properly
-	svcs, _, err = ms.client.Catalog().Service(managedServiceName, "", nil)
-	require.Nil(ms.T(), err, fmt.Sprintf("Error looking for service \"%s\": %s", managedServiceName, err))
-	require.NotNil(ms.T(), svcs, fmt.Sprintf("Received nil from Catalog().Service(\"%s\")", managedServiceName))
-	require.Len(ms.T(), svcs, 1, fmt.Sprintf("Expected exactly 1 service in catalog, saw \"%d\"", len(svcs)))
+		// check for existence
+		tags := svcs[0].ServiceTags
+		if len(tags) != 2 {
+			t.Logf("Expected exactly 2 tags, saw: %+v", tags)
+			t.FailNow()
+		}
+		found := false
+		for _, tag := range tags {
+			if tag == managedServiceAddedTag {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Logf("Expected to find tag %q in list, saw: %+v", managedServiceAddedTag, tags)
+			t.FailNow()
+		}
+	})
 
-	// locate service tags
-	tags = svcs[0].ServiceTags
+	t.Run("MutateTags_CannotRemoveIDTag", func(t *testing.T) {
+		var err error
+		err = service.RemoveTags(service.Meta().ID())
+		if err != nil {
+			t.Logf("Error removing tag: %s", err)
+			t.FailNow()
+		}
 
-	// verify tags is defined and has a length of 1
-	require.NotNil(ms.T(), tags, "Service tags are nil")
-	require.Len(ms.T(), tags, 1, fmt.Sprintf("Expected exactly 1 tag, saw %v", tags))
+		// verify service id tag was not removed
+		svcs, _, err := client.Catalog().Service(managedServiceName, "", nil)
+		if err != nil {
+			t.Logf("Error fetching services: %s", err)
+			t.FailNow()
+		}
+		if len(svcs) != 1 {
+			t.Logf("Expected exactly 1 service, saw: %+v", svcs)
+			t.FailNow()
+		}
 
-	// verify first tag is service id
-	tag = tags[0]
-	require.Equal(
-		ms.T(),
-		service.Meta().ID(),
-		tag,
-		fmt.Sprintf("Expected tag to match \"%s\", saw \"%s\"", service.Meta().ID(), tag))
+		tags := svcs[0].ServiceTags
+		if len(tags) != 2 {
+			t.Logf("Expected exactly 2 tags, saw: %+v", tags)
+			t.FailNow()
+		}
 
-	// attempt to add new tag
-	err = service.AddTags(managedServiceAddedTag)
-	require.Nil(ms.T(), err, fmt.Sprintf("Unable to add tag to service \"%s\": %s", managedServiceName, err))
+		found := false
+		for _, tag := range tags {
+			if tag == service.Meta().ID() {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Logf("Expected to see %q in tag list, saw: %+v", service.Meta().ID(), tags)
+			t.FailNow()
+		}
+	})
 
-	// verify tag was added
-	svcs, _, err = ms.client.Catalog().Service(managedServiceName, "", nil)
-	require.Nil(ms.T(), err, fmt.Sprintf("Error looking for service \"%s\": %s", managedServiceName, err))
-	require.NotNil(ms.T(), svcs, fmt.Sprintf("Received nil from Catalog().Service(\"%s\")", managedServiceName))
-	require.Len(ms.T(), svcs, 1, fmt.Sprintf("Expected exactly 1 service in catalog, saw \"%d\"", len(svcs)))
-	tags = svcs[0].ServiceTags
-	require.NotNil(ms.T(), tags, "Service tags are nil")
-	require.Len(ms.T(), tags, 2, fmt.Sprintf("Expected exactly 2 tags, saw %v", tags))
+	t.Run("MutateTags_RemoveArbitraryTag", func(t *testing.T) {
+		var err error
+		err = service.RemoveTags(managedServiceAddedTag)
+		if err != nil {
+			t.Logf("Error removing tag: %s", err)
+			t.FailNow()
+		}
 
-	// verify added tag is in new list
-	require.Contains(ms.T(), tags, managedServiceAddedTag, fmt.Sprintf("Expected tag \"%s\" to be in %v", managedServiceAddedTag, tags))
+		// verify tag was removed
+		svcs, _, err := client.Catalog().Service(managedServiceName, "", nil)
+		if err != nil {
+			t.Logf("Error fetching services: %s", err)
+			t.FailNow()
+		}
+		if len(svcs) != 1 {
+			t.Logf("Expected exactly 1 service, saw: %+v", svcs)
+			t.FailNow()
+		}
 
-	// attempt to remove id from tag list
-	err = service.RemoveTags(service.Meta().ID())
-	require.Nil(ms.T(), err, fmt.Sprintf("Expected nil error, saw \"%s\"", err))
+		tags := svcs[0].ServiceTags
+		if len(tags) != 1 {
+			t.Logf("Expected exactly 1 tags, saw: %+v", tags)
+			t.FailNow()
+		}
 
-	// verify service id tag was not removed
-	svcs, _, err = ms.client.Catalog().Service(managedServiceName, "", nil)
-	require.Nil(ms.T(), err, fmt.Sprintf("Error looking for service \"%s\": %s", managedServiceName, err))
-	require.NotNil(ms.T(), svcs, fmt.Sprintf("Received nil from Catalog().Service(\"%s\")", managedServiceName))
-	require.Len(ms.T(), svcs, 1, fmt.Sprintf("Expected exactly 1 service in catalog, saw \"%d\"", len(svcs)))
-	tags = svcs[0].ServiceTags
-	require.NotNil(ms.T(), tags, "Service tags are nil")
-	require.Len(ms.T(), tags, 2, fmt.Sprintf("Expected exactly 2 tags, saw %v", tags))
+		for _, tag := range tags {
+			if tag == managedServiceAddedTag {
+				t.Logf("Expected %q to be removed from tag list, saw: %+v", managedServiceAddedTag, tags)
+				t.FailNow()
+			}
+		}
+	})
 
-	// verify added tag is in new list
-	require.Contains(ms.T(), tags, service.Meta().ID(), fmt.Sprintf("Expected tag \"%s\" to be in %v", service.Meta().ID(), tags))
-
-	// attempt to remove added tag
-	err = service.RemoveTags(managedServiceAddedTag)
-	require.Nil(ms.T(), err, fmt.Sprintf("Error removing tag \"%s\": %s", managedServiceAddedTag, err))
-
-	// verify service id tag was not removed
-	svcs, _, err = ms.client.Catalog().Service(managedServiceName, "", nil)
-	require.Nil(ms.T(), err, fmt.Sprintf("Error looking for service \"%s\": %s", managedServiceName, err))
-	require.NotNil(ms.T(), svcs, fmt.Sprintf("Received nil from Catalog().Service(\"%s\")", managedServiceName))
-	require.Len(ms.T(), svcs, 1, fmt.Sprintf("Expected exactly 1 service in catalog, saw \"%d\"", len(svcs)))
-	tags = svcs[0].ServiceTags
-	require.NotNil(ms.T(), tags, "Service tags are nil")
-	require.Len(ms.T(), tags, 1, fmt.Sprintf("Expected exactly 1 tags, saw %v", tags))
-
-	// verify first tag is service id
-	tag = tags[0]
-	require.Equal(
-		ms.T(),
-		service.Meta().ID(),
-		tag,
-		fmt.Sprintf("Expected tag to match \"%s\", saw \"%s\"", service.Meta().ID(), tag))
+	if server != nil {
+		server.Stop()
+	}
 }

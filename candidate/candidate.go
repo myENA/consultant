@@ -503,6 +503,10 @@ Locker:
 
 // sessionUpdate is the receiver for the session update callback
 func (c *Candidate) sessionUpdate(update session.Update) {
+	if !c.Running() {
+		c.log.Printf("sessionUpdate() - Not in the running but received update: %v", update)
+		return
+	}
 	c.mu.RLock()
 	if c.session.ID() != update.ID {
 		c.mu.RUnlock()

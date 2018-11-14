@@ -7,6 +7,8 @@ import (
 	"github.com/hashicorp/consul/watch"
 )
 
+// TODO: refactor into semi-generic filtering and broadcast system.
+
 type (
 	// SiblingLocatorConfig
 	//
@@ -31,9 +33,11 @@ type (
 		// Update Filtering configuration
 
 		// [OPTIONAL] - The ID you wish to exclude from updates
-		ServiceID string
+		FilterServiceIDs []string
 		// [OPTIONAL] - The Node you wish to exclude from updates
-		ServiceNode string
+		FilterNodes []string
+		// [OPTIONAL] -
+		FilterTags []string
 
 		// Watch Client configuration
 

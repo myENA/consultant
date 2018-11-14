@@ -19,7 +19,7 @@ import (
 // "index" will be "math.MaxUint64" when called using "Current"
 type SiblingCallback func(index uint64, siblings Siblings)
 
-// Sibling is a thread-safe representation of the Consul api.ServiceEntry object returned by the Health().Service() api
+// Sibling
 type Sibling struct {
 	Node    api.Node
 	Service api.AgentService
@@ -41,6 +41,8 @@ type SiblingLocatorConfig struct {
 	Token       string   // OPTIONAL consul acl token.  Will use value from Client if left blank
 }
 
+// DEPRECATED - This will be replaced in the near future.
+//
 // SiblingLocator provides a way for a local service to find other services registered in Consul that share it's name
 // and tags (if any).
 type SiblingLocator struct {
@@ -306,34 +308,9 @@ serviceLoop:
 }
 
 func buildSibling(svc *api.ServiceEntry) Sibling {
-	node := *svc.Node
-	service := *svc.Service
-
-	tmp := make(map[string]string)
-	for k, v := range node.TaggedAddresses {
-		tmp[k] = v
-	}
-	node.TaggedAddresses = tmp
-
-	tmp = make(map[string]string)
-	for k, v := range node.Meta {
-		tmp[k] = v
-	}
-	node.Meta = tmp
-
-	tmp1 := make([]string, len(service.Tags))
-	copy(tmp1, service.Tags)
-	service.Tags = tmp1
-
-	checks := make(api.HealthChecks, len(svc.Checks))
-	for i, c := range svc.Checks {
-		checks[i] = new(api.HealthCheck)
-		*checks[i] = *c
-	}
-
 	return Sibling{
-		Node:    node,
-		Service: service,
-		Checks:  checks,
+		*svc.Node,
+		*svc.Service,
+		svc.Checks,
 	}
 }

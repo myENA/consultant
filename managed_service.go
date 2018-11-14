@@ -52,7 +52,7 @@ func (m *ManagedServiceMeta) RegisteredTags() []string {
 // NOTE: Currently no sanity checking is performed against Consul itself.  If you directly modify the service definition
 // via the consul api / ui, this object will be defunct.
 type ManagedService struct {
-	mu sync.Mutex
+	mu sync.RWMutex
 
 	log    log.Logger
 	client *Client
@@ -112,9 +112,9 @@ func (ms *ManagedService) NewCandidate(key, ttl string, wait bool) (*Candidate, 
 
 // Candidate returns the current candidate for this service.  Does not create one
 func (ms *ManagedService) Candidate() *Candidate {
-	ms.mu.Lock()
+	ms.mu.RLock()
 	candidate := ms.candidate
-	ms.mu.Unlock()
+	ms.mu.RUnlock()
 	return candidate
 }
 
@@ -152,9 +152,9 @@ func (ms *ManagedService) NewSiblingLocator(allowStale bool) (*SiblingLocator, e
 
 // SiblingLocator returns the current SiblingLocator for this service. Does not create one
 func (ms *ManagedService) SiblingLocator() *SiblingLocator {
-	ms.mu.Lock()
+	ms.mu.RLock()
 	siblingLocator := ms.siblingLocator
-	ms.mu.Unlock()
+	ms.mu.RUnlock()
 	return siblingLocator
 }
 
@@ -303,7 +303,7 @@ func (ms *ManagedService) RemoveTags(tags ...string) error {
 
 // Deregister will remove this service from the service catalog in consul
 func (ms *ManagedService) Deregister() error {
-	ms.mu.Lock()
+	ms.mu.RLock()
 
 	// shut candidate down
 	if nil != ms.candidate {
@@ -312,7 +312,7 @@ func (ms *ManagedService) Deregister() error {
 
 	// remove our service entry from consul
 	err := ms.client.Agent().ServiceDeregister(ms.meta.ID())
-	ms.mu.Unlock()
+	ms.mu.RUnlock()
 
 	return err
 }

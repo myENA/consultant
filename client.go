@@ -3,14 +3,15 @@ package consultant
 import (
 	"errors"
 	"fmt"
-	"github.com/hashicorp/consul/api"
-	"github.com/myENA/consultant/log"
-	"github.com/myENA/consultant/util"
 	"math/rand"
 	"net/url"
 	"os"
 	"sort"
 	"strings"
+
+	"github.com/hashicorp/consul/api"
+	"github.com/myENA/consultant/log"
+	"github.com/myENA/consultant/util"
 )
 
 type Client struct {
@@ -125,6 +126,15 @@ func (c *Client) EnsureKey(key string, options *api.QueryOptions) (*api.KVPair, 
 	return nil, nil, errors.New("key not found")
 }
 
+// EnsureKeyString is a convenience method that will typecast the kvp.Value byte slice to a string for you, if there were no errors.
+func (c *Client) EnsureKeyString(key string, options *api.QueryOptions) (string, *api.QueryMeta, error) {
+	if kvp, qm, err := c.EnsureKey(key, options); err != nil {
+		return "", qm, err
+	} else {
+		return string(kvp.Value), qm, nil
+	}
+}
+
 // PickService will attempt to locate any registered service with a name + tag combination and return one at random from
 // the resulting list
 func (c *Client) PickService(service, tag string, passingOnly bool, options *api.QueryOptions) (*api.ServiceEntry, *api.QueryMeta, error) {
@@ -139,6 +149,18 @@ func (c *Client) PickService(service, tag string, passingOnly bool, options *api
 	}
 
 	return nil, qm, nil
+}
+
+// EnsureService is a convenience method that will return an error in the even that an actual error occurred, or if
+// no service was found with the provided criteria.
+func (c *Client) EnsureService(service, tag string, passingOnly bool, options *api.QueryOptions) (*api.ServiceEntry, *api.QueryMeta, error) {
+	if svc, qm, err := c.PickService(service, tag, passingOnly, options); err != nil {
+		return nil, qm, err
+	} else if svc == nil {
+		return nil, qm, fmt.Errorf("service %q with tag %q not found", service, tag)
+	} else {
+		return svc, qm, nil
+	}
 }
 
 // ServiceByTags - this wraps the consul Health().Service() call, adding the tagsOption parameter and accepting a

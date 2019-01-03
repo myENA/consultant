@@ -1,6 +1,7 @@
 package consultant
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math/rand"
@@ -132,6 +133,17 @@ func (c *Client) EnsureKeyString(key string, options *api.QueryOptions) (string,
 		return "", qm, err
 	} else {
 		return string(kvp.Value), qm, nil
+	}
+}
+
+// EnsureKeyJSON will attempt to unmarshal the kvp value into the provided type
+func (c *Client) EnsureKeyJSON(key string, options *api.QueryOptions, v interface{}) (*api.QueryMeta, error) {
+	if kvp, qm, err := c.EnsureKey(key, options); err != nil {
+		return nil, err
+	} else if err = json.Unmarshal(kvp.Value, v); err != nil {
+		return nil, err
+	} else {
+		return qm, nil
 	}
 }
 

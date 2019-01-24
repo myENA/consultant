@@ -27,20 +27,29 @@ func init() {
 	}
 }
 
-// MyAddress searches available interfaces (skip loopback) and returns the first
-// private ipv4 address found giving preference to smaller RFC1918 blocks: 192.168.0.0/16 < 172.16.0.0/12 < 10.0.0.0/8
+// MyAddress returns the string output from MyAddressIP, or the error if there was one.
 func MyAddress() (string, error) {
-	myAddress := os.Getenv("CONSUL_SERVICE_ADDR")
-	if myAddress != "" {
-		return myAddress, nil
+	if ip, err := MyAddressIP(); err != nil {
+		return "", err
+	} else {
+		return ip.String(), nil
 	}
+}
 
-	var myInterface = os.Getenv("CONSUL_SERVICE_INTERFACE")
+// MyAddressIP searches available interfaces (skip loopback) and returns the first
+// private ipv4 address found giving preference to smaller RFC1918 blocks: 192.168.0.0/16 < 172.16.0.0/12 < 10.0.0.0/8
+func MyAddressIP() (net.IP, error) {
+	envAddr := os.Getenv("CONSUL_SERVICE_ADDR")
+	if envAddr != "" {
+		return net.ParseIP(envAddr), nil
+	}
 
 	ifaces, err := net.Interfaces()
 	if err != nil {
-		return "", err
+		return nil, err
 	}
+
+	myInterface := os.Getenv("CONSUL_SERVICE_INTERFACE")
 
 	for _, iface := range ifaces {
 		// We are looking for a specific interface and only that one will be considered
@@ -51,7 +60,7 @@ func MyAddress() (string, error) {
 		// We looked for an interface name and we found it
 		addrs, err := iface.Addrs()
 		if err != nil {
-			return "", err
+			return nil, err
 		}
 
 		// Look for interfaces in a list of prioritized netblocks
@@ -61,17 +70,17 @@ func MyAddress() (string, error) {
 				cidr := addr.String()
 				ip, _, err := net.ParseCIDR(cidr)
 				if err != nil {
-					return "", err
+					return nil, err
 				}
 				// don't report loopback or ipv6 addresses
 				if !ip.IsLoopback() && ip.To4() != nil {
 					if bl.Contains(ip) {
-						return ip.String(), nil
+						return ip, nil
 					}
 				}
 			}
 		}
 	}
 
-	return "", errors.New("no valid interfaces found")
+	return nil, errors.New("no valid interfaces found")
 }

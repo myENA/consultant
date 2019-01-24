@@ -3,4 +3,4 @@
   version = ">=v1.2.0"
 [[constraint]]
   name = "github.com/stretchr/testify"
-  version = "v1.1.*"
+  version = "v1.3.*"

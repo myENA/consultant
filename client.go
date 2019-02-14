@@ -147,10 +147,10 @@ func (c *Client) EnsureKeyJSON(key string, options *api.QueryOptions, v interfac
 	}
 }
 
-// PickService will attempt to locate any registered service with a name + tag combination and return one at random from
-// the resulting list
-func (c *Client) PickService(service, tag string, passingOnly bool, options *api.QueryOptions) (*api.ServiceEntry, *api.QueryMeta, error) {
-	svcs, qm, err := c.Health().Service(service, tag, passingOnly, options)
+// PickServiceMultipleTags will attempt to locate any registered service with a name + tags combination and return one
+// at random from the resulting list
+func (c *Client) PickServiceMultipleTags(service string, tags []string, passingOnly bool, options *api.QueryOptions) (*api.ServiceEntry, *api.QueryMeta, error) {
+	svcs, qm, err := c.Health().ServiceMultipleTags(service, tags, passingOnly, options)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -163,16 +163,27 @@ func (c *Client) PickService(service, tag string, passingOnly bool, options *api
 	return nil, qm, nil
 }
 
-// EnsureService is a convenience method that will return an error in the even that an actual error occurred, or if
-// no service was found with the provided criteria.
-func (c *Client) EnsureService(service, tag string, passingOnly bool, options *api.QueryOptions) (*api.ServiceEntry, *api.QueryMeta, error) {
-	if svc, qm, err := c.PickService(service, tag, passingOnly, options); err != nil {
+// PickService will attempt to locate any registered service with a name + tag combination and return one at random from
+// the resulting list
+func (c *Client) PickService(service, tag string, passingOnly bool, options *api.QueryOptions) (*api.ServiceEntry, *api.QueryMeta, error) {
+	return c.PickServiceMultipleTags(service, []string{tag}, passingOnly, options)
+}
+
+// EnsureServiceMultipleTags will return an error for an actual client error or if no service was found using the
+// provided criteria
+func (c *Client) EnsureServiceMultipleTags(service string, tags []string, passingOnly bool, options *api.QueryOptions) (*api.ServiceEntry, *api.QueryMeta, error) {
+	if svc, qm, err := c.PickServiceMultipleTags(service, tags, passingOnly, options); err != nil {
 		return nil, qm, err
 	} else if svc == nil {
-		return nil, qm, fmt.Errorf("service %q with tag %q not found", service, tag)
+		return nil, qm, fmt.Errorf("service %q with tag %q not found", service, tags)
 	} else {
 		return svc, qm, nil
 	}
+}
+
+// EnsureService will return an error for an actual client error or if no service was found using the provided criteria
+func (c *Client) EnsureService(service, tag string, passingOnly bool, options *api.QueryOptions) (*api.ServiceEntry, *api.QueryMeta, error) {
+	return c.EnsureServiceMultipleTags(service, []string{tag}, passingOnly, options)
 }
 
 // ServiceByTags - this wraps the consul Health().Service() call, adding the tagsOption parameter and accepting a
@@ -183,23 +194,24 @@ func (c *Client) EnsureService(service, tag string, passingOnly bool, options *a
 //     TagsAny - this will return services that match any of the tags specified.
 //     TagsExclude - this will return services don't have any of the tags specified.
 func (c *Client) ServiceByTags(service string, tags []string, tagsOption TagsOption, passingOnly bool, options *api.QueryOptions) ([]*api.ServiceEntry, *api.QueryMeta, error) {
+	if tagsOption == TagsAll {
+		return c.Client.Health().ServiceMultipleTags(service, tags, passingOnly, options)
+	}
+
 	var (
 		retv, tmpv []*api.ServiceEntry
 		qm         *api.QueryMeta
 		err        error
 	)
 
-	tag := ""
-
 	// Grab the initial payload
 	switch tagsOption {
-	case TagsAll, TagsExactly:
-		if len(tags) > 0 {
-			tag = tags[0]
-		}
-		fallthrough
+	case TagsExactly:
+		// initially limit response by only retrieving a list of services that have at least the specified tags
+		tmpv, qm, err = c.Health().ServiceMultipleTags(service, tags, passingOnly, options)
 	case TagsAny, TagsExclude:
-		tmpv, qm, err = c.Health().Service(service, tag, passingOnly, options)
+		// do not limit response by tags initially
+		tmpv, qm, err = c.Health().Service(service, "", passingOnly, options)
 	default:
 		return nil, nil, fmt.Errorf("invalid value for tagsOption: %d", tagsOption)
 	}
@@ -222,22 +234,6 @@ OUTER:
 		switch tagsOption {
 		case TagsExactly:
 			if !strSlicesEqual(tags, se.Service.Tags) {
-				continue OUTER
-			}
-		case TagsAll:
-			if len(se.Service.Tags) < len(tags) {
-				continue OUTER
-			}
-			// Consul allows duplicate tags, so this workaround.  Boo.
-			mc := 0
-			dedupeMap := make(map[string]bool)
-			for _, t := range se.Service.Tags {
-				if tagsMap[t] && !dedupeMap[t] {
-					mc++
-					dedupeMap[t] = true
-				}
-			}
-			if mc != len(tagsMap) {
 				continue OUTER
 			}
 		case TagsAny, TagsExclude:

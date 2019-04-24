@@ -129,9 +129,14 @@ func (ms *ManagedService) NewSiblingLocator(allowStale bool) (*SiblingLocator, e
 		ms.siblingLocator.RemoveCallbacks()
 	}
 
+	myNode, err := ms.client.Agent().NodeName()
+	if err != nil {
+		return nil, fmt.Errorf("unable to determine local Consul node name: %s", err)
+	}
+
 	siblingLocator, err := NewSiblingLocator(ms.client, SiblingLocatorConfig{
 		ServiceID:   ms.meta.ID(),
-		NodeName:    ms.client.MyNode(),
+		NodeName:    myNode,
 		ServiceName: ms.meta.Name(),
 		ServiceTags: ms.meta.RegisteredTags(),
 		AllowStale:  allowStale,

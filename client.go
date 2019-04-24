@@ -9,6 +9,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/hashicorp/consul/api"
 	"github.com/myENA/consultant/log"
@@ -25,7 +26,8 @@ type Client struct {
 	myAddr string
 	myHost string
 
-	myNode string
+	myNodeMu sync.Mutex
+	myNode   string
 
 	logSlug      string
 	logSlugSlice []interface{}
@@ -73,10 +75,6 @@ func NewClient(conf *api.Config) (*Client, error) {
 		c.log.Printf("Unable to determine ip address: %s", err)
 	}
 
-	if c.myNode, err = c.Agent().NodeName(); err != nil {
-		return nil, fmt.Errorf("unable to determine local Consul node name: %s", err)
-	}
-
 	return c, nil
 }
 
@@ -112,7 +110,16 @@ func (c *Client) SetMyHost(myHost string) {
 
 // MyNode returns the name of the Consul Node this client is connected to
 func (c *Client) MyNode() string {
-	return c.myNode
+	c.myNodeMu.Lock()
+	if c.myNode == "" {
+		var err error
+		if c.myNode, err = c.Agent().NodeName(); err != nil {
+			c.log.Printf("unable to determine local Consul node name: %s", err)
+		}
+	}
+	n := c.myNode
+	c.myNodeMu.Unlock()
+	return n
 }
 
 // EnsureKey will fetch a key/value and ensure the key is present.  The value may still be empty.

@@ -82,7 +82,11 @@ func NewSiblingLocator(client *Client, config SiblingLocatorConfig) (*SiblingLoc
 	// verify node name is set, using client node if not
 	sl.config.NodeName = strings.TrimSpace(sl.config.NodeName)
 	if "" == sl.config.NodeName {
-		sl.config.NodeName = sl.client.MyNode()
+		if n, err := client.Agent().NodeName(); err != nil {
+			return nil, fmt.Errorf("node name not provided and error seen while fetching name from local agent: %s", err)
+		} else {
+			sl.config.NodeName = n
+		}
 	}
 
 	// verify datacenter is set, using client datacenter if not

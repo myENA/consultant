@@ -14,7 +14,7 @@ import (
 func makeConfigCallback(cb cst.ServerConfigCallback) cst.ServerConfigCallback {
 	return func(c *cst.TestServerConfig) {
 		c.NodeName = fmt.Sprintf("%s-%s", nouns[rand.Int63()%nounLen], nouns[rand.Int63()%nounLen])
-		c.LogLevel = "ERR"
+		c.LogLevel = "debug"
 		if cb != nil {
 			cb(c)
 		}
@@ -22,7 +22,7 @@ func makeConfigCallback(cb cst.ServerConfigCallback) cst.ServerConfigCallback {
 }
 
 func MakeServer(t *testing.T, cb cst.ServerConfigCallback) *cst.TestServer {
-	server, err := cst.NewTestServerConfig(makeConfigCallback(cb))
+	server, err := cst.NewTestServerConfigT(t, makeConfigCallback(cb))
 	if err != nil {
 		t.Fatalf("Unable to initialize Consul agent server: %v", err)
 	}
@@ -36,7 +36,9 @@ func MakeClient(t *testing.T, server *cst.TestServer) *consultant.Client {
 
 	client, err := consultant.NewClient(apiConf)
 	if err != nil {
-		server.Stop()
+		if err := server.Stop(); err != nil {
+			t.Logf("error shutting down server: %s", err)
+		}
 		t.Fatalf("Unable to create client for server \"%s\": %v", apiConf.Address, err)
 	}
 

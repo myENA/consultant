@@ -163,16 +163,22 @@ func (c *Client) PickServiceMultipleTags(service string, tags []string, passingO
 	}
 
 	svcLen := len(svcs)
-	if 0 < svcLen {
+	switch svcLen {
+	case 0:
+		return nil, qm, nil
+	case 1:
+		return svcs[0], qm, nil
+	default:
 		return svcs[rand.Intn(svcLen)], qm, nil
 	}
-
-	return nil, qm, nil
 }
 
 // PickService will attempt to locate any registered service with a name + tag combination and return one at random from
 // the resulting list
 func (c *Client) PickService(service, tag string, passingOnly bool, options *api.QueryOptions) (*api.ServiceEntry, *api.QueryMeta, error) {
+	if tag == "" {
+		return c.PickServiceMultipleTags(service, nil, passingOnly, options)
+	}
 	return c.PickServiceMultipleTags(service, []string{tag}, passingOnly, options)
 }
 

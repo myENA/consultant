@@ -193,7 +193,7 @@ func (cs *ClientTestSuite) TestServiceTagSelection() {
 
 }
 
-func (cs *ClientTestSuite) TestGetServiceAddress() {
+func (cs *ClientTestSuite) TestGetServiceAddress_OK() {
 	cs.server, cs.client = testutil.MakeServerAndClient(cs.T(), nil)
 
 	reg := &consultant.SimpleServiceRegistration{

@@ -3,7 +3,7 @@ package testutil
 import (
 	"fmt"
 	"github.com/hashicorp/consul/api"
-	cst "github.com/hashicorp/consul/testutil"
+	cst "github.com/hashicorp/consul/sdk/testutil"
 	"github.com/myENA/consultant"
 	"math/rand"
 	"net"

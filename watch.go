@@ -1,7 +1,7 @@
 package consultant
 
 import (
-	"github.com/hashicorp/consul/watch"
+	"github.com/hashicorp/consul/api/watch"
 )
 
 // WatchKey wraps the creation of a "key" plan

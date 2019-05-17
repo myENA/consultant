@@ -4,10 +4,9 @@ import (
 	"errors"
 	"fmt"
 	"github.com/hashicorp/consul/api"
-	"github.com/hashicorp/consul/watch"
+	"github.com/hashicorp/consul/api/watch"
 	"github.com/myENA/consultant/log"
 	"math"
-	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -194,12 +193,12 @@ func (sl *SiblingLocator) StartWatcher(passingOnly bool) error {
 	}
 
 	// try to build watchplan
-	sl.wp, err = WatchService(sl.config.ServiceName, tag, passingOnly, sl.config.AllowStale, sl.config.Datacenter, sl.config.Token)
+	sl.wp, err = WatchService(sl.config.ServiceName, tag, passingOnly, sl.config.AllowStale, sl.config.Token, sl.config.Datacenter)
 	if err != nil {
 		sl.mu.Unlock()
 		return fmt.Errorf("unable to create watch plan: %v", err)
 	}
-	sl.wp.Handler = sl.watchHandler
+	sl.wp.HybridHandler = sl.watchHandler
 
 	go func() {
 		err := sl.wp.Run(sl.client.config.Address)
@@ -264,16 +263,19 @@ func (sl *SiblingLocator) Current(passingOnly, sendToCallbacks bool) (Siblings, 
 	return buildSiblingList(sl.config.NodeName, sl.config.ServiceID, sl.config.ServiceTags, svcs), nil
 }
 
-func (sl *SiblingLocator) watchHandler(index uint64, data interface{}) {
+func (sl *SiblingLocator) watchHandler(val watch.BlockingParamVal, data interface{}) {
+	bp, ok := val.(watch.WaitIndexVal)
+	if !ok {
+		sl.log.Printf("Watch Handler saw unexpected watch.WaitIndexVal type: %T", val)
+		return
+	}
 	svcs, ok := data.([]*api.ServiceEntry)
 	if !ok {
-		sl.log.Printf("Watch Handler expected to see \"[]*api.ServiceEntry\", got "+
-			"\"%s\" instead...",
-			reflect.TypeOf(data).Kind().String())
+		sl.log.Printf("Watch Handler expected to see \"[]*api.ServiceEntry\", got \"%T\" instead...", data)
 		return
 	}
 
-	sl.sendToCallbacks(index, svcs)
+	sl.sendToCallbacks(uint64(bp), svcs)
 }
 
 func (sl *SiblingLocator) sendToCallbacks(index uint64, svcs []*api.ServiceEntry) {

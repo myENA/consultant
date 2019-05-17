@@ -3,7 +3,7 @@ package consultant_test
 import (
 	"fmt"
 	"github.com/hashicorp/consul/api"
-	cst "github.com/hashicorp/consul/testutil"
+	cst "github.com/hashicorp/consul/sdk/testutil"
 	"github.com/myENA/consultant"
 	"github.com/myENA/consultant/testutil"
 	"github.com/stretchr/testify/require"

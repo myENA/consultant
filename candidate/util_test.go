@@ -2,7 +2,7 @@ package candidate_test
 
 import (
 	"github.com/hashicorp/consul/api"
-	cst "github.com/hashicorp/consul/testutil"
+	cst "github.com/hashicorp/consul/sdk/testutil"
 	"github.com/myENA/consultant/candidate"
 	"github.com/myENA/consultant/testutil"
 	"github.com/myENA/consultant/util"

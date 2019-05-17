@@ -10,7 +10,7 @@ sudo: false
 
 env:
   global:
-    - CONSUL_VERSION="1.4.4"
+    - CONSUL_VERSION="1.5.0"
     - GO111MODULE=on
 
 install:

@@ -115,7 +115,7 @@ func WatchService(service, tag string, passingOnly, stale bool, token, datacente
 	return watch.Parse(map[string]interface{}{
 		"type":        "service",
 		"service":     service,
-		"tag":         tag,
+		//"tag":         tag,
 		"passingonly": passingOnly,
 		"stale":       stale,
 		"token":       token,

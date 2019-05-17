@@ -213,6 +213,8 @@ func (sls *SiblingLocatorTestSuite) TestWatchers() {
 			len(results[0]),
 			len(results[2])))
 
+	fmt.Print("\n\n\n\n\n", results, "\n\n\n\n\n")
+
 	require.Len(
 		sls.T(),
 		results[0],
@@ -221,5 +223,6 @@ func (sls *SiblingLocatorTestSuite) TestWatchers() {
 			"Expected node 0 results to be 1 less than node 1, saw: \"%d\" \"%d\"",
 			len(results[0]),
 			len(results[1])))
+
 	resultsMu.Unlock()
 }

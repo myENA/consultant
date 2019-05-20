@@ -194,7 +194,7 @@ func (sl *SiblingLocator) StartWatcher(passingOnly bool) error {
 	}
 
 	// try to build watchplan
-	sl.wp, err = WatchService(sl.config.ServiceName, tag, passingOnly, sl.config.AllowStale, sl.config.Datacenter, sl.config.Token)
+	sl.wp, err = WatchService(sl.config.ServiceName, tag, passingOnly, sl.config.AllowStale, sl.config.Token, sl.config.Datacenter)
 	if err != nil {
 		sl.mu.Unlock()
 		return fmt.Errorf("unable to create watch plan: %v", err)

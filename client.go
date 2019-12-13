@@ -7,27 +7,22 @@ import (
 	"math/rand"
 	"net/url"
 	"os"
-	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/hashicorp/consul/api"
-	"github.com/myENA/consultant/log"
-	"github.com/myENA/consultant/util"
 )
 
 type Client struct {
 	*api.Client
 
-	log log.DebugLogger
+	localAddr     string
+	localHostname string
 
-	config api.Config
-
-	myAddr string
-	myHost string
-
-	myNodeMu sync.Mutex
-	myNode   string
+	localNodeNameMu sync.Mutex
+	localNodeName   string
+	localNodeAddr   string
 
 	logSlug      string
 	logSlugSlice []interface{}
@@ -51,29 +46,33 @@ const (
 
 // NewClient constructs a new consultant client.
 func NewClient(conf *api.Config) (*Client, error) {
-	var err error
+	var (
+		err error
+
+		nodeAddrScheme   = "http"
+		nodeAddrHostPort = "127.0.0.1:8500"
+		c                = new(Client)
+	)
 
 	if nil == conf {
-		return nil, errors.New("config cannot be nil")
+		return nil, errors.New("conf is required")
 	}
 
-	c := &Client{
-		config: *conf,
-		log:    log.New("consultant-client"),
-	}
+	c.localHostname, _ = os.Hostname()
+	c.localAddr, _ = LocalAddress()
 
-	c.Client, err = api.NewClient(conf)
-	if err != nil {
+	if c.Client, err = api.NewClient(conf); err != nil {
 		return nil, fmt.Errorf("unable to create Consul API Client: %s", err)
 	}
 
-	if c.myHost, err = os.Hostname(); err != nil {
-		c.log.Printf("Unable to determine hostname: %s", err)
+	if v := os.Getenv(api.HTTPSSLEnvName); v != "" {
+		nodeAddrScheme = "https"
+	}
+	if v := os.Getenv(api.HTTPAddrEnvName); v != "" {
+		nodeAddrHostPort = v
 	}
 
-	if c.myAddr, err = util.MyAddress(); err != nil {
-		c.log.Printf("Unable to determine ip address: %s", err)
-	}
+	c.localNodeAddr = fmt.Sprintf("%s://%s", nodeAddrScheme, nodeAddrHostPort)
 
 	return c, nil
 }
@@ -83,43 +82,43 @@ func NewDefaultClient() (*Client, error) {
 	return NewClient(api.DefaultConfig())
 }
 
-// Config returns the API Client configuration struct as it was at time of construction
-func (c *Client) Config() api.Config {
-	return c.config
+// NewDefaultNonPooledClient creates a new client with default configuration values and a non-pooled http client
+func NewDefaultNonPooledClient() (*Client, error) {
+	return NewClient(api.DefaultNonPooledConfig())
 }
 
-// MyAddr returns either the self-determine or set IP address of our host
-func (c *Client) MyAddr() string {
-	return c.myAddr
+// LocalAddress returns either the self-determine or set IP address of our host
+func (c *Client) LocalAddress() string {
+	return c.localAddr
 }
 
-// SetMyAddr allows you to manually specify the IP address of our host
-func (c *Client) SetMyAddr(myAddr string) {
-	c.myAddr = myAddr
+// SetLocalAddress allows you to manually specify the IP address of our host
+func (c *Client) SetLocalAddress(myAddr string) {
+	c.localAddr = myAddr
 }
 
-// MyHost returns either the self-determined or set name of our host
-func (c *Client) MyHost() string {
-	return c.myHost
+// LocalHostname returns either the self-determined or set name of our host
+func (c *Client) LocalHostname() string {
+	return c.localHostname
 }
 
-// SetMyHost allows you to to manually specify the name of our host
-func (c *Client) SetMyHost(myHost string) {
-	c.myHost = myHost
+// SetLocalHostname allows you to to manually specify the name of our host. This does NOT update the host's name.
+func (c *Client) SetLocalHostname(myHost string) {
+	c.localHostname = myHost
 }
 
-// MyNode returns the name of the Consul Node this client is connected to
-func (c *Client) MyNode() string {
-	c.myNodeMu.Lock()
-	if c.myNode == "" {
+// LocalNodeName returns the name of the Consul Node this client is connected to
+func (c *Client) LocalNodeName() (string, error) {
+	c.localNodeNameMu.Lock()
+	if c.localNodeName == "" {
 		var err error
-		if c.myNode, err = c.Agent().NodeName(); err != nil {
-			c.log.Printf("unable to determine local Consul node name: %s", err)
+		if c.localNodeName, err = c.Agent().NodeName(); err != nil {
+			return "", fmt.Errorf("unable to determine local Consul node name: %s", err)
 		}
 	}
-	n := c.myNode
-	c.myNodeMu.Unlock()
-	return n
+	n := c.localNodeName
+	c.localNodeNameMu.Unlock()
+	return n, nil
 }
 
 // EnsureKey will fetch a key/value and ensure the key is present.  The value may still be empty.
@@ -272,25 +271,6 @@ OUTER:
 	return retv, qm, err
 }
 
-// determines if a and b contain the same elements (order doesn't matter)
-func strSlicesEqual(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	ac := make([]string, len(a))
-	bc := make([]string, len(b))
-	copy(ac, a)
-	copy(bc, b)
-	sort.Strings(ac)
-	sort.Strings(bc)
-	for i, v := range ac {
-		if bc[i] != v {
-			return false
-		}
-	}
-	return true
-}
-
 // BuildServiceURL will attempt to locate a healthy instance of the specified service name + tag combination, then
 // attempt to construct a *net.URL from the resulting service information
 func (c *Client) BuildServiceURL(protocol, serviceName, tag string, passingOnly bool, options *api.QueryOptions) (*url.URL, error) {
@@ -310,16 +290,18 @@ type SimpleServiceRegistration struct {
 	Name string // [required] name to register service under
 	Port int    // [required] external port to advertise for service consumers
 
-	ID                string   // [optional] specific id for service, will be generated if not set
-	RandomID          bool     // [optional] if ID is not set, use a random uuid if true, or hostname if false
-	Address           string   // [optional] determined automatically by Register() if not set
-	Tags              []string // [optional] desired tags: Register() adds serviceId
-	CheckTCP          bool     // [optional] if true register a TCP check
-	CheckPath         string   // [optional] register an http check with this path if set
-	CheckScheme       string   // [optional] override the http check scheme (default: http)
-	CheckPort         int      // [optional] if set, this is the port that the health check lives at
-	Interval          string   // [optional] check interval
-	EnableTagOverride bool     // [optional] whether we should allow tag overriding (new in 0.6+)
+	ID                string        // [optional] specific id for service, will be generated if not set
+	RandomID          bool          // [optional] if ID is not set, use a random uuid if true, or hostname if false
+	Address           string        // [optional] determined automatically by Register() if not set
+	Tags              []string      // [optional] desired tags: Register() adds serviceId
+	CheckTCP          bool          // [optional] if true, register a TCP check
+	CheckTTL          string        // [optional] if defined, registers a ttl check with the value as the starting status
+	CheckPath         string        // [optional] if defined, register a http check with this path
+	CheckScheme       string        // [optional] override the http check scheme (default: http)
+	CheckPort         int           // [optional] tcp or http check port, if defined
+	Interval          string        // [optional] check interval
+	Timeout           time.Duration // [optional] tcp
+	EnableTagOverride bool          // [optional] whether we should allow tag overriding (new in 0.6+)
 }
 
 // SimpleServiceRegister is a helper method to ease consul service registration
@@ -346,7 +328,7 @@ func (c *Client) SimpleServiceRegister(reg *SimpleServiceRegistration) (string, 
 	}
 
 	if address = reg.Address; address == "" {
-		address = c.myAddr
+		address = c.localAddr
 	}
 
 	if serviceID = reg.ID; serviceID == "" {
@@ -355,7 +337,7 @@ func (c *Client) SimpleServiceRegister(reg *SimpleServiceRegistration) (string, 
 		if reg.RandomID {
 			tail = util.RandStr(12)
 		} else {
-			tail = strings.ToLower(c.myHost)
+			tail = strings.ToLower(c.localHostname)
 		}
 		serviceID = fmt.Sprintf("%s-%s", serviceName, tail)
 	}

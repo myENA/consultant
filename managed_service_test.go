@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"github.com/hashicorp/consul/api"
 	cst "github.com/hashicorp/consul/sdk/testutil"
-	"github.com/myENA/consultant"
-	"github.com/myENA/consultant/testutil"
+
+	"github.com/myENA/consultant/v2"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 	"reflect"

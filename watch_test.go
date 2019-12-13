@@ -1,52 +1,31 @@
 package consultant_test
 
 import (
-	"github.com/myENA/consultant"
-	"github.com/stretchr/testify/require"
-	"github.com/stretchr/testify/suite"
 	"testing"
+
+	"github.com/myENA/consultant/v2"
 )
 
-type WatchTestSuite struct {
-	suite.Suite
-}
-
 func TestWatch(t *testing.T) {
-	suite.Run(t, &WatchTestSuite{})
-}
+	t.Run("package-funcs", func(t *testing.T) {
+		errs := make(map[string]error)
+		_, errs["key"] = consultant.WatchKey("key", true, "", "")
+		_, errs["keyprefix"] = consultant.WatchKeyPrefix("keyprefix", true, "", "")
+		_, errs["nodes"] = consultant.WatchNodes(true, "", "")
+		_, errs["services-stale"] = consultant.WatchServices(true, "", "")
+		_, errs["service-tag-stale"] = consultant.WatchService("service", "tag", true, true, "", "")
+		_, errs["checks-service"] = consultant.WatchChecks("service", "", true, "", "")
+		_, errs["checks-state"] = consultant.WatchChecks("", "pass", true, "", "")
+		_, errs["event"] = consultant.WatchEvent("event", "", "")
+		_, errs["connect-roots"] = consultant.WatchConnectRoots("", "")
+		_, errs["connect-leaf"] = consultant.WatchConnectLeaf("service", "", "")
+		_, errs["proxy-config"] = consultant.WatchProxyConfig("sid", "", "")
 
-func (ws *WatchTestSuite) TestWatchConstruction() {
-	var err error
-
-	_, err = consultant.WatchKey("key", true, "", "")
-	require.Nil(ws.T(), err, "unable to construct \"key\" watch plan: %s", err)
-
-	_, err = consultant.WatchKeyPrefix("keyprefix", true, "", "")
-	require.Nil(ws.T(), err, "unable to construct \"keyprefix\" watch plan: %s", err)
-
-	_, err = consultant.WatchServices(true, "", "")
-	require.Nil(ws.T(), err, "unable to construct \"services\" watch plan: %s", err)
-
-	_, err = consultant.WatchNodes(true, "", "")
-	require.Nil(ws.T(), err, "unable to construct \"nodes\" watch plan: %s", err)
-
-	_, err = consultant.WatchService("service", "tag", true, true, "", "")
-	require.Nil(ws.T(), err, "unable to construct \"service\" watch plan: %s", err)
-
-	_, err = consultant.WatchChecks("service", "", true, "", "")
-	require.Nil(ws.T(), err, "unable to construct \"checks\" watch plan for service: %s", err)
-	_, err = consultant.WatchChecks("", "pass", true, "", "")
-	require.Nil(ws.T(), err, "unable to construct \"checks\" watch plan for state: %s", err)
-
-	_, err = consultant.WatchEvent("event", "", "")
-	require.Nil(ws.T(), err, "unable to construct \"event\" watch plan: %s", err)
-
-	_, err = consultant.WatchConnectRoots("", "")
-	require.Nil(ws.T(), err, "unable to construct \"connect_roots\" watch plan: %s", err)
-
-	_, err = consultant.WatchConnectLeaf("service", "", "")
-	require.Nil(ws.T(), err, "unable to construct \"connect_leaf\" watch plan: %s", err)
-
-	_, err = consultant.WatchProxyConfig("sid", "", "")
-	require.Nil(ws.T(), err, "unable to construct \"connect_proxy_config\" watch plan: %s", err)
+		for n, err := range errs {
+			if err != nil {
+				t.Logf("error creating plan %q: %s", n, err)
+				t.Fail()
+			}
+		}
+	})
 }

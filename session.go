@@ -1,36 +1,43 @@
-package session
+package consultant
 
 import (
 	"fmt"
-	"github.com/hashicorp/consul/api"
-	"github.com/myENA/consultant/log"
-	"github.com/myENA/consultant/util"
-	"github.com/pkg/errors"
+	"strings"
 	"sync"
 	"time"
-)
 
-type State uint8
+	"github.com/hashicorp/consul/api"
 
-const (
-	StateStopped State = iota
-	StateRunning
+	"github.com/pkg/errors"
 )
 
 const (
-	DefaultTTL = "30s"
+	SessionStateStopped SessionState = iota
+	SessionStateRunning
+)
+
+const (
+	SessionDefaultTTL = "30s"
 )
 
 type (
-	Update struct {
+	SessionState uint8
+
+	SessionNameParts struct {
+		Key      string
+		NodeName string
+		RandomID string
+	}
+
+	SessionUpdate struct {
 		ID          string
 		Name        string
 		LastRenewed time.Time
 		Error       error
-		State       State
+		State       SessionState
 	}
 
-	Config struct {
+	SessionConfig struct {
 		// Key [suggested]
 		//
 		// Implementation-specific Key to be placed in session key.
@@ -38,7 +45,7 @@ type (
 
 		// TTL [optional]
 		//
-		// Session TTL, defaults to value of DefaultTTL
+		// Session TTL, defaults to value of SessionDefaultTTL
 		TTL string
 
 		// Behavior [optional]
@@ -59,7 +66,7 @@ type (
 		// UpdateFunc [optional]
 		//
 		// Callback to be executed after session state change
-		UpdateFunc WatchFunc
+		UpdateFunc session.WatchFunc
 
 		// AutoRun [optional]
 		//
@@ -84,18 +91,18 @@ type (
 		lastRenewed time.Time
 
 		stop  chan chan error
-		state State
+		state SessionState
 
-		watchers *watchers
+		watchers *sessionWatchers
 	}
 )
 
-func New(conf *Config) (*Session, error) {
+func NewSession(conf *SessionConfig) (*Session, error) {
 	var (
 		key, ttl, behavior string
 		client             *api.Client
 		l                  log.DebugLogger
-		updateFunc         WatchFunc
+		updateFunc         SessionWatchFunc
 		autoRun            bool
 		err                error
 	)
@@ -136,7 +143,7 @@ func New(conf *Config) (*Session, error) {
 	}
 
 	if ttl == "" {
-		ttl = DefaultTTL
+		ttl = SessionDefaultTTL
 	}
 
 	ttlTD, err := time.ParseDuration(ttl)
@@ -159,7 +166,7 @@ func New(conf *Config) (*Session, error) {
 		behavior: behavior,
 		interval: time.Duration(int64(ttlTD) / 2),
 		stop:     make(chan chan error, 1),
-		watchers: newWatchers(),
+		watchers: newSessionWatchers(),
 	}
 
 	if updateFunc != nil {
@@ -218,8 +225,8 @@ func (cs *Session) LastRenewed() time.Time {
 	return t
 }
 
-// Watch allows you to register a function that will be called when the election State has changed
-func (cs *Session) Watch(id string, fn WatchFunc) string {
+// Watch allows you to register a function that will be called when the election SessionState has changed
+func (cs *Session) Watch(id string, fn SessionWatchFunc) string {
 	return cs.watchers.Add(id, fn)
 }
 
@@ -236,20 +243,20 @@ func (cs *Session) RemoveWatchers() {
 // UpdateWatchers will immediately push the current state of this Candidate to all currently registered Watchers
 func (cs *Session) UpdateWatchers() {
 	cs.mu.RLock()
-	cs.watchers.notify(Update{cs.id, cs.name, cs.lastRenewed, nil, cs.state})
+	cs.watchers.notify(SessionUpdate{cs.id, cs.name, cs.lastRenewed, nil, cs.state})
 	cs.mu.RUnlock()
 }
 
 func (cs *Session) Running() bool {
 	cs.mu.RLock()
-	b := cs.state == StateRunning
+	b := cs.state == SessionStateRunning
 	cs.mu.RUnlock()
 	return b
 }
 
 func (cs *Session) Run() {
 	cs.mu.Lock()
-	if cs.state == StateRunning {
+	if cs.state == SessionStateRunning {
 		// if our state is already running, just continue to do so.
 		cs.log.Debug("Run() called but I'm already running")
 		cs.mu.Unlock()
@@ -257,7 +264,7 @@ func (cs *Session) Run() {
 	}
 
 	// modify state
-	cs.state = StateRunning
+	cs.state = SessionStateRunning
 
 	// try to create session immediately
 	if err := cs.create(); err != nil {
@@ -275,12 +282,12 @@ func (cs *Session) Run() {
 
 func (cs *Session) Stop() error {
 	cs.mu.Lock()
-	if cs.state == StateStopped {
+	if cs.state == SessionStateStopped {
 		cs.log.Debug("Stop() called but I'm already stopped")
 		cs.mu.Unlock()
 		return nil
 	}
-	cs.state = StateStopped
+	cs.state = SessionStateStopped
 	cs.mu.Unlock()
 
 	stopped := make(chan error, 1)
@@ -290,7 +297,7 @@ func (cs *Session) Stop() error {
 	return err
 }
 
-func (cs *Session) State() State {
+func (cs *Session) State() SessionState {
 	cs.mu.RLock()
 	s := cs.state
 	cs.mu.RUnlock()
@@ -369,7 +376,7 @@ func (cs *Session) destroy() error {
 
 func (cs *Session) updateWatchers(err error) {
 	cs.mu.RLock()
-	cs.watchers.notify(Update{cs.id, cs.name, cs.lastRenewed, err, cs.state})
+	cs.watchers.notify(SessionUpdate{cs.id, cs.name, cs.lastRenewed, err, cs.state})
 	cs.mu.RUnlock()
 }
 
@@ -459,7 +466,7 @@ func (cs *Session) shutdown(stopped chan<- error) {
 	}
 
 	// set our state to stopped, preventing further interaction.
-	cs.state = StateStopped
+	cs.state = SessionStateStopped
 
 	cs.mu.Unlock()
 
@@ -500,4 +507,76 @@ maintaining:
 	cs.shutdown(stopped)
 
 	cs.log.Debug("maintain() - Exiting maintain loop")
+}
+
+// ParseSessionName is provided so you don't have to parse it yourself :)
+func ParseSessionName(name string) (*SessionNameParts, error) {
+	split := strings.Split(name, "_")
+
+	switch len(split) {
+	case 2:
+		return &SessionNameParts{
+			NodeName: split[0],
+			RandomID: split[1],
+		}, nil
+	case 3:
+		return &SessionNameParts{
+			Key:      split[0],
+			NodeName: split[1],
+			RandomID: split[2],
+		}, nil
+
+	default:
+		return nil, fmt.Errorf("expected 2 or 3 parts in session name \"%s\", saw only \"%d\"", name, len(split))
+	}
+}
+
+type SessionWatchFunc func(update SessionUpdate)
+
+type sessionWatchers struct {
+	mu    sync.RWMutex
+	funcs map[string]SessionWatchFunc
+}
+
+func newSessionWatchers() *sessionWatchers {
+	w := &sessionWatchers{
+		funcs: make(map[string]SessionWatchFunc),
+	}
+	return w
+}
+
+// Watch allows you to register a function that will be called when the election SessionState has changed
+func (c *sessionWatchers) Add(id string, fn SessionWatchFunc) string {
+	c.mu.Lock()
+	if id == "" {
+		id = util.RandStr(8)
+	}
+	_, ok := c.funcs[id]
+	if !ok {
+		c.funcs[id] = fn
+	}
+	c.mu.Unlock()
+	return id
+}
+
+// Unwatch will remove a function from the list of sessionWatchers.
+func (c *sessionWatchers) Remove(id string) {
+	c.mu.Lock()
+	delete(c.funcs, id)
+	c.mu.Unlock()
+}
+
+func (c *sessionWatchers) RemoveAll() {
+	c.mu.Lock()
+	c.funcs = make(map[string]SessionWatchFunc)
+	c.mu.Unlock()
+}
+
+// notifyWatchers is a thread safe update of leader status
+func (c *sessionWatchers) notify(update SessionUpdate) {
+	c.mu.RLock()
+	for _, fn := range c.funcs {
+		go fn(update)
+	}
+	c.mu.RUnlock()
 }

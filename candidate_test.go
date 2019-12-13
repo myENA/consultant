@@ -1,23 +1,23 @@
-package candidate_test
+package consultant_test
 
 import (
 	"fmt"
-	"github.com/hashicorp/consul/api"
-	cst "github.com/hashicorp/consul/sdk/testutil"
-	"github.com/myENA/consultant"
-	"github.com/myENA/consultant/candidate"
-	"github.com/myENA/consultant/testutil"
-	"github.com/myENA/consultant/util"
-	"github.com/stretchr/testify/require"
-	"github.com/stretchr/testify/suite"
 	"sync"
 	"testing"
+	"time"
+
+	"github.com/hashicorp/consul/api"
+	cst "github.com/hashicorp/consul/sdk/testutil"
+
+	"github.com/myENA/consultant/v2"
+	"github.com/stretchr/testify/require"
+	"github.com/stretchr/testify/suite"
 )
 
 const (
-	testKVKey = "consultant/test/candidate-test"
-	testID    = "test-candidate"
-	lockTTL   = "5s"
+	candidateTestKVKey = "consultant/test/candidate-test"
+	candidateTestID    = "test-candidate"
+	candidateLockTTL   = "5s"
 )
 
 func init() {
@@ -49,30 +49,30 @@ func (cs *CandidateTestSuite) TearDownSuite() {
 	cs.TearDownTest()
 }
 
-func (cs *CandidateTestSuite) config(conf *candidate.Config) *candidate.Config {
+func (cs *CandidateTestSuite) config(conf *consultant.CandidateConfig) *consultant.CandidateConfig {
 	if conf == nil {
-		conf = new(candidate.Config)
+		conf = new(consultant.CandidateConfig)
 	}
 	conf.Client = cs.client
 	return conf
 }
 
-func (cs *CandidateTestSuite) configKeyed(conf *candidate.Config) *candidate.Config {
+func (cs *CandidateTestSuite) configKeyed(conf *consultant.CandidateConfig) *consultant.CandidateConfig {
 	conf = cs.config(conf)
-	conf.KVKey = testKVKey
+	conf.KVKey = candidateTestKVKey
 	return conf
 }
 
-func (cs *CandidateTestSuite) makeCandidate(num int, conf *candidate.Config) *candidate.Candidate {
-	lc := new(candidate.Config)
+func (cs *CandidateTestSuite) makeCandidate(num int, conf *consultant.CandidateConfig) *consultant.Candidate {
+	lc := new(consultant.CandidateConfig)
 	if conf != nil {
 		*lc = *conf
 	}
 	lc.ID = fmt.Sprintf("test-%d", num)
 	if lc.SessionTTL == "" {
-		lc.SessionTTL = lockTTL
+		lc.SessionTTL = candidateLockTTL
 	}
-	cand, err := candidate.New(cs.configKeyed(lc))
+	cand, err := consultant.NewCandidate(cs.configKeyed(lc))
 	if err != nil {
 		cs.T().Fatalf("err: %v", err)
 	}
@@ -81,12 +81,12 @@ func (cs *CandidateTestSuite) makeCandidate(num int, conf *candidate.Config) *ca
 }
 
 func (cs *CandidateTestSuite) TestNew_EmptyKey() {
-	_, err := candidate.New(cs.config(nil))
+	_, err := consultant.NewCandidate(cs.config(nil))
 	require.NotNil(cs.T(), err, "Expected Empty Key error")
 }
 
 func (cs *CandidateTestSuite) TestNew_EmptyID() {
-	cand, err := candidate.New(cs.configKeyed(nil))
+	cand, err := consultant.NewCandidate(cs.configKeyed(nil))
 	require.Nil(cs.T(), err, "Error creating candidate: %s", err)
 	if myAddr, err := util.MyAddress(); err != nil {
 		require.NotZero(cs.T(), cand.ID(), "Expected Candidate ID to not be empty")
@@ -98,11 +98,11 @@ func (cs *CandidateTestSuite) TestNew_EmptyID() {
 func (cs *CandidateTestSuite) TestNew_InvalidID() {
 	var err error
 
-	_, err = candidate.New(cs.configKeyed(&candidate.Config{ID: "thursday dancing in the sun"}))
-	require.Equal(cs.T(), candidate.InvalidCandidateID, err, "Expected \"thursday dancing in the sun\" to return invalid ID error, saw %+v", err)
+	_, err = consultant.NewCandidate(cs.configKeyed(&consultant.CandidateConfig{ID: "thursday dancing in the sun"}))
+	require.Equal(cs.T(), consultant.CandidateInvalidIDErr, err, "Expected \"thursday dancing in the sun\" to return invalid ID error, saw %+v", err)
 
-	_, err = candidate.New(cs.configKeyed(&candidate.Config{ID: "Große"}))
-	require.Equal(cs.T(), candidate.InvalidCandidateID, err, "Expected \"Große\" to return invalid ID error, saw %+v", err)
+	_, err = consultant.NewCandidate(cs.configKeyed(&consultant.CandidateConfig{ID: "Große"}))
+	require.Equal(cs.T(), consultant.CandidateInvalidIDErr, err, "Expected \"Große\" to return invalid ID error, saw %+v", err)
 }
 
 func (cs *CandidateTestSuite) TestRun_SimpleElectionCycle() {
@@ -110,7 +110,7 @@ func (cs *CandidateTestSuite) TestRun_SimpleElectionCycle() {
 	cs.server = server
 	cs.client = client.Client
 
-	var candidate1, candidate2, candidate3, leaderCandidate *candidate.Candidate
+	var candidate1, candidate2, candidate3, leaderCandidate *consultant.Candidate
 	var leader *api.SessionEntry
 	var err error
 
@@ -119,17 +119,17 @@ func (cs *CandidateTestSuite) TestRun_SimpleElectionCycle() {
 	wg.Add(3)
 
 	go func() {
-		candidate1 = cs.makeCandidate(1, &candidate.Config{AutoRun: true})
+		candidate1 = cs.makeCandidate(1, &consultant.CandidateConfig{AutoRun: true})
 		candidate1.Wait()
 		wg.Done()
 	}()
 	go func() {
-		candidate2 = cs.makeCandidate(2, &candidate.Config{AutoRun: true})
+		candidate2 = cs.makeCandidate(2, &consultant.CandidateConfig{AutoRun: true})
 		candidate2.Wait()
 		wg.Done()
 	}()
 	go func() {
-		candidate3 = cs.makeCandidate(3, &candidate.Config{AutoRun: true})
+		candidate3 = cs.makeCandidate(3, &consultant.CandidateConfig{AutoRun: true})
 		candidate3.Wait()
 		wg.Done()
 	}()
@@ -158,7 +158,7 @@ func (cs *CandidateTestSuite) TestRun_SimpleElectionCycle() {
 			leader.ID))
 
 	leadersFound := 0
-	for i, cand := range []*candidate.Candidate{candidate1, candidate2, candidate3} {
+	for i, cand := range []*consultant.Candidate{candidate1, candidate2, candidate3} {
 		if leaderCandidate == cand {
 			leadersFound = 1
 			continue
@@ -201,17 +201,17 @@ func (cs *CandidateTestSuite) TestRun_SimpleElectionCycle() {
 	wg.Add(3)
 
 	go func() {
-		candidate1 = cs.makeCandidate(1, &candidate.Config{AutoRun: true})
+		candidate1 = cs.makeCandidate(1, &consultant.CandidateConfig{AutoRun: true})
 		candidate1.Wait()
 		wg.Done()
 	}()
 	go func() {
-		candidate2 = cs.makeCandidate(2, &candidate.Config{AutoRun: true})
+		candidate2 = cs.makeCandidate(2, &consultant.CandidateConfig{AutoRun: true})
 		candidate2.Wait()
 		wg.Done()
 	}()
 	go func() {
-		candidate3 = cs.makeCandidate(3, &candidate.Config{AutoRun: true})
+		candidate3 = cs.makeCandidate(3, &consultant.CandidateConfig{AutoRun: true})
 		candidate3.Wait()
 		wg.Done()
 	}()
@@ -242,7 +242,7 @@ func (cs *CandidateTestSuite) TestRun_SimpleElectionCycle() {
 			leader.ID))
 
 	leadersFound = 0
-	for i, cand := range []*candidate.Candidate{candidate1, candidate2, candidate3} {
+	for i, cand := range []*Candidate{candidate1, candidate2, candidate3} {
 		if leaderCandidate == cand {
 			leadersFound = 1
 			continue
@@ -265,12 +265,12 @@ func (cs *CandidateTestSuite) TestRun_SessionAnarchy() {
 	cs.server = server
 	cs.client = client.Client
 
-	cand := cs.makeCandidate(1, &candidate.Config{AutoRun: true})
+	cand := cs.makeCandidate(1, &consultant.CandidateConfig{AutoRun: true})
 
-	updates := make([]candidate.ElectionUpdate, 0)
+	updates := make([]consultant.CandidateElectionUpdate, 0)
 	updatesMu := sync.Mutex{}
 
-	cand.Watch("", func(update candidate.ElectionUpdate) {
+	cand.Watch("", func(update consultant.CandidateElectionUpdate) {
 		updatesMu.Lock()
 		cs.T().Logf("Update received: %#v", update)
 		updates = append(updates, update)
@@ -285,10 +285,10 @@ func (cs *CandidateTestSuite) TestRun_SessionAnarchy() {
 
 	require.Equal(
 		cs.T(),
-		candidate.StateRunning,
+		consultant.CandidateStateRunning,
 		cand.State(),
 		"Expected candidate state to still be %d after session destroyed",
-		candidate.StateRunning)
+		consultant.CandidateStateRunning)
 
 	cand.Wait()
 
@@ -298,4 +298,74 @@ func (cs *CandidateTestSuite) TestRun_SessionAnarchy() {
 	updatesMu.Lock()
 	require.Len(cs.T(), updates, 3, "Expected to see 3 updates")
 	updatesMu.Unlock()
+}
+
+type CandidateUtilTestSuite struct {
+	suite.Suite
+
+	server *cst.TestServer
+	client *api.Client
+
+	candidate *consultant.Candidate
+}
+
+func TestCandidate_Util(t *testing.T) {
+	suite.Run(t, &CandidateUtilTestSuite{})
+}
+
+func (us *CandidateUtilTestSuite) SetupSuite() {
+	server, client := testutil.MakeServerAndClient(us.T(), nil)
+	us.server = server
+	us.client = client.Client
+}
+
+func (us *CandidateUtilTestSuite) TearDownSuite() {
+	if us.candidate != nil {
+		us.candidate.Resign()
+	}
+	us.candidate = nil
+	if us.server != nil {
+		us.server.Stop()
+	}
+	us.server = nil
+	us.client = nil
+}
+
+func (us *CandidateUtilTestSuite) TearDownTest() {
+	if us.candidate != nil {
+		us.candidate.Resign()
+	}
+	us.candidate = nil
+}
+
+func (us *CandidateUtilTestSuite) config(conf *consultant.CandidateConfig) *consultant.CandidateConfig {
+	if conf == nil {
+		conf = new(consultant.CandidateConfig)
+	}
+	conf.Client = us.client
+	return conf
+}
+
+func (us *CandidateUtilTestSuite) TestSessionNameParse() {
+	var err error
+
+	myAddr, err := util.MyAddress()
+	if err != nil {
+		us.T().Skipf("Skipping TestSessionNameParse as local addr is indeterminate: %s", err)
+		us.T().SkipNow()
+		return
+	}
+
+	us.candidate, err = consultant.NewCandidate(us.config(&consultant.CandidateConfig{KVKey: consultant.testKVKey, SessionTTL: "10s"}))
+	require.Nil(us.T(), err, "Error creating candidate: %s", err)
+
+	us.candidate.Run()
+
+	err = us.candidate.WaitFor(20 * time.Second)
+	require.Nil(us.T(), err, "Wait deadline of 20s breached: %s", err)
+
+	ip, err := us.candidate.LeaderIP()
+	require.Nil(us.T(), err, "Error locating Leader Service: %s", err)
+
+	require.Equal(us.T(), myAddr, ip.String(), "Expected Leader IP to be \"%s\", saw \"%s\"", myAddr, ip)
 }

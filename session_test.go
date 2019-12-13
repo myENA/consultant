@@ -1,20 +1,20 @@
-package session_test
+package consultant_test
 
 import (
-	"github.com/hashicorp/consul/api"
-	cst "github.com/hashicorp/consul/sdk/testutil"
-	"github.com/myENA/consultant"
-	"github.com/myENA/consultant/candidate/session"
-	"github.com/myENA/consultant/testutil"
-	"github.com/stretchr/testify/require"
-	"github.com/stretchr/testify/suite"
 	"testing"
 	"time"
+
+	"github.com/hashicorp/consul/api"
+	cst "github.com/hashicorp/consul/sdk/testutil"
+
+	"github.com/myENA/consultant/v2"
+	"github.com/stretchr/testify/require"
+	"github.com/stretchr/testify/suite"
 )
 
 const (
-	testKey = "session-test"
-	testTTL = "5s"
+	sessionTestKey = "session-test"
+	sessionTestTTL = "5s"
 )
 
 func init() {
@@ -27,7 +27,7 @@ type SessionTestSuite struct {
 	server *cst.TestServer
 	client *api.Client
 
-	session *session.Session
+	session *consultant.Session
 }
 
 func TestSession(t *testing.T) {
@@ -59,9 +59,9 @@ func (ss *SessionTestSuite) TearDownTest() {
 	ss.session = nil
 }
 
-func (ss *SessionTestSuite) config(conf *session.Config) *session.Config {
+func (ss *SessionTestSuite) config(conf *consultant.SessionConfig) *consultant.SessionConfig {
 	if conf == nil {
-		conf = new(session.Config)
+		conf = new(consultant.SessionConfig)
 	}
 	conf.Client = ss.client
 	return conf
@@ -70,7 +70,7 @@ func (ss *SessionTestSuite) config(conf *session.Config) *session.Config {
 func (ss *SessionTestSuite) TestNew_Empty() {
 	var err error
 
-	ss.session, err = session.New(ss.config(nil))
+	ss.session, err = consultant.NewSession(ss.config(nil))
 	require.Nil(ss.T(), err, "Error constructing empty: %s", err)
 
 	ttl := ss.session.TTL()
@@ -86,7 +86,7 @@ func (ss *SessionTestSuite) TestNew_Empty() {
 func (ss *SessionTestSuite) TestNew_Populated() {
 	var err error
 
-	ss.session, err = session.New(ss.config(&session.Config{TTL: "20s", Behavior: api.SessionBehaviorDelete}))
+	ss.session, err = consultant.NewSession(ss.config(&consultant.SessionConfig{TTL: "20s", Behavior: api.SessionBehaviorDelete}))
 	require.Nil(ss.T(), err, "Error constructing with config: %s", err)
 
 	ttl := ss.session.TTL()
@@ -105,17 +105,17 @@ func (ss *SessionTestSuite) TestNew_Failures() {
 	const badTTL = "thursday"
 	const badBehavior = "cheese place"
 
-	_, err = session.New(ss.config(&session.Config{TTL: badTTL}))
+	_, err = consultant.NewSession(ss.config(&consultant.SessionConfig{TTL: badTTL}))
 	require.NotNil(ss.T(), err, "Expected TTL of \"%s\" to return error", badTTL)
 
-	_, err = session.New(ss.config(&session.Config{Behavior: badBehavior}))
+	_, err = consultant.NewSession(ss.config(&consultant.SessionConfig{Behavior: badBehavior}))
 	require.NotNil(ss.T(), err, "Expected Behavior of \"%s\" to return error", badBehavior)
 }
 
 func (ss *SessionTestSuite) TestNew_TTLMinimum() {
 	var err error
 
-	ss.session, err = session.New(ss.config(&session.Config{TTL: "1s"}))
+	ss.session, err = consultant.NewSession(ss.config(&consultant.SessionConfig{TTL: "1s"}))
 	require.Nil(ss.T(), err, "Error constructing session: %s", err)
 
 	ttl := ss.session.TTL()
@@ -128,7 +128,7 @@ func (ss *SessionTestSuite) TestNew_TTLMinimum() {
 func (ss *SessionTestSuite) TestNew_TTLMaximum() {
 	var err error
 
-	ss.session, err = session.New(ss.config(&session.Config{TTL: "96400s"}))
+	ss.session, err = consultant.NewSession(ss.config(&consultant.SessionConfig{TTL: "96400s"}))
 	require.Nil(ss.T(), err, "Error constructing session: %s", err)
 
 	ttl := ss.session.TTL()
@@ -141,12 +141,12 @@ func (ss *SessionTestSuite) TestNew_TTLMaximum() {
 func (ss *SessionTestSuite) TestSession_Run() {
 	var err error
 
-	upChan := make(chan session.Update)
-	updateFunc := func(up session.Update) {
+	upChan := make(chan consultant.SessionUpdate)
+	updateFunc := func(up consultant.SessionUpdate) {
 		upChan <- up
 	}
 
-	ss.session, err = session.New(ss.config(&session.Config{TTL: testTTL, UpdateFunc: updateFunc}))
+	ss.session, err = consultant.NewSession(ss.config(&consultant.SessionConfig{TTL: sessionTestTTL, UpdateFunc: updateFunc}))
 	require.Nil(ss.T(), err, "Error constructing session: %s", err)
 
 	ss.session.Run()
@@ -165,7 +165,7 @@ func (ss *SessionTestSuite) TestSession_Run() {
 func (ss *SessionTestSuite) TestSession_AutoRun() {
 	var err error
 
-	ss.session, err = session.New(ss.config(&session.Config{TTL: testTTL, AutoRun: true}))
+	ss.session, err = consultant.NewSession(ss.config(&consultant.SessionConfig{TTL: sessionTestTTL, AutoRun: true}))
 	require.Nil(ss.T(), err, "Error constructing session: %s", err)
 
 	require.True(ss.T(), ss.session.Running(), "AutoRun session not automatically started")
@@ -177,12 +177,12 @@ func (ss *SessionTestSuite) TestSession_SessionKilled() {
 		err       error
 	)
 
-	upChan := make(chan session.Update, 1)
-	updateFunc := func(up session.Update) {
+	upChan := make(chan consultant.SessionUpdate, 1)
+	updateFunc := func(up consultant.SessionUpdate) {
 		upChan <- up
 	}
 
-	ss.session, err = session.New(ss.config(&session.Config{TTL: testTTL, UpdateFunc: updateFunc}))
+	ss.session, err = consultant.NewSession(ss.config(&consultant.SessionConfig{TTL: sessionTestTTL, UpdateFunc: updateFunc}))
 	require.Nil(ss.T(), err, "Error constructing session: %s", err)
 
 	ss.session.Run()
@@ -217,4 +217,128 @@ TestLoop:
 			}
 		}
 	}
+}
+
+type SessionUtilTestSuite struct {
+	suite.Suite
+
+	server *cst.TestServer
+	client *api.Client
+
+	session *consultant.Session
+}
+
+func TestSessionUtil(t *testing.T) {
+	suite.Run(t, &SessionUtilTestSuite{})
+}
+
+func (us *SessionUtilTestSuite) SetupSuite() {
+	server, client := testutil.MakeServerAndClient(us.T(), nil)
+	us.server = server
+	us.client = client.Client
+}
+
+func (us *SessionUtilTestSuite) TearDownSuite() {
+	if us.session != nil {
+		us.session.Stop()
+	}
+	us.session = nil
+	if us.server != nil {
+		us.server.Stop()
+	}
+	us.server = nil
+	us.client = nil
+}
+
+func (us *SessionUtilTestSuite) TearDownTest() {
+	if us.session != nil {
+		us.session.Stop()
+	}
+	us.session = nil
+}
+
+func (us *SessionUtilTestSuite) TestParseName_NoKey() {
+	var err error
+
+	updated := make(chan consultant.SessionUpdate, 1)
+	updater := func(up consultant.SessionUpdate) {
+		updated <- up
+	}
+
+	us.session, err = consultant.NewSession(&consultant.SessionConfig{
+		Client:     us.client,
+		TTL:        "10s",
+		UpdateFunc: updater,
+	})
+	require.Nil(us.T(), err, "Error creating session: %s", err)
+
+	us.session.Run()
+
+	var up consultant.SessionUpdate
+
+	select {
+	case <-time.After(10 * time.Second):
+		us.FailNow("Expected to receive session update by now")
+	case up = <-updated:
+		require.Nil(us.T(), up.Error, "Session update error: %s", err)
+	}
+
+	name := us.session.Name()
+	require.NotZero(us.T(), name, "Expected name to be populated")
+
+	parsed, err := consultant.ParseSessionName(name)
+	require.Nil(us.T(), err, "Error parsing session name: %s", err)
+
+	require.Zero(us.T(), parsed.Key, "Expected Key to be empty: %+v", parsed)
+	require.NotZero(us.T(), parsed.NodeName, "Expected NodeName to be populated: %+v", parsed)
+	require.NotZero(us.T(), parsed.RandomID, "Expected UseRandomID to be populated: %+v", parsed)
+
+	node, err := us.client.Agent().NodeName()
+	require.Nil(us.T(), err, "Unable to fetch node: %s", err)
+
+	require.Equal(us.T(), node, parsed.NodeName, "Expected NodeName to be \"%s\", saw \"%s\"", node, parsed.NodeName)
+}
+
+func (us *SessionUtilTestSuite) TestParseName_Keyed() {
+	var err error
+
+	updated := make(chan consultant.SessionUpdate, 1)
+	updater := func(up consultant.SessionUpdate) {
+		updated <- up
+	}
+
+	us.session, err = consultant.NewSession(&consultant.SessionConfig{
+		Key:        consultant.testKey,
+		Client:     us.client,
+		TTL:        "10s",
+		UpdateFunc: updater,
+	})
+	require.Nil(us.T(), err, "Error creating session: %s", err)
+
+	us.session.Run()
+
+	var up consultant.SessionUpdate
+
+	select {
+	case <-time.After(10 * time.Second):
+		us.FailNow("Expected to receive session update by now")
+	case up = <-updated:
+		require.Nil(us.T(), up.Error, "Session update error: %s", err)
+	}
+
+	name := us.session.Name()
+	require.NotZero(us.T(), name, "Expected name to be populated")
+
+	parsed, err := consultant.ParseSessionName(name)
+	require.Nil(us.T(), err, "Error parsing session name: %s", err)
+
+	require.NotZero(us.T(), parsed.Key, "Expected Key to be populated: %+v", parsed)
+	require.NotZero(us.T(), parsed.NodeName, "Expected NodeName to be populated: %+v", parsed)
+	require.NotZero(us.T(), parsed.RandomID, "Expected UseRandomID to be populated: %+v", parsed)
+
+	node, err := us.client.Agent().NodeName()
+	require.Nil(us.T(), err, "Unable to fetch node: %s", err)
+
+	require.Equal(us.T(), sessionTestKey, parsed.Key, "Expected Key to equal \"%s\", but saw \"%s\"", sessionTestKey, parsed.Key)
+	require.Equal(us.T(), node, parsed.NodeName, "Expected NodeName to be \"%s\", saw \"%s\"", node, parsed.NodeName)
 }

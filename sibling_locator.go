@@ -3,9 +3,11 @@ package consultant
 import (
 	"errors"
 	"fmt"
+	"log"
+
 	"github.com/hashicorp/consul/api"
 	"github.com/hashicorp/consul/api/watch"
-	"github.com/myENA/consultant/log"
+
 	"math"
 	"strconv"
 	"strings"

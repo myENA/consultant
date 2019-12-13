@@ -2,15 +2,16 @@ package consultant_test
 
 import (
 	"fmt"
-	"github.com/hashicorp/consul/api"
-	cst "github.com/hashicorp/consul/sdk/testutil"
-	"github.com/myENA/consultant"
-	"github.com/myENA/consultant/testutil"
-	"github.com/stretchr/testify/require"
-	"github.com/stretchr/testify/suite"
 	"os"
 	"reflect"
 	"testing"
+
+	"github.com/hashicorp/consul/api"
+	cst "github.com/hashicorp/consul/sdk/testutil"
+
+	"github.com/myENA/consultant/v2"
+	"github.com/stretchr/testify/require"
+	"github.com/stretchr/testify/suite"
 )
 
 const (
@@ -210,11 +211,11 @@ func (cs *ClientTestSuite) TestGetServiceAddress_OK() {
 
 	require.Equal(
 		cs.T(),
-		fmt.Sprintf("%s:%d", cs.client.MyAddr(), clientSimpleServiceRegistrationPort),
+		fmt.Sprintf("%s:%d", cs.client.LocalAddress(), clientSimpleServiceRegistrationPort),
 		url.Host,
 		fmt.Sprintf(
 			"Expected address \"%s:%d\", saw \"%s\"",
-			cs.client.MyAddr(),
+			cs.client.LocalAddress(),
 			clientSimpleServiceRegistrationPort,
 			url.Host))
 }

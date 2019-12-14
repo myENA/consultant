@@ -41,6 +41,16 @@ type ManagedServiceConfig struct {
 	// ID of service to fetch to turn into a managed service
 	ID string `json:"name"`
 
+	// BaseChecks [optional] (recommended)
+	//
+	// These are the base service checks that will be re-registered with the service should it be removed exterenaly
+	// from the node the service was registered to.
+	//
+	// This will most likely be removed in the future once https://github.com/hashicorp/consul/issues/1680 is finally
+	// implemented, but for now is necessary if you wish for your service to automatically have its health checks
+	// re-registered
+	BaseChecks api.AgentServiceChecks `json:"base_checks"`
+
 	// RefreshInterval [optional]
 	//
 	// Optionally specify a refresh TLL.  Defaults to value of ServiceDefaultRefreshInterval.
@@ -74,10 +84,10 @@ type ManagedService struct {
 	cancel context.CancelFunc
 
 	serviceID   string
+	baseChecks  api.AgentServiceChecks
 	tagOverride bool
 
 	svc             *api.AgentService
-	hse             *api.ServiceEntry
 	refreshInterval time.Duration
 	localRefreshed  time.Time
 	forceRefresh    chan chan error
@@ -90,6 +100,7 @@ type ManagedService struct {
 	done chan error
 }
 
+// NewManagedService creates a new ManagedService instance.
 func NewManagedService(ctx context.Context, cfg *ManagedServiceConfig) (*ManagedService, error) {
 	var (
 		err error
@@ -102,6 +113,13 @@ func NewManagedService(ctx context.Context, cfg *ManagedServiceConfig) (*Managed
 	}
 	if cfg.ID == "" {
 		return nil, errors.New("id must be set in config")
+	}
+
+	if l := len(cfg.BaseChecks); l > 0 {
+		ms.baseChecks = make(api.AgentServiceChecks, l, l)
+		copy(ms.baseChecks, cfg.BaseChecks)
+	} else {
+		ms.baseChecks = make(api.AgentServiceChecks, 0, 0)
 	}
 
 	if ctx == nil {
@@ -166,15 +184,27 @@ func (ms *ManagedService) HealthServiceEntry(ctx context.Context) (*api.ServiceE
 	if err := ms.Err(); err != nil {
 		return nil, nil, err
 	}
+	ms.mu.RLock()
+	defer ms.mu.RUnlock()
 	var (
 		svc *api.AgentService
 		qm  *api.QueryMeta
 		err error
 	)
-	if svc, _, err = ms.AgentService(ctx); err != nil {
+	if svc, qm, err = ms.AgentService(ctx); err != nil {
 		return nil, qm, fmt.Errorf("error fetching service %q: %s", ms.serviceID, err)
 	}
 	return ms.findHealth(ctx, svc.Service, svc.Tags)
+}
+
+// Checks returns a list of all the checks registered to this specific service
+func (ms *ManagedService) Checks(ctx context.Context) (api.HealthChecks, *api.QueryMeta, error) {
+	if err := ms.Err(); err != nil {
+		return nil, nil, err
+	}
+	ms.mu.RLock()
+	defer ms.mu.RUnlock()
+	return ms.fetchChecks(ctx)
 }
 
 // ForceRefresh attempts an immediate internal state refresh
@@ -194,7 +224,6 @@ func (ms *ManagedService) findHealth(ctx context.Context, name string, tags []st
 		qm   *api.QueryMeta
 		err  error
 	)
-
 	if svcs, qm, err = ms.client.Health().ServiceMultipleTags(name, tags, false, ms.qo.WithContext(ctx)); err != nil {
 		return nil, qm, fmt.Errorf("error fetching service health: %s", err)
 	}
@@ -206,25 +235,41 @@ func (ms *ManagedService) findHealth(ctx context.Context, name string, tags []st
 	return nil, qm, fmt.Errorf("no service with name %q with id %q found", name, ms.serviceID)
 }
 
+// fetchChecks must be used behind a lock
+func (ms *ManagedService) fetchChecks(ctx context.Context) (api.HealthChecks, *api.QueryMeta, error) {
+	var (
+		allChecks api.HealthChecks
+		checks    api.HealthChecks
+		qm        *api.QueryMeta
+		err       error
+	)
+	if allChecks, qm, err = ms.client.Health().Checks(ms.svc.Service, ms.qo.WithContext(ctx)); err != nil {
+		return checks, qm, nil
+	}
+	checks = make(api.HealthChecks, 0)
+	for _, check := range allChecks {
+		if check.ServiceID == ms.serviceID {
+			checks = append(checks, check)
+		}
+	}
+	return checks, qm, nil
+}
+
 // refreshService will refresh the internal representation of the service.
 //
 // caller must hold lock
-func (ms *ManagedService) refreshService(ctx context.Context) error {
+func (ms *ManagedService) refreshService(ctx context.Context) (*api.QueryMeta, error) {
 	var (
 		svc *api.AgentService
-		hse *api.ServiceEntry
+		qm  *api.QueryMeta
 		err error
 	)
-	if svc, _, err = ms.AgentService(ctx); err != nil {
-		return err
-	}
-	if hse, _, err = ms.findHealth(ctx, svc.Service, svc.Tags); err != nil {
-		return err
+	if svc, qm, err = ms.AgentService(ctx); err != nil {
+		return qm, err
 	}
 	ms.svc = svc
-	ms.hse = hse
 	ms.localRefreshed = time.Now()
-	return nil
+	return qm, nil
 }
 
 func (ms *ManagedService) init() error {
@@ -237,8 +282,8 @@ func (ms *ManagedService) init() error {
 
 	ctx, cancel := context.WithTimeout(ms.ctx, 2*time.Second)
 	defer cancel()
-	if err = ms.refreshService(ctx); err != nil {
-		return fmt.Errorf("error fetching current status of service: %s", err)
+	if _, err = ms.refreshService(ctx); err != nil {
+		return fmt.Errorf("error fetching current state of service: %s", err)
 	}
 
 	ms.tagOverride = ms.svc.EnableTagOverride
@@ -255,6 +300,28 @@ func (ms *ManagedService) init() error {
 	return nil
 }
 
+// registerService will attempt to re-push the service to the consul agent
+//
+// caller must hold lock
+func (ms *ManagedService) registerService() error {
+	reg := new(api.AgentServiceRegistration)
+	reg.Kind = ms.svc.Kind
+	reg.ID = ms.svc.ID
+	reg.Name = ms.svc.Service
+	reg.Tags = ms.svc.Tags
+	reg.Port = ms.svc.Port
+	reg.Address = ms.svc.Address
+	reg.TaggedAddresses = ms.svc.TaggedAddresses
+	reg.EnableTagOverride = ms.svc.EnableTagOverride
+	reg.Meta = ms.svc.Meta
+	reg.Weights = &ms.svc.Weights
+	reg.Checks = ms.baseChecks
+	reg.Proxy = ms.svc.Proxy
+	reg.Connect = ms.svc.Connect
+
+	return ms.client.Agent().ServiceRegister(reg)
+}
+
 func (ms *ManagedService) maintain() {
 	var (
 		wpUpdate     = make(chan []*api.ServiceEntry, 1)
@@ -262,9 +329,9 @@ func (ms *ManagedService) maintain() {
 	)
 
 	defer func() {
-		if !refreshTimer.Stop() {
-			<-refreshTimer.C
-		}
+		// always cancel...
+		ms.cancel()
+		refreshTimer.Stop()
 		ms.wp.Stop()
 		close(ms.forceRefresh)
 		ms.done <- ms.client.Agent().ServiceDeregister(ms.serviceID)
@@ -275,13 +342,11 @@ Outer:
 	for {
 		select {
 		case ch := <-ms.forceRefresh:
-			if !refreshTimer.Stop() {
-				<-refreshTimer.C
-			}
+			refreshTimer.Stop()
 
 			ms.mu.Lock()
 			ctx, cancel := context.WithTimeout(ms.ctx, 2*time.Second)
-			err := ms.refreshService(ctx)
+			_, err := ms.refreshService(ctx)
 			cancel()
 			ms.mu.Unlock()
 
@@ -295,12 +360,21 @@ Outer:
 				continue Outer
 			}
 
+			// TODO: finish updated on watch
+
 		case <-refreshTimer.C:
 			ms.mu.Lock()
 			ctx, cancel := context.WithTimeout(ms.ctx, 2*time.Second)
 			// TODO: yell about errors here...
-			_ = ms.refreshService(ctx)
+			_, err := ms.refreshService(ctx)
 			cancel()
+			if err != nil {
+				if err := ms.registerService(); err != nil {
+					// TODO: inform the implementor
+					ms.mu.Unlock()
+					return
+				}
+			}
 			ms.mu.Unlock()
 
 			refreshTimer = time.NewTimer(ms.refreshInterval)
@@ -461,19 +535,27 @@ func (b *ManagedServiceBuilder) AddAliasCheck(service, node string, interval tim
 // Build attempts to first register the configured service with the desired consul agent, then constructs a
 // ManagedService instance for you to use.
 //
-// If the Builder has a service ID set:
-// - and the provided config does NOT or they are the SAME, the ID from the builder will be used
-// - and the provided config does and they are different, an error will be returned
+// The context parameter in this instance will be used to maintain the state of the created ManagedService instance.
+// Cancelling the context will terminate the ManagedService, making it defunct and removing the service from the consul
+// agent.
 //
-// If the Builder does NOT have a service ID set:
-// - and the provided config does NOT, a new one will be created using the value of ServiceDefaultIDFormat
-// - and the provided config does and they are NOT the same, an error will be returned
+// If no ID was specified before this method is called, one will be randomly generated for you.
 func (b *ManagedServiceBuilder) Build(ctx context.Context, cfg *ManagedServiceConfig) (*ManagedService, error) {
 	var err error
 
 	if cfg == nil {
 		cfg = new(ManagedServiceConfig)
 		cfg.RefreshInterval = ServiceDefaultRefreshInterval
+	}
+
+	if len(cfg.BaseChecks) == 0 {
+		cfg.BaseChecks = make(api.AgentServiceChecks, 0)
+		if b.Check != nil {
+			cfg.BaseChecks = append(cfg.BaseChecks, b.Check)
+		}
+		if len(b.Checks) > 0 {
+			cfg.BaseChecks = append(cfg.BaseChecks, b.Checks...)
+		}
 	}
 
 	if b.ID == cfg.ID {

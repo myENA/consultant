@@ -398,6 +398,9 @@ type ManagedServiceBuilder struct {
 // provided by the returned type, the behavior is entirely undefined.
 func NewManagedServiceBuilder(base *api.AgentServiceRegistration, fns ...ManagedServiceBuilderMutator) *ManagedServiceBuilder {
 	b := new(ManagedServiceBuilder)
+	if base == nil {
+		base = new(api.AgentServiceRegistration)
+	}
 	b.AgentServiceRegistration = base
 	if b.Tags == nil {
 		b.Tags = make([]string, 0)

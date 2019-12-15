@@ -92,15 +92,15 @@ func NewSiblingLocator(client *Client, config SiblingLocatorConfig) (*SiblingLoc
 
 	// verify datacenter is set, using client datacenter if not
 	sl.config.Datacenter = strings.TrimSpace(sl.config.Datacenter)
-	if "" == sl.config.Datacenter {
-		sl.config.Datacenter = sl.client.config.Datacenter
-	}
+	//if "" == sl.config.Datacenter {
+	//	sl.config.Datacenter = sl.client.config.Datacenter
+	//}
 
 	// verify token is set, using client token if not
 	sl.config.Token = strings.TrimSpace(sl.config.Token)
-	if "" == sl.config.Token {
-		sl.config.Token = sl.client.config.Token
-	}
+	//if "" == sl.config.Token {
+	//	sl.config.Token = sl.client.config.Token
+	//}
 
 	// create copy of tags, if necessary
 	if nil == sl.config.ServiceTags || 0 == len(sl.config.ServiceTags) {
@@ -112,7 +112,6 @@ func NewSiblingLocator(client *Client, config SiblingLocatorConfig) (*SiblingLoc
 	}
 
 	// set up log slugs
-	sl.log = log.New(fmt.Sprintf("sibling-locator-%s", sl.config.ServiceName))
 
 	return sl, nil
 }
@@ -203,15 +202,15 @@ func (sl *SiblingLocator) StartWatcher(passingOnly bool) error {
 	sl.wp.HybridHandler = sl.watchHandler
 
 	go func() {
-		err := sl.wp.Run(sl.client.config.Address)
-		sl.mu.Lock()
-		if err != nil {
-			sl.log.Printf("Watch Plan stopped with error: %s", err)
-		} else {
-			sl.log.Print("Watch Plan stopped without error")
-		}
-		sl.wp = nil
-		sl.mu.Unlock()
+		//err := sl.wp.Run(sl.client.config.Address)
+		//sl.mu.Lock()
+		//if err != nil {
+		//	sl.log.Printf("Watch Plan stopped with error: %s", err)
+		//} else {
+		//	sl.log.Print("Watch Plan stopped without error")
+		//}
+		//sl.wp = nil
+		//sl.mu.Unlock()
 	}()
 
 	sl.mu.Unlock()

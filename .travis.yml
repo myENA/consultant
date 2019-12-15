@@ -5,12 +5,13 @@ dist: trusty
 go:
   - 1.11.x
   - 1.12.x
+  - 1.13.x
 
 sudo: false
 
 env:
   global:
-    - CONSUL_VERSION="1.5.0"
+    - CONSUL_VERSION="1.6.2"
     - GO111MODULE=on
 
 install:
@@ -22,10 +23,7 @@ install:
 
 before_script:
   - go vet ./
-  - go vet ./candidate
+  - go vet
 
 script:
-  - go test ./candidate/session -v -race
-  - go test ./candidate -v -race
-  - go test ./util -v -race
-  - go test -v
+  - go test -race -v

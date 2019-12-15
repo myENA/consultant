@@ -2,6 +2,7 @@ package consultant
 
 import (
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 	"time"
@@ -56,7 +57,7 @@ type (
 		// Log [optional]
 		//
 		// Logger for this session.  One will be created if value is empty
-		Log log.DebugLogger
+		Log *log.Logger
 
 		// Client [optional]
 		//
@@ -66,7 +67,7 @@ type (
 		// UpdateFunc [optional]
 		//
 		// Callback to be executed after session state change
-		UpdateFunc session.WatchFunc
+		UpdateFunc SessionWatchFunc
 
 		// AutoRun [optional]
 		//
@@ -76,7 +77,7 @@ type (
 
 	Session struct {
 		mu     sync.RWMutex
-		log    log.DebugLogger
+		log    *log.Logger
 		client *api.Client
 
 		node string
@@ -101,7 +102,7 @@ func NewSession(conf *SessionConfig) (*Session, error) {
 	var (
 		key, ttl, behavior string
 		client             *api.Client
-		l                  log.DebugLogger
+		l                  *log.Logger
 		updateFunc         SessionWatchFunc
 		autoRun            bool
 		err                error
@@ -131,14 +132,6 @@ func NewSession(conf *SessionConfig) (*Session, error) {
 		client, err = api.NewClient(api.DefaultConfig())
 		if err != nil {
 			return nil, fmt.Errorf("no Consul api client provided and unable to create: %s", err)
-		}
-	}
-
-	if l == nil {
-		if key == "" {
-			l = log.New(fmt.Sprintf("session-%s", util.RandStr(8)))
-		} else {
-			l = log.New(fmt.Sprintf("session-%s", key))
 		}
 	}
 
@@ -177,11 +170,11 @@ func NewSession(conf *SessionConfig) (*Session, error) {
 		return nil, fmt.Errorf("unable to determine node: %s", err)
 	}
 
-	l.Debugf("Lock interval: %d seconds", int64(ttlTD.Seconds()))
-	l.Debugf("Session renew interval: %d seconds", int64(cs.interval.Seconds()))
+	l.Printf("Lock interval: %d seconds", int64(ttlTD.Seconds()))
+	l.Printf("Session renew interval: %d seconds", int64(cs.interval.Seconds()))
 
 	if autoRun {
-		l.Debug("AutoRun enabled")
+		l.Printf("AutoRun enabled")
 		cs.Run()
 	}
 
@@ -258,7 +251,7 @@ func (cs *Session) Run() {
 	cs.mu.Lock()
 	if cs.state == SessionStateRunning {
 		// if our state is already running, just continue to do so.
-		cs.log.Debug("Run() called but I'm already running")
+		cs.log.Printf("Run() called but I'm already running")
 		cs.mu.Unlock()
 		return
 	}
@@ -283,7 +276,7 @@ func (cs *Session) Run() {
 func (cs *Session) Stop() error {
 	cs.mu.Lock()
 	if cs.state == SessionStateStopped {
-		cs.log.Debug("Stop() called but I'm already stopped")
+		cs.log.Printf("Stop() called but I'm already stopped")
 		cs.mu.Unlock()
 		return nil
 	}
@@ -309,12 +302,12 @@ func (cs *Session) create() error {
 	var name string
 
 	if cs.key == "" {
-		name = fmt.Sprintf("%s_%s", cs.node, util.RandStr(12))
+		name = fmt.Sprintf("%s_%s", cs.node, LazyRandomString(12))
 	} else {
-		name = fmt.Sprintf("%s_%s_%s", cs.key, cs.node, util.RandStr(12))
+		name = fmt.Sprintf("%s_%s_%s", cs.key, cs.node, LazyRandomString(12))
 	}
 
-	cs.log.Debugf("Attempting to create Consul Session \"%s\"...", name)
+	cs.log.Printf("Attempting to create Consul Session \"%s\"...", name)
 
 	se := &api.SessionEntry{
 		Name:     name,
@@ -327,7 +320,7 @@ func (cs *Session) create() error {
 		cs.id = ""
 		cs.name = ""
 	} else if sid != "" {
-		cs.log.Debugf("New upstream session %q created", sid)
+		cs.log.Printf("New upstream session %q created", sid)
 		cs.id = sid
 		cs.name = name
 		cs.lastRenewed = time.Now()
@@ -403,7 +396,7 @@ func (cs *Session) maintainTick(tick time.Time) {
 				cs.id,
 			)
 			if err = cs.destroy(); err != nil {
-				cs.log.Debugf(
+				cs.log.Printf(
 					"maintainTick() - Error destroying expired upstream session %q (%q). This can probably be ignored: %s",
 					name,
 					sid,
@@ -417,7 +410,7 @@ func (cs *Session) maintainTick(tick time.Time) {
 			// should eventually be hit if this continues to fail...
 		} else {
 			// session should be in a happy state.
-			cs.log.Debugf("maintainTick() - Upstream session %q (%q) renewed", cs.name, cs.id)
+			cs.log.Printf("maintainTick() - Upstream session %q (%q) renewed", cs.name, cs.id)
 		}
 	}
 
@@ -427,7 +420,7 @@ func (cs *Session) maintainTick(tick time.Time) {
 		if err = cs.create(); err != nil {
 			cs.log.Printf("maintainTick() - Unable to create upstream session: %s", err)
 		} else {
-			cs.log.Debugf("maintainTick() - New upstream session %q (%q) created.", cs.name, cs.id)
+			cs.log.Printf("maintainTick() - New upstream session %q (%q) created.", cs.name, cs.id)
 		}
 	}
 
@@ -445,7 +438,7 @@ func (cs *Session) shutdown(stopped chan<- error) {
 
 	cs.mu.Lock()
 
-	cs.log.Debug("shutdown() - Stopping session...")
+	cs.log.Printf("shutdown() - Stopping session...")
 
 	// localize most recent upstream session info
 	sid = cs.id
@@ -506,7 +499,7 @@ maintaining:
 
 	cs.shutdown(stopped)
 
-	cs.log.Debug("maintain() - Exiting maintain loop")
+	cs.log.Printf("maintain() - Exiting maintain loop")
 }
 
 // ParseSessionName is provided so you don't have to parse it yourself :)
@@ -549,7 +542,7 @@ func newSessionWatchers() *sessionWatchers {
 func (c *sessionWatchers) Add(id string, fn SessionWatchFunc) string {
 	c.mu.Lock()
 	if id == "" {
-		id = util.RandStr(8)
+		id = LazyRandomString(8)
 	}
 	_, ok := c.funcs[id]
 	if !ok {

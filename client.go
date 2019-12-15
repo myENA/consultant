@@ -335,7 +335,7 @@ func (c *Client) SimpleServiceRegister(reg *SimpleServiceRegistration) (string, 
 		// Form a unique service id
 		var tail string
 		if reg.RandomID {
-			tail = util.RandStr(12)
+			tail = LazyRandomString(12)
 		} else {
 			tail = strings.ToLower(c.localHostname)
 		}

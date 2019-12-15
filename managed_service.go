@@ -1,14 +1,14 @@
 package consultant
 
-import (
-	"fmt"
-	"log"
-
-	"github.com/hashicorp/consul/api"
-
-	"github.com/myENA/go-helpers"
-	"sync"
-)
+//import (
+//	"fmt"
+//	"log"
+//
+//	"github.com/hashicorp/consul/api"
+//
+//	"github.com/myENA/go-helpers"
+//	"sync"
+//)
 
 // ManagedServiceRegister will return an instance of ManagedService after registering service
 //
@@ -92,8 +92,8 @@ import (
 //	ms.mu.Lock()
 //
 //	if nil != ms.candidate {
-//		ms.candidate.DeregisterUpdates()
-//		ms.candidate.Resign()
+//		ms.CandidateDeregisterUpdates()
+//		ms.CandidateResign()
 //	}
 //
 //	candidate, err := NewCandidate(ms.client, ms.client.LocalAddress(), key, ttl)
@@ -103,7 +103,7 @@ import (
 //	}
 //
 //	if wait {
-//		candidate.Wait()
+//		CandidateWait()
 //	}
 //	ms.candidate = candidate
 //
@@ -286,40 +286,40 @@ import (
 //
 //	// build new tag slice
 //	newTags, removed := helpers.RemoveStringsFromSlice(def.ServiceTags, okt)
-	if 0 == removed {
-		ms.log.Printf("No tags were removed, will not execute watchers")
-		ms.mu.Unlock()
-		return nil
-	}
-
-	// log and try to update
-	ms.log.Printf("\"%d\" tags were removed, updating registration...", removed)
-	err = ms.client.Agent().ServiceRegister(&api.AgentServiceRegistration{
-		ID:                def.ServiceID,
-		Name:              def.ServiceName,
-		Address:           def.ServiceAddress,
-		Port:              def.ServicePort,
-		Tags:              newTags,
-		EnableTagOverride: def.ServiceEnableTagOverride,
-	})
-
-	ms.mu.Unlock()
-
-	return err
-}
-
-// Deregister will remove this service from the service catalog in consul
-func (ms *ManagedService) Deregister() error {
-	ms.mu.RLock()
-
-	// shut candidate down
-	if nil != ms.candidate {
-		ms.candidate.Resign()
-	}
-
-	// remove our service entry from consul
-	err := ms.client.Agent().ServiceDeregister(ms.meta.ID())
-	ms.mu.RUnlock()
-
-	return err
-}
+//	if 0 == removed {
+//		ms.log.Printf("No tags were removed, will not execute watchers")
+//		ms.mu.Unlock()
+//		return nil
+//	}
+//
+//	// log and try to update
+//	ms.log.Printf("\"%d\" tags were removed, updating registration...", removed)
+//	err = ms.client.Agent().ServiceRegister(&api.AgentServiceRegistration{
+//		ID:                def.ServiceID,
+//		Name:              def.ServiceName,
+//		Address:           def.ServiceAddress,
+//		Port:              def.ServicePort,
+//		Tags:              newTags,
+//		EnableTagOverride: def.ServiceEnableTagOverride,
+//	})
+//
+//	ms.mu.Unlock()
+//
+//	return err
+//}
+//
+//// Deregister will remove this service from the service catalog in consul
+//func (ms *ManagedService) Deregister() error {
+//	ms.mu.RLock()
+//
+//	// shut candidate down
+//	if nil != ms.candidate {
+//		ms.CandidateResign()
+//	}
+//
+//	// remove our service entry from consul
+//	err := ms.client.Agent().ServiceDeregister(ms.meta.ID())
+//	ms.mu.RUnlock()
+//
+//	return err
+//}

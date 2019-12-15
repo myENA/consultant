@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"regexp"
 	"strings"
@@ -81,10 +82,10 @@ type (
 
 	Candidate struct {
 		mu       sync.RWMutex
-		log      log.DebugLogger
+		log      *log.Logger
 		client   *api.Client
 		id       string
-		watchers *candidate.watchers
+		watchers *candidateWatchers
 		kvKey    string
 		ttl      time.Duration
 		elected  *bool
@@ -126,8 +127,8 @@ func NewCandidate(conf *CandidateConfig) (*Candidate, error) {
 
 	id = strings.TrimSpace(id)
 	if id == "" {
-		if addr, err := util.MyAddress(); err != nil {
-			id = util.RandStr(8)
+		if addr, err := LocalAddress(); err != nil {
+			id = LazyRandomString(8)
 		} else {
 			id = addr
 		}
@@ -138,10 +139,9 @@ func NewCandidate(conf *CandidateConfig) (*Candidate, error) {
 	}
 
 	c := &Candidate{
-		log:        log.New(fmt.Sprintf("candidate-%s", id)),
 		client:     client,
 		id:         id,
-		watchers:   candidate.newWatchers(),
+		watchers:   newCandidateWatchers(),
 		kvKey:      kvKey,
 		elected:    new(bool),
 		sessionTTL: sessionTTL,
@@ -149,7 +149,7 @@ func NewCandidate(conf *CandidateConfig) (*Candidate, error) {
 	}
 
 	if autoRun {
-		c.log.Debug("AutoRun enabled")
+		c.log.Printf("AutoRun enabled")
 		if err := c.Run(); err != nil {
 			return nil, fmt.Errorf("error occurred during autostart: %s", err)
 		}
@@ -239,7 +239,7 @@ func (c *Candidate) ForeignLeaderService(dc string) (*api.SessionEntry, error) {
 }
 
 // Watch allows you to register a function that will be called when the election State has changed
-func (c *Candidate) Watch(id string, fn candidate.WatchFunc) string {
+func (c *Candidate) Watch(id string, fn CandidateWatchFunc) string {
 	return c.watchers.Add(id, fn)
 }
 
@@ -288,7 +288,7 @@ waitLoop:
 			if _, err = c.LeaderService(); nil == err {
 				break waitLoop
 			}
-			c.log.Debugf("Error locating leader service: %s", err)
+			c.log.Printf("Error locating leader service: %s", err)
 		}
 
 		time.Sleep(time.Second)
@@ -311,7 +311,7 @@ func (c *Candidate) WaitUntil(t time.Time) error {
 	return c.WaitFor(t.Sub(now))
 }
 
-// Wait will block until a leader has been elected, regardless of candidate.
+// Wait will block until a leader has been elected, regardless of Candidate
 func (c *Candidate) Wait() error {
 	return c.WaitFor(1<<63 - 1)
 }
@@ -443,7 +443,7 @@ func (c *Candidate) refreshLock() {
 			// this should only ever happen very early on in the election process
 			elected = false
 			updated = c.elected != nil && *c.elected != elected
-			c.log.Debugf("refreshLock() - Session does not exist, will try locking again in %d seconds...", int64(c.session.RenewInterval().Seconds()))
+			c.log.Printf("refreshLock() - Session does not exist, will try locking again in %d seconds...", int64(c.session.RenewInterval().Seconds()))
 		} else if elected, err = c.acquire(sid); err != nil {
 			// most likely hit due to transport error.
 			updated = c.elected != nil && *c.elected != elected
@@ -463,9 +463,9 @@ func (c *Candidate) refreshLock() {
 	// if election state changed
 	if updated {
 		if elected {
-			c.log.Debug("We have won the election")
+			c.log.Printf("We have won the election")
 		} else {
-			c.log.Debug("We have lost the election")
+			c.log.Printf("We have lost the election")
 		}
 
 		// update internal state
@@ -477,7 +477,7 @@ func (c *Candidate) refreshLock() {
 
 // maintainLock is responsible for triggering the routine that attempts to create / re-acquire the session kv lock
 func (c *Candidate) maintainLock() {
-	c.log.Debug("maintainLock() - Starting lock maintenance loop")
+	c.log.Printf("maintainLock() - Starting lock maintenance loop")
 	var (
 		drop chan struct{}
 
@@ -521,7 +521,7 @@ func (c *Candidate) sessionUpdate(update SessionUpdate) {
 		// if there was an update either creating or renewing our session
 		consecutiveSessionErrorCount++
 		c.log.Printf("sessionUpdate() - Error (%d in a row): %s", consecutiveSessionErrorCount, update.Error)
-		if update.State == session.StateRunning && consecutiveSessionErrorCount > 2 {
+		if update.State == SessionStateRunning && consecutiveSessionErrorCount > 2 {
 			// if the session is still running but we've seen more than 2 errors, attempt a stop -> start cycle
 			c.log.Print("sessionUpdate() - 2 successive errors seen, stopping session")
 			if err = c.session.Stop(); err != nil {
@@ -531,7 +531,7 @@ func (c *Candidate) sessionUpdate(update SessionUpdate) {
 		}
 		// do not modify elected state here unless we've breached the threshold.  could just be a temporary
 		// issue
-	} else if update.State == session.StateStopped {
+	} else if update.State == SessionStateStopped {
 		// if somehow the session state became stopped (this should basically never happen...), do not attempt
 		// to kickstart session here.  test if we need to update candidate state and notify watchers, then move
 		// on.  next acquire tick will attempt to restart session.
@@ -541,7 +541,7 @@ func (c *Candidate) sessionUpdate(update SessionUpdate) {
 	} else {
 		// if we got a non-error / non-stopped update, there is nothing to do.
 		consecutiveSessionErrorCount = 0
-		c.log.Debugf("sessionUpdate() - Received %#v", update)
+		c.log.Printf("sessionUpdate() - Received %#v", update)
 	}
 
 	if refresh {
@@ -577,7 +577,7 @@ type candidateWatchers struct {
 	funcs map[string]CandidateWatchFunc
 }
 
-func newWatchers() *candidateWatchers {
+func newCandidateWatchers() *candidateWatchers {
 	w := &candidateWatchers{
 		funcs: make(map[string]CandidateWatchFunc),
 	}
@@ -588,7 +588,7 @@ func newWatchers() *candidateWatchers {
 func (c *candidateWatchers) Add(id string, fn CandidateWatchFunc) string {
 	c.mu.Lock()
 	if id == "" {
-		id = util.RandStr(8)
+		id = LazyRandomString(8)
 	}
 	_, ok := c.funcs[id]
 	if !ok {

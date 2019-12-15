@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/hashicorp/consul/api"
-	"github.com/hashicorp/consul/api/watch"
 )
 
 const (
@@ -92,7 +91,6 @@ type ManagedService struct {
 	localRefreshed  time.Time
 	forceRefresh    chan chan error
 
-	wp     *watch.Plan
 	client *api.Client
 	qo     *api.QueryOptions
 	wo     *api.WriteOptions
@@ -141,7 +139,7 @@ func NewManagedService(ctx context.Context, cfg *ManagedServiceConfig) (*Managed
 	if cfg.RefreshInterval != 0 {
 		ms.refreshInterval = cfg.RefreshInterval.Duration()
 	} else {
-		ms.refreshInterval = ServiceDefaultRefreshInterval.Duration()
+		ms.refreshInterval = time.Duration(ServiceDefaultRefreshInterval)
 	}
 
 	ms.ctx, ms.cancel = context.WithCancel(ctx)
@@ -274,8 +272,8 @@ func (ms *ManagedService) refreshService(ctx context.Context) (*api.QueryMeta, e
 
 func (ms *ManagedService) init() error {
 	var (
-		token, datacenter string
-		err               error
+		//token, datacenter string
+		err error
 	)
 	ms.mu.Lock()
 	defer ms.mu.Unlock()
@@ -288,14 +286,14 @@ func (ms *ManagedService) init() error {
 
 	ms.tagOverride = ms.svc.EnableTagOverride
 
-	if ms.qo != nil {
-		token = ms.qo.Token
-		datacenter = ms.qo.Datacenter
-	}
+	//if ms.qo != nil {
+	//	token = ms.qo.Token
+	//	datacenter = ms.qo.Datacenter
+	//}
 
-	if ms.wp, err = WatchServiceMultipleTags(ms.svc.Service, ms.svc.Tags, false, true, token, datacenter); err != nil {
-		return fmt.Errorf("error creating watch plan: %s", err)
-	}
+	//if ms.wp, err = WatchServiceMultipleTags(ms.svc.Service, ms.svc.Tags, false, true, token, datacenter); err != nil {
+	//	return fmt.Errorf("error creating watch plan: %s", err)
+	//}
 
 	return nil
 }
@@ -324,7 +322,7 @@ func (ms *ManagedService) registerService() error {
 
 func (ms *ManagedService) maintain() {
 	var (
-		wpUpdate     = make(chan []*api.ServiceEntry, 1)
+		//wpUpdate     = make(chan []*api.ServiceEntry, 1)
 		refreshTimer = time.NewTimer(ms.refreshInterval)
 	)
 
@@ -332,13 +330,12 @@ func (ms *ManagedService) maintain() {
 		// always cancel...
 		ms.cancel()
 		refreshTimer.Stop()
-		ms.wp.Stop()
+		//ms.wp.Stop()
 		close(ms.forceRefresh)
 		ms.done <- ms.client.Agent().ServiceDeregister(ms.serviceID)
 		close(ms.done)
 	}()
 
-Outer:
 	for {
 		select {
 		case ch := <-ms.forceRefresh:
@@ -354,13 +351,12 @@ Outer:
 
 			refreshTimer = time.NewTimer(ms.refreshInterval)
 
-		case svcs := <-wpUpdate:
-			if len(svcs) == 0 {
-				// TODO: handle empty here...
-				continue Outer
-			}
+		//case svcs := <-wpUpdate:
+		//	if len(svcs) == 0 {
+		//		// TODO: handle empty here...
+		//	}
 
-			// TODO: finish updated on watch
+		// TODO: finish updated on watch
 
 		case <-refreshTimer.C:
 			ms.mu.Lock()
@@ -425,8 +421,8 @@ func NewManagedServiceBuilder(base *api.AgentServiceRegistration, fns ...Managed
 func NewBareManagedServiceBuilder(name string, port int, fns ...ManagedServiceBuilderMutator) *ManagedServiceBuilder {
 	reg := new(api.AgentServiceRegistration)
 	reg.Name = name
-	reg.Address, _ = LocalAddress()
 	reg.Port = port
+	reg.Address, _ = LocalAddress()
 	return NewManagedServiceBuilder(reg, fns...)
 }
 

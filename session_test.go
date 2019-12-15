@@ -18,7 +18,7 @@ const (
 )
 
 func init() {
-	consultant.Debug()
+	consultant.Printf()
 }
 
 type SessionTestSuite struct {

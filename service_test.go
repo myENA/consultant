@@ -1,6 +1,8 @@
 package consultant_test
 
 import (
+	"fmt"
+	"regexp"
 	"testing"
 
 	"github.com/hashicorp/consul/api"
@@ -15,11 +17,7 @@ const (
 )
 
 func TestNewManagedServiceBuilder(t *testing.T) {
-	localAddr, err := consultant.LocalAddress()
-	if err != nil {
-		t.Logf("error finding local addr: %s", err)
-		t.FailNow()
-	}
+	localAddr := getTestLocalAddr(t)
 
 	tests := map[string]struct {
 		base     *api.AgentServiceRegistration
@@ -94,11 +92,7 @@ func TestNewManagedServiceBuilder(t *testing.T) {
 }
 
 func TestNewBareManagedServiceBuilder(t *testing.T) {
-	localAddr, err := consultant.LocalAddress()
-	if err != nil {
-		t.Logf("error finding local addr: %s", err)
-		t.FailNow()
-	}
+	localAddr := getTestLocalAddr(t)
 
 	tests := map[string]struct {
 		name     string
@@ -159,6 +153,53 @@ func TestNewBareManagedServiceBuilder(t *testing.T) {
 			}
 			if b.Meta == nil {
 				t.Log("Expected Meta to be non-nil")
+				t.Fail()
+			}
+		})
+	}
+}
+
+func TestManagedServiceBuilder_SetID(t *testing.T) {
+	localAddr := getTestLocalAddr(t)
+
+	tests := map[string]struct {
+		format   string
+		args     []interface{}
+		expected *regexp.Regexp
+	}{
+		"no-anchors": {
+			format:   "really-good-id",
+			expected: regexp.MustCompile("^really-good-id$"),
+		},
+		"addr-anchor": {
+			format:   "test-!ADDR!",
+			expected: regexp.MustCompile(fmt.Sprintf("^test-%s$", localAddr)),
+		},
+		"name-anchor": {
+			format:   "test-!NAME!",
+			expected: regexp.MustCompile(fmt.Sprintf("^test-%s$", managedServiceName)),
+		},
+		"rand-anchor": {
+			format:   "test-!RAND!",
+			expected: regexp.MustCompile("^test-[a-zA-Z0-9]{12}$"),
+		},
+		"mixed-anchors": {
+			format:   "test-!NAME!-!ADDR!-!RAND!",
+			expected: regexp.MustCompile(fmt.Sprintf("^test-%s-%s-[a-zA-Z0-9]{12}$", managedServiceName, localAddr)),
+		},
+		"anchor-format": {
+			format:   "test-%s",
+			args:     []interface{}{"!ADDR!"},
+			expected: regexp.MustCompile(fmt.Sprintf("^test-%s$", localAddr)),
+		},
+	}
+
+	for name, setup := range tests {
+		t.Run(name, func(t *testing.T) {
+			b := consultant.NewBareManagedServiceBuilder(managedServiceName, managedServicePort)
+			b.SetID(setup.format, setup.args...)
+			if !setup.expected.MatchString(b.ID) {
+				t.Logf("Expected Name to match %q, saw %q", setup.expected, b.ID)
 				t.Fail()
 			}
 		})

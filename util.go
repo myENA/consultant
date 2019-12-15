@@ -2,6 +2,7 @@ package consultant
 
 import (
 	"errors"
+	"fmt"
 	"math/rand"
 	"net"
 	"os"
@@ -100,7 +101,7 @@ func LocalAddressIP() (net.IP, error) {
 // LazyRandomString will create a base62 string with a min-length of 12
 func LazyRandomString(n int) string {
 	if n <= 0 {
-		n = 12
+		panic(fmt.Sprintf("n must be > 0, saw %d", n))
 	}
 	buff := make([]byte, n)
 	for i := 0; i < n; i++ {

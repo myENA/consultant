@@ -1017,6 +1017,16 @@ var testUtilNouns = [1000]string{
 	"zucchini",
 }
 
+func getTestLocalAddr(t *testing.T) string {
+	if addr, err := consultant.LocalAddress(); err != nil {
+		t.Logf("Error calling LocalAddress(): %s", err)
+		t.FailNow()
+		return ""
+	} else {
+		return addr
+	}
+}
+
 func makeTestServerConfigCallback(cb cst.ServerConfigCallback) cst.ServerConfigCallback {
 	return func(c *cst.TestServerConfig) {
 		c.NodeName = fmt.Sprintf("%s-%s", testUtilNouns[rand.Int63()%testNounLen], testUtilNouns[rand.Int63()%testNounLen])

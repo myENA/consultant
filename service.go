@@ -4,14 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"regexp"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/hashicorp/consul/api"
-	"github.com/hashicorp/consul/api/watch"
+	"github.com/myENA/go-helpers"
 )
 
 const (
@@ -20,7 +19,8 @@ const (
 	ServiceAddrSlug        = "!ADDR!"
 	ServiceDefaultIDFormat = ServiceNameSlug + "-" + ServiceAddrSlug + "-" + ServiceRandSlug
 
-	ServiceDefaultRefreshInterval = api.ReadableDuration(30 * time.Second)
+	ServiceDefaultRefreshInterval    = api.ReadableDuration(30 * time.Second)
+	ServiceDefaultInternalRequestTTL = 2 * time.Second
 )
 
 var (
@@ -67,6 +67,11 @@ type ManagedServiceConfig struct {
 	// Options to use whenever making a write api query.  This will be shallow copied per internal request made.
 	WriteOptions *api.WriteOptions `json:"write_options" hcl:"write_options"`
 
+	// RequestTTL [optional]
+	//
+	// Optionally specify a TTL to pass to internal API requests.  Defaults to value of ServiceDefaultInternalRequestTTL
+	RequestTTL time.Duration `json:"request_ttl" hcl:"request_ttl"`
+
 	// Logger [optional]
 	//
 	// Optionally specify a logger.  No logging will take place if one is not provided
@@ -93,6 +98,8 @@ type ManagedService struct {
 
 	ctx    context.Context
 	cancel context.CancelFunc
+
+	rttl time.Duration
 
 	serviceID   string
 	baseChecks  api.AgentServiceChecks
@@ -182,11 +189,16 @@ func NewManagedService(ctx context.Context, cfg *ManagedServiceConfig) (*Managed
 
 	// misc
 	ms.ctx, ms.cancel = context.WithCancel(ctx)
+	if cfg.RequestTTL > 0 {
+		ms.rttl = cfg.RequestTTL
+	} else {
+		ms.rttl = ServiceDefaultInternalRequestTTL
+	}
 	ms.forceRefresh = make(chan chan error)
 	ms.done = make(chan error)
 
 	// fetch initial service state from node
-	ctx, cancel := context.WithTimeout(ms.ctx, 2*time.Second)
+	ctx, cancel := context.WithTimeout(ms.ctx, ms.rttl)
 	defer cancel()
 	if _, err = ms.refreshService(ctx); err != nil {
 		return nil, fmt.Errorf("error fetching current state of service: %s", err)
@@ -239,15 +251,17 @@ func (ms *ManagedService) HealthServiceEntry(ctx context.Context) (*api.ServiceE
 	}
 	ms.mu.RLock()
 	defer ms.mu.RUnlock()
-	var (
-		svc *api.AgentService
-		qm  *api.QueryMeta
-		err error
-	)
-	if svc, qm, err = ms.AgentService(ctx); err != nil {
-		return nil, qm, fmt.Errorf("error fetching service %q: %s", ms.serviceID, err)
+	return ms.findHealth(ctx)
+}
+
+// CatalogService attempts to fetch the current CatalogService entry for this ManagedService using Catalog().Service
+func (ms *ManagedService) CatalogService(ctx context.Context) (*api.CatalogService, *api.QueryMeta, error) {
+	if err := ms.Err(); err != nil {
+		return nil, nil, err
 	}
-	return ms.findHealth(ctx, svc.Service, svc.Tags)
+	ms.mu.RLock()
+	defer ms.mu.RUnlock()
+	return ms.findCatalog(ctx)
 }
 
 // Checks returns a list of all the checks registered to this specific service
@@ -258,6 +272,52 @@ func (ms *ManagedService) Checks(ctx context.Context) (api.HealthChecks, *api.Qu
 	ms.mu.RLock()
 	defer ms.mu.RUnlock()
 	return ms.fetchChecks(ctx)
+}
+
+// AddTags attempts to add one or more tags to the service registration in consul, if and only if EnableTagOverride was
+// enabled when the service was registered.  If no tags are passed, this is a no-op.
+//
+// Returns:
+//	- count of tags added (if successful)
+//	- error, if unsuccessful
+//
+// If no tags were provided or the provided list does not contain any not already present on the service, a 0, nil will
+// be returned
+func (ms *ManagedService) AddTags(ctx context.Context, tags ...string) (int, error) {
+	if err := ms.Err(); err != nil {
+		return 0, err
+	}
+	if !ms.tagOverride {
+		return 0, errors.New("cannot add tags: EnableTagOverride was false at service registration")
+	}
+	ms.logf(true, "AddTags() - Adding tags %v to service %q...", tags, ms.serviceID)
+	tags = helpers.UniqueStringSlice(tags)
+	if len(tags) == 0 {
+		ms.logf(true, "AddTags() - provided tag input empty")
+		return 0, nil
+	}
+	ms.mu.RLock()
+	defer ms.mu.RUnlock()
+	var (
+		svc     *api.CatalogService
+		newTags []string
+		added   int
+		err     error
+	)
+	// current tags
+	if svc, _, err = ms.findCatalog(ctx); err != nil {
+		return 0, err
+	}
+	// determine difference
+	newTags, added = helpers.CombineStringSlices(svc.ServiceTags, tags)
+	if added == 0 {
+		ms.logf(true, "AddTags() - no new tags provided")
+		return 0, nil
+	}
+	if err = ms.registerService(newTags); err != nil {
+		return 0, err
+	}
+	return added, nil
 }
 
 // ForceRefresh attempts an immediate internal state refresh
@@ -280,19 +340,35 @@ func (ms *ManagedService) logf(debug bool, f string, v ...interface{}) {
 }
 
 // findHealth must be used behind a lock
-func (ms *ManagedService) findHealth(ctx context.Context, name string, tags []string) (*api.ServiceEntry, *api.QueryMeta, error) {
+func (ms *ManagedService) findHealth(ctx context.Context) (*api.ServiceEntry, *api.QueryMeta, error) {
 	var (
 		svcs []*api.ServiceEntry
 		qm   *api.QueryMeta
 		err  error
 	)
-	if svcs, qm, err = ms.client.Health().ServiceMultipleTags(name, tags, false, ms.qo.WithContext(ctx)); err != nil {
+	if svcs, qm, err = ms.client.Health().ServiceMultipleTags(ms.svc.Service, nil, false, ms.qo.WithContext(ctx)); err != nil {
 		return nil, qm, fmt.Errorf("error fetching service health: %s", err)
 	}
 	if svc, ok := SpecificServiceEntry(ms.serviceID, svcs); ok {
 		return svc, qm, nil
 	}
-	return nil, qm, fmt.Errorf("no service with name %q with id %q found", name, ms.serviceID)
+	return nil, qm, fmt.Errorf("no service with name %q with id %q found", ms.svc.Service, ms.svc.ID)
+}
+
+// findCatalog must be used behind a lock
+func (ms *ManagedService) findCatalog(ctx context.Context) (*api.CatalogService, *api.QueryMeta, error) {
+	var (
+		svcs []*api.CatalogService
+		qm   *api.QueryMeta
+		err  error
+	)
+	if svcs, qm, err = ms.client.Catalog().ServiceMultipleTags(ms.svc.Service, nil, ms.qo.WithContext(ctx)); err != nil {
+		return nil, nil, fmt.Errorf("error fetching service from catalog: %s", err)
+	}
+	if svc, ok := SpecificCatalogService(ms.serviceID, svcs); ok {
+		return svc, qm, nil
+	}
+	return nil, qm, fmt.Errorf("no service with name %q with id %q found", ms.svc.Service, ms.serviceID)
 }
 
 // fetchChecks must be used behind a lock
@@ -330,13 +406,13 @@ func (ms *ManagedService) refreshService(ctx context.Context) (*api.QueryMeta, e
 // registerService will attempt to re-push the service to the consul agent
 //
 // caller must hold lock
-func (ms *ManagedService) registerService() error {
+func (ms *ManagedService) registerService(tags []string) error {
 	ms.logf(false, "registerService() - Registering service with node...")
 	reg := new(api.AgentServiceRegistration)
 	reg.Kind = ms.svc.Kind
 	reg.ID = ms.svc.ID
 	reg.Name = ms.svc.Service
-	reg.Tags = ms.svc.Tags
+	reg.Tags = tags
 	reg.Port = ms.svc.Port
 	reg.Address = ms.svc.Address
 	reg.TaggedAddresses = ms.svc.TaggedAddresses
@@ -355,7 +431,7 @@ func (ms *ManagedService) registerService() error {
 
 func (ms *ManagedService) maintain() {
 	var (
-		wpUpdate     = make(chan *api.ServiceEntry, 5)
+		//wpUpdate     = make(chan *api.ServiceEntry, 5)
 		refreshTimer = time.NewTimer(ms.refreshInterval)
 	)
 
@@ -378,7 +454,7 @@ func (ms *ManagedService) maintain() {
 			refreshTimer.Stop()
 
 			ms.mu.Lock()
-			ctx, cancel := context.WithTimeout(ms.ctx, 2*time.Second)
+			ctx, cancel := context.WithTimeout(ms.ctx, ms.rttl)
 			_, err := ms.refreshService(ctx)
 			cancel()
 			ms.mu.Unlock()
@@ -387,21 +463,21 @@ func (ms *ManagedService) maintain() {
 
 			refreshTimer = time.NewTimer(ms.refreshInterval)
 
-		case svcs := <-wpUpdate:
-			if len(svcs) == 0 {
-				// TODO: handle empty here...
-			}
-
-		// TODO: finish updated on watch
+		//case svcs := <-wpUpdate:
+		//	if len(svcs) == 0 {
+		//		// TODO: handle empty here...
+		//	}
+		//
+		//// TODO: finish updated on watch
 
 		case <-refreshTimer.C:
 			ms.mu.Lock()
-			ctx, cancel := context.WithTimeout(ms.ctx, 2*time.Second)
+			ctx, cancel := context.WithTimeout(ms.ctx, ms.rttl)
 			// TODO: yell about errors here...
 			_, err := ms.refreshService(ctx)
 			cancel()
 			if err != nil {
-				if err := ms.registerService(); err != nil {
+				if err := ms.registerService(ms.svc.Tags); err != nil {
 					// TODO: inform the implementor
 					ms.mu.Unlock()
 					return

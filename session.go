@@ -1,6 +1,7 @@
 package consultant
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -8,8 +9,6 @@ import (
 	"time"
 
 	"github.com/hashicorp/consul/api"
-
-	"github.com/pkg/errors"
 )
 
 const (

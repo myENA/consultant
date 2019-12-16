@@ -1,6 +1,7 @@
 package consultant
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"math/rand"
@@ -161,6 +162,16 @@ func SpecificServiceEntry(serviceID string, svcs []*api.ServiceEntry) (*api.Serv
 	return nil, false
 }
 
+// SpecificCatalogService attempts to find a specific service's entry from the catalog endpoint
+func SpecificCatalogService(serviceID string, svcs []*api.CatalogService) (*api.CatalogService, bool) {
+	for _, svc := range svcs {
+		if svc.ServiceID == serviceID {
+			return svc, true
+		}
+	}
+	return nil, false
+}
+
 // SpecificChecks attempts to find a specific service's checks from the health check endpoint
 func SpecificChecks(serviceID string, checks api.HealthChecks) api.HealthChecks {
 	myChecks := make(api.HealthChecks, 0)
@@ -170,8 +181,4 @@ func SpecificChecks(serviceID string, checks api.HealthChecks) api.HealthChecks 
 		}
 	}
 	return myChecks
-}
-
-func managedServiceWatchPlanHandlerFactory(serviceID string) *watch.HybridHandlerFunc {
-
 }

@@ -14,6 +14,10 @@ import (
 	"github.com/hashicorp/consul/api"
 )
 
+type Logger interface {
+	Printf(string, ...interface{})
+}
+
 type Client struct {
 	*api.Client
 

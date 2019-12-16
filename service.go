@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"regexp"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/hashicorp/consul/api"
+	"github.com/hashicorp/consul/api/watch"
 )
 
 const (
@@ -38,7 +40,7 @@ type ManagedServiceConfig struct {
 	// ID [required]
 	//
 	// ID of service to fetch to turn into a managed service
-	ID string `json:"name"`
+	ID string `json:"name" hcl:"name"`
 
 	// BaseChecks [optional] (recommended)
 	//
@@ -48,28 +50,38 @@ type ManagedServiceConfig struct {
 	// This will most likely be removed in the future once https://github.com/hashicorp/consul/issues/1680 is finally
 	// implemented, but for now is necessary if you wish for your service to automatically have its health checks
 	// re-registered
-	BaseChecks api.AgentServiceChecks `json:"base_checks"`
+	BaseChecks api.AgentServiceChecks `json:"base_checks" hcl:"base_checks"`
 
 	// RefreshInterval [optional]
 	//
-	// Optionally specify a refresh TLL.  Defaults to value of ServiceDefaultRefreshInterval.
-	RefreshInterval api.ReadableDuration `json:"refresh_ttl"`
+	// Optionally specify a refresh interval.  Defaults to value of ServiceDefaultRefreshInterval.
+	RefreshInterval api.ReadableDuration `json:"refresh_interval" hcl:"refresh_interval"`
 
 	// QueryOptions [optional]
 	//
 	// Options to use whenever making a read api query.  This will be shallow copied per internal request made.
-	QueryOptions *api.QueryOptions `json:"query_options"`
+	QueryOptions *api.QueryOptions `json:"query_options" hcl:"query_options"`
 
 	// WriteOptions [optional]
 	//
 	// Options to use whenever making a write api query.  This will be shallow copied per internal request made.
-	WriteOptions *api.WriteOptions `json:"write_options"`
+	WriteOptions *api.WriteOptions `json:"write_options" hcl:"write_options"`
+
+	// Logger [optional]
+	//
+	// Optionally specify a logger.  No logging will take place if one is not provided
+	Logger Logger `json:"-" hcl:"-"`
+
+	// Debug [optional]
+	//
+	// If true, will enable debug-level logging if a logger is provided
+	Debug bool `json:"debug" hcl:"debug"`
 
 	// Client [optional]
 	//
 	// Optionally provide a Consul client instance to use.  If one is not defined, a new one will be created with
 	// default configuration values.
-	Client *api.Client `json:"-"`
+	Client *api.Client `json:"-" hcl:"-"`
 }
 
 // ManagedService
@@ -96,6 +108,9 @@ type ManagedService struct {
 	wo     *api.WriteOptions
 
 	done chan error
+
+	dbg    bool
+	logger Logger
 }
 
 // NewManagedService creates a new ManagedService instance.
@@ -113,6 +128,7 @@ func NewManagedService(ctx context.Context, cfg *ManagedServiceConfig) (*Managed
 		return nil, errors.New("id must be set in config")
 	}
 
+	// copy base checks to new slice.
 	if l := len(cfg.BaseChecks); l > 0 {
 		ms.baseChecks = make(api.AgentServiceChecks, l, l)
 		copy(ms.baseChecks, cfg.BaseChecks)
@@ -120,35 +136,74 @@ func NewManagedService(ctx context.Context, cfg *ManagedServiceConfig) (*Managed
 		ms.baseChecks = make(api.AgentServiceChecks, 0, 0)
 	}
 
+	// ensure we have a context of some kind
 	if ctx == nil {
 		ctx = context.Background()
 	}
 
+	// store service id
 	ms.serviceID = cfg.ID
 
+	// ensure we have a consul client
 	if cfg.Client != nil {
 		ms.client = cfg.Client
 	} else if ms.client, err = api.NewClient(api.DefaultConfig()); err != nil {
 		return nil, fmt.Errorf("error creating client with default config: %s", err)
 	}
 
-	if err := ms.init(); err != nil {
-		return nil, fmt.Errorf("error during ManagedService initialization: %s", err)
+	// clone query options, if provided
+	if cfg.QueryOptions != nil {
+		ms.qo = new(api.QueryOptions)
+		*ms.qo = *cfg.QueryOptions
+		if l := len(cfg.QueryOptions.NodeMeta); l > 0 {
+			ms.qo.NodeMeta = make(map[string]string, l)
+			for k, v := range cfg.QueryOptions.NodeMeta {
+				ms.qo.NodeMeta[k] = v
+			}
+		}
 	}
 
+	// clone write options, if provided
+	if cfg.WriteOptions != nil {
+		ms.wo = new(api.WriteOptions)
+		*ms.wo = *cfg.WriteOptions
+	}
+
+	// set refresh interval
 	if cfg.RefreshInterval != 0 {
 		ms.refreshInterval = cfg.RefreshInterval.Duration()
 	} else {
 		ms.refreshInterval = time.Duration(ServiceDefaultRefreshInterval)
 	}
 
+	// maybe log
+	ms.dbg = cfg.Debug
+	ms.logger = cfg.Logger
+
+	// misc
 	ms.ctx, ms.cancel = context.WithCancel(ctx)
 	ms.forceRefresh = make(chan chan error)
 	ms.done = make(chan error)
 
+	// fetch initial service state from node
+	ctx, cancel := context.WithTimeout(ms.ctx, 2*time.Second)
+	defer cancel()
+	if _, err = ms.refreshService(ctx); err != nil {
+		return nil, fmt.Errorf("error fetching current state of service: %s", err)
+	}
+
+	ms.tagOverride = ms.svc.EnableTagOverride
+
 	go ms.maintain()
 
 	return ms, nil
+}
+
+// LastRefreshed is the last time the internal state of the managed service was last updated
+func (ms *ManagedService) LastRefreshed() time.Time {
+	ms.mu.RLock()
+	defer ms.mu.RUnlock()
+	return ms.localRefreshed
 }
 
 // Done returns the internal context .Done chan
@@ -210,12 +265,21 @@ func (ms *ManagedService) ForceRefresh() error {
 	if err := ms.Err(); err != nil {
 		return err
 	}
+	ms.logf(true, "ForceRefresh() - request received...")
 	ch := make(chan error, 1)
 	defer close(ch)
 	ms.forceRefresh <- ch
 	return <-ch
 }
 
+func (ms *ManagedService) logf(debug bool, f string, v ...interface{}) {
+	if ms.logger == nil || debug && !ms.dbg {
+		return
+	}
+	ms.logger.Printf(f, v...)
+}
+
+// findHealth must be used behind a lock
 func (ms *ManagedService) findHealth(ctx context.Context, name string, tags []string) (*api.ServiceEntry, *api.QueryMeta, error) {
 	var (
 		svcs []*api.ServiceEntry
@@ -225,10 +289,8 @@ func (ms *ManagedService) findHealth(ctx context.Context, name string, tags []st
 	if svcs, qm, err = ms.client.Health().ServiceMultipleTags(name, tags, false, ms.qo.WithContext(ctx)); err != nil {
 		return nil, qm, fmt.Errorf("error fetching service health: %s", err)
 	}
-	for _, svc := range svcs {
-		if svc.Service.ID == ms.serviceID {
-			return svc, qm, nil
-		}
+	if svc, ok := SpecificServiceEntry(ms.serviceID, svcs); ok {
+		return svc, qm, nil
 	}
 	return nil, qm, fmt.Errorf("no service with name %q with id %q found", name, ms.serviceID)
 }
@@ -236,21 +298,14 @@ func (ms *ManagedService) findHealth(ctx context.Context, name string, tags []st
 // fetchChecks must be used behind a lock
 func (ms *ManagedService) fetchChecks(ctx context.Context) (api.HealthChecks, *api.QueryMeta, error) {
 	var (
-		allChecks api.HealthChecks
-		checks    api.HealthChecks
-		qm        *api.QueryMeta
-		err       error
+		checks api.HealthChecks
+		qm     *api.QueryMeta
+		err    error
 	)
-	if allChecks, qm, err = ms.client.Health().Checks(ms.svc.Service, ms.qo.WithContext(ctx)); err != nil {
-		return checks, qm, nil
+	if checks, qm, err = ms.client.Health().Checks(ms.svc.Service, ms.qo.WithContext(ctx)); err != nil {
+		return nil, qm, nil
 	}
-	checks = make(api.HealthChecks, 0)
-	for _, check := range allChecks {
-		if check.ServiceID == ms.serviceID {
-			checks = append(checks, check)
-		}
-	}
-	return checks, qm, nil
+	return SpecificChecks(ms.serviceID, checks), qm, nil
 }
 
 // refreshService will refresh the internal representation of the service.
@@ -262,7 +317,9 @@ func (ms *ManagedService) refreshService(ctx context.Context) (*api.QueryMeta, e
 		qm  *api.QueryMeta
 		err error
 	)
+	ms.logf(true, "refreshService() - Refreshing local service...")
 	if svc, qm, err = ms.AgentService(ctx); err != nil {
+		ms.logf(false, "refreshService() - Error fetching service from node: %s", err)
 		return qm, err
 	}
 	ms.svc = svc
@@ -270,38 +327,11 @@ func (ms *ManagedService) refreshService(ctx context.Context) (*api.QueryMeta, e
 	return qm, nil
 }
 
-func (ms *ManagedService) init() error {
-	var (
-		//token, datacenter string
-		err error
-	)
-	ms.mu.Lock()
-	defer ms.mu.Unlock()
-
-	ctx, cancel := context.WithTimeout(ms.ctx, 2*time.Second)
-	defer cancel()
-	if _, err = ms.refreshService(ctx); err != nil {
-		return fmt.Errorf("error fetching current state of service: %s", err)
-	}
-
-	ms.tagOverride = ms.svc.EnableTagOverride
-
-	//if ms.qo != nil {
-	//	token = ms.qo.Token
-	//	datacenter = ms.qo.Datacenter
-	//}
-
-	//if ms.wp, err = WatchServiceMultipleTags(ms.svc.Service, ms.svc.Tags, false, true, token, datacenter); err != nil {
-	//	return fmt.Errorf("error creating watch plan: %s", err)
-	//}
-
-	return nil
-}
-
 // registerService will attempt to re-push the service to the consul agent
 //
 // caller must hold lock
 func (ms *ManagedService) registerService() error {
+	ms.logf(false, "registerService() - Registering service with node...")
 	reg := new(api.AgentServiceRegistration)
 	reg.Kind = ms.svc.Kind
 	reg.ID = ms.svc.ID
@@ -317,16 +347,22 @@ func (ms *ManagedService) registerService() error {
 	reg.Proxy = ms.svc.Proxy
 	reg.Connect = ms.svc.Connect
 
-	return ms.client.Agent().ServiceRegister(reg)
+	if err := ms.client.Agent().ServiceRegister(reg); err != nil {
+		ms.logf(false, "Error registering service: %s", err)
+	}
+	return nil
 }
 
 func (ms *ManagedService) maintain() {
 	var (
-		//wpUpdate     = make(chan []*api.ServiceEntry, 1)
+		wpUpdate     = make(chan *api.ServiceEntry, 5)
 		refreshTimer = time.NewTimer(ms.refreshInterval)
 	)
 
+	ms.logf(true, "maintain() - entering loop")
+
 	defer func() {
+		ms.logf(false, "maintain() - exiting loop")
 		// always cancel...
 		ms.cancel()
 		refreshTimer.Stop()
@@ -351,10 +387,10 @@ func (ms *ManagedService) maintain() {
 
 			refreshTimer = time.NewTimer(ms.refreshInterval)
 
-		//case svcs := <-wpUpdate:
-		//	if len(svcs) == 0 {
-		//		// TODO: handle empty here...
-		//	}
+		case svcs := <-wpUpdate:
+			if len(svcs) == 0 {
+				// TODO: handle empty here...
+			}
 
 		// TODO: finish updated on watch
 
@@ -568,6 +604,22 @@ func (b *ManagedServiceBuilder) Build(ctx context.Context, cfg *ManagedServiceCo
 		cfg.ID = b.ID
 	} else {
 		return nil, fmt.Errorf("builder and managed service config id mismatch: %q vs %q", b.ID, cfg.ID)
+	}
+
+	// ensure we have a tag with the id of the service
+	var found bool
+	if b.Tags == nil {
+		b.Tags = make([]string, 1)
+	} else {
+		for _, v := range b.Tags {
+			if v == b.ID {
+				found = true
+				break
+			}
+		}
+	}
+	if !found {
+		b.Tags = append(b.Tags, b.ID)
 	}
 
 	if cfg.Client == nil {

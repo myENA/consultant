@@ -1018,13 +1018,15 @@ var testUtilNouns = [1000]string{
 }
 
 func getTestLocalAddr(t *testing.T) string {
-	if addr, err := consultant.LocalAddress(); err != nil {
-		t.Logf("Error calling LocalAddress(): %s", err)
-		t.FailNow()
+	var (
+		addr string
+		err  error
+	)
+	if addr, err = consultant.LocalAddress(); err != nil {
+		t.Fatalf("Error calling LocalAddress(): %s", err)
 		return ""
-	} else {
-		return addr
 	}
+	return addr
 }
 
 func makeTestServerConfigCallback(cb cst.ServerConfigCallback) cst.ServerConfigCallback {

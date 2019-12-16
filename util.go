@@ -7,6 +7,9 @@ import (
 	"net"
 	"os"
 	"sort"
+
+	"github.com/hashicorp/consul/api"
+	"github.com/hashicorp/consul/api/watch"
 )
 
 const (
@@ -146,4 +149,29 @@ func strSlicesEqual(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// SpecificServiceEntry attempts to find a specific service's entry from the health endpoint
+func SpecificServiceEntry(serviceID string, svcs []*api.ServiceEntry) (*api.ServiceEntry, bool) {
+	for _, svc := range svcs {
+		if svc.Service.ID == serviceID {
+			return svc, true
+		}
+	}
+	return nil, false
+}
+
+// SpecificChecks attempts to find a specific service's checks from the health check endpoint
+func SpecificChecks(serviceID string, checks api.HealthChecks) api.HealthChecks {
+	myChecks := make(api.HealthChecks, 0)
+	for _, check := range checks {
+		if check.ServiceID == serviceID {
+			myChecks = append(myChecks, check)
+		}
+	}
+	return myChecks
+}
+
+func managedServiceWatchPlanHandlerFactory(serviceID string) *watch.HybridHandlerFunc {
+
 }

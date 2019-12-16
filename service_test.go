@@ -205,3 +205,12 @@ func TestManagedServiceBuilder_SetID(t *testing.T) {
 		})
 	}
 }
+
+func TestManagedServiceBuilder_Build(t *testing.T) {
+	server, client := makeTestServerAndClient(t, nil)
+	defer func() {
+		// TODO: may not be sufficient...
+		_ = server.Stop()
+	}()
+	t.Run()
+}

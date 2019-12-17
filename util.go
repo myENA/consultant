@@ -1,16 +1,15 @@
 package consultant
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"math/rand"
 	"net"
 	"os"
 	"sort"
+	"strings"
 
 	"github.com/hashicorp/consul/api"
-	"github.com/hashicorp/consul/api/watch"
 )
 
 const (
@@ -21,6 +20,8 @@ const (
 	rnbl = int64(10)
 	rlbl = int64(26)
 	rLbl = int64(26)
+
+	notFoundErrPrefix = "Unexpected response code: 404 ("
 )
 
 // These are set on init
@@ -181,4 +182,9 @@ func SpecificChecks(serviceID string, checks api.HealthChecks) api.HealthChecks 
 		}
 	}
 	return myChecks
+}
+
+// IsNotFoundErr performs a simple test to see if the provided error describes a "404 not found" response from an agent
+func IsNotFoundError(err error) bool {
+	return err != nil && strings.HasPrefix(err.Error(), notFoundErrPrefix)
 }

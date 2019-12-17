@@ -4,12 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/ioutil"
+	"log"
 	"regexp"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/hashicorp/consul/api"
+	"github.com/hashicorp/consul/api/watch"
 	"github.com/myENA/go-helpers"
 )
 
@@ -72,21 +75,16 @@ type ManagedServiceConfig struct {
 	// Optionally specify a TTL to pass to internal API requests.  Defaults to value of ServiceDefaultInternalRequestTTL
 	RequestTTL time.Duration `json:"request_ttl" hcl:"request_ttl"`
 
-	// Logger [optional]
-	//
-	// Optionally specify a logger.  No logging will take place if one is not provided
-	Logger Logger `json:"-" hcl:"-"`
-
 	// Debug [optional]
 	//
 	// If true, will enable debug-level logging if a logger is provided
 	Debug bool `json:"debug" hcl:"debug"`
 
-	// Client [optional]
+	// APIConfig [optional]
 	//
-	// Optionally provide a Consul client instance to use.  If one is not defined, a new one will be created with
-	// default configuration values.
-	Client *api.Client `json:"-" hcl:"-"`
+	// Optionally provide a Consul API Client configuration type to use when building the internal API client instance.
+	// If not provided the client will be built using api.DefaultConfig()
+	APIConfig *api.Config `json:"api_config" hcl:"api_config"`
 }
 
 // ManagedService
@@ -114,16 +112,17 @@ type ManagedService struct {
 	qo     *api.QueryOptions
 	wo     *api.WriteOptions
 
-	done chan error
+	done chan struct{}
 
 	dbg    bool
 	logger Logger
 }
 
-// NewManagedService creates a new ManagedService instance.
-func NewManagedService(ctx context.Context, cfg *ManagedServiceConfig) (*ManagedService, error) {
+// NewManagedService creates a new ManagedService instance.  If no logger is provided, all logging will be silenced
+func NewManagedService(ctx context.Context, cfg *ManagedServiceConfig, logger Logger) (*ManagedService, error) {
 	var (
-		err error
+		apiConfig *api.Config
+		err       error
 
 		ms = new(ManagedService)
 	)
@@ -152,9 +151,13 @@ func NewManagedService(ctx context.Context, cfg *ManagedServiceConfig) (*Managed
 	ms.serviceID = cfg.ID
 
 	// ensure we have a consul client
-	if cfg.Client != nil {
-		ms.client = cfg.Client
-	} else if ms.client, err = api.NewClient(api.DefaultConfig()); err != nil {
+	if cfg.APIConfig != nil {
+		apiConfig = cfg.APIConfig
+	} else {
+		apiConfig = api.DefaultConfig()
+	}
+
+	if ms.client, err = api.NewClient(apiConfig); err != nil {
 		return nil, fmt.Errorf("error creating client with default config: %s", err)
 	}
 
@@ -185,7 +188,7 @@ func NewManagedService(ctx context.Context, cfg *ManagedServiceConfig) (*Managed
 
 	// maybe log
 	ms.dbg = cfg.Debug
-	ms.logger = cfg.Logger
+	ms.logger = logger
 
 	// misc
 	ms.ctx, ms.cancel = context.WithCancel(ctx)
@@ -195,7 +198,7 @@ func NewManagedService(ctx context.Context, cfg *ManagedServiceConfig) (*Managed
 		ms.rttl = ServiceDefaultInternalRequestTTL
 	}
 	ms.forceRefresh = make(chan chan error)
-	ms.done = make(chan error)
+	ms.done = make(chan struct{})
 
 	// fetch initial service state from node
 	ctx, cancel := context.WithTimeout(ms.ctx, ms.rttl)
@@ -228,12 +231,14 @@ func (ms *ManagedService) Err() error {
 	return ms.ctx.Err()
 }
 
-func (ms *ManagedService) Close() error {
-	if err := ms.Err(); err != nil {
-		return err
+// Deregister stops the internal context, ceasing all operations chained from it and blocking until the service has been
+// deregistered from the connected agent.
+func (ms *ManagedService) Deregister() {
+	if err := ms.Err(); err == nil {
+		ms.cancel()
+		<-ms.done
+		return
 	}
-	ms.cancel()
-	return <-ms.done
 }
 
 // AgentService attempts to fetch the current AgentService entry for this ManagedService using Agent().Service()
@@ -275,14 +280,13 @@ func (ms *ManagedService) Checks(ctx context.Context) (api.HealthChecks, *api.Qu
 }
 
 // AddTags attempts to add one or more tags to the service registration in consul, if and only if EnableTagOverride was
-// enabled when the service was registered.  If no tags are passed, this is a no-op.
+// enabled when the service was registered.
 //
 // Returns:
-//	- count of tags added (if successful)
+//	- count of tags added
 //	- error, if unsuccessful
 //
-// If no tags were provided or the provided list does not contain any not already present on the service, a 0, nil will
-// be returned
+// If no tags were provided or the provided list of tags are already present on the service a 0, nil will be returned
 func (ms *ManagedService) AddTags(ctx context.Context, tags ...string) (int, error) {
 	if err := ms.Err(); err != nil {
 		return 0, err
@@ -291,7 +295,6 @@ func (ms *ManagedService) AddTags(ctx context.Context, tags ...string) (int, err
 		return 0, errors.New("cannot add tags: EnableTagOverride was false at service registration")
 	}
 	ms.logf(true, "AddTags() - Adding tags %v to service %q...", tags, ms.serviceID)
-	tags = helpers.UniqueStringSlice(tags)
 	if len(tags) == 0 {
 		ms.logf(true, "AddTags() - provided tag input empty")
 		return 0, nil
@@ -304,11 +307,9 @@ func (ms *ManagedService) AddTags(ctx context.Context, tags ...string) (int, err
 		added   int
 		err     error
 	)
-	// current tags
 	if svc, _, err = ms.findCatalog(ctx); err != nil {
 		return 0, err
 	}
-	// determine difference
 	newTags, added = helpers.CombineStringSlices(svc.ServiceTags, tags)
 	if added == 0 {
 		ms.logf(true, "AddTags() - no new tags provided")
@@ -320,7 +321,45 @@ func (ms *ManagedService) AddTags(ctx context.Context, tags ...string) (int, err
 	return added, nil
 }
 
-// ForceRefresh attempts an immediate internal state refresh
+// RemoveTags attempts to remove one or more tags from the service registration in consul, if and only if
+// EnableTagOverride was enabled when the service was registered.
+//
+// Returns:
+//	- count of tags removed
+// 	- error, if unsuccessful
+//
+// If no tags were provided or none of the tags in the list were present on the service, a 0, nil will be returned.
+func (ms *ManagedService) RemoveTags(ctx context.Context, tags ...string) (int, error) {
+	if err := ms.Err(); err != nil {
+		return 0, err
+	}
+	if !ms.tagOverride {
+		return 0, errors.New("cannot remove tags: EnableTagOverride was false at service registration")
+	}
+	ms.logf(true, "RemoveTags() - Removing tags %v from service %q...", tags, ms.serviceID)
+	ms.mu.RLock()
+	defer ms.mu.RUnlock()
+	var (
+		svc     *api.CatalogService
+		newTags []string
+		removed int
+		err     error
+	)
+	if svc, _, err = ms.findCatalog(ctx); err != nil {
+		return 0, err
+	}
+	newTags, removed = helpers.RemoveStringsFromSlice(svc.ServiceTags, tags)
+	if removed == 0 {
+		ms.logf(true, "RemoveTags() - Service does not have any tags from input %v", tags)
+		return 0, nil
+	}
+	if err = ms.registerService(newTags); err != nil {
+		return 0, err
+	}
+	return removed, nil
+}
+
+// ForceRefresh attempts an immediate internal state refresh, blocking until attempt has been completed.
 func (ms *ManagedService) ForceRefresh() error {
 	if err := ms.Err(); err != nil {
 		return err
@@ -384,7 +423,8 @@ func (ms *ManagedService) fetchChecks(ctx context.Context) (api.HealthChecks, *a
 	return SpecificChecks(ms.serviceID, checks), qm, nil
 }
 
-// refreshService will refresh the internal representation of the service.
+// refreshService will refresh the internal representation of the service.  If fetch fails it will attempt to
+// re-register the service based on the last-known definition, returning an error if that itself fails.
 //
 // caller must hold lock
 func (ms *ManagedService) refreshService(ctx context.Context) (*api.QueryMeta, error) {
@@ -395,8 +435,16 @@ func (ms *ManagedService) refreshService(ctx context.Context) (*api.QueryMeta, e
 	)
 	ms.logf(true, "refreshService() - Refreshing local service...")
 	if svc, qm, err = ms.AgentService(ctx); err != nil {
-		ms.logf(false, "refreshService() - Error fetching service from node: %s", err)
-		return qm, err
+		if !IsNotFoundError(err) {
+			ms.logf(false, "refreshService() - Error fetching service from node: %s", err)
+			return qm, err
+		}
+		ms.logf(false, "refreshService() - Received 404 not found, attempting to re-register...")
+		if err = ms.registerService(ms.svc.Tags); err != nil {
+			ms.logf(false, "refreshService() - Failed to re-register service: %s")
+			return nil, err
+		}
+		ms.logf(false, "refreshService() - Service successfully re-registered")
 	}
 	ms.svc = svc
 	ms.localRefreshed = time.Now()
@@ -408,6 +456,7 @@ func (ms *ManagedService) refreshService(ctx context.Context) (*api.QueryMeta, e
 // caller must hold lock
 func (ms *ManagedService) registerService(tags []string) error {
 	ms.logf(false, "registerService() - Registering service with node...")
+
 	reg := new(api.AgentServiceRegistration)
 	reg.Kind = ms.svc.Kind
 	reg.ID = ms.svc.ID
@@ -424,16 +473,89 @@ func (ms *ManagedService) registerService(tags []string) error {
 	reg.Connect = ms.svc.Connect
 
 	if err := ms.client.Agent().ServiceRegister(reg); err != nil {
-		ms.logf(false, "Error registering service: %s", err)
+		ms.logf(false, "registerService() - Error registering service: %s", err)
+		return err
 	}
+
 	return nil
+}
+
+// buildWatchPlan constructs a new watch plan with appropriate handler defined
+func (ms *ManagedService) buildWatchPlan(up chan<- watch.WaitIndexVal) (*watch.Plan, error) {
+	var (
+		token, datacenter string
+		mu                sync.Mutex
+		last              watch.WaitIndexVal
+	)
+	if ms.qo != nil {
+		token = ms.qo.Token
+		datacenter = ms.qo.Datacenter
+	}
+	wp, err := WatchServiceMultipleTags(ms.svc.Service, ms.svc.Tags, false, true, token, datacenter)
+	if err != nil {
+		return nil, err
+	}
+	wp.HybridHandler = func(val watch.BlockingParamVal, svcs interface{}) {
+		bp, ok := val.(watch.WaitIndexVal)
+		if !ok {
+			ms.logf(false, "Watcher expected val to be of type watch.WaitIndexVal, saw %T", val)
+			return
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if bp.Equal(last) {
+			return
+		}
+		last = bp
+		select {
+		case up <- bp:
+		default:
+			ms.logf(false, "Watcher unable to push to update chan")
+		}
+	}
+	return wp, nil
+}
+
+func (ms *ManagedService) runWatchPlan(wp *watch.Plan, stopped chan<- error) {
+	// build logger and run watch plan.
+	var logger *log.Logger
+	if ms.logger == nil {
+		logger = log.New(ioutil.Discard, "", 0)
+	} else {
+		logger = log.New(&loggerWriter{ms.logger}, "", log.LstdFlags)
+	}
+	stopped <- wp.RunWithClientAndLogger(ms.client, logger)
+}
+
+func (ms *ManagedService) buildAndRunWatchPlan(up chan<- watch.WaitIndexVal, stopped chan<- error) (*watch.Plan, error) {
+	var (
+		wp  *watch.Plan
+		err error
+	)
+	if wp, err = ms.buildWatchPlan(up); err == nil {
+		go ms.runWatchPlan(wp, stopped)
+	}
+	return wp, err
 }
 
 func (ms *ManagedService) maintain() {
 	var (
-		//wpUpdate     = make(chan *api.ServiceEntry, 5)
+		wp  *watch.Plan
+		err error
+
+		wpStopped    = make(chan error, 1)
+		wpUpdate     = make(chan watch.WaitIndexVal, 5) // TODO: do more fun stuff...
 		refreshTimer = time.NewTimer(ms.refreshInterval)
 	)
+
+	ms.logf(true, "maintain() - building initial watch plan...")
+
+	if wp, err = ms.buildWatchPlan(wpUpdate); err != nil {
+		ms.logf(false, "maintain() - error building initial watch plan: %s", err)
+	} else {
+		go ms.runWatchPlan(wp, wpStopped)
+		ms.logf(true, "maintain() - initial watch plan built and running")
+	}
 
 	ms.logf(true, "maintain() - entering loop")
 
@@ -444,50 +566,78 @@ func (ms *ManagedService) maintain() {
 		refreshTimer.Stop()
 		//ms.wp.Stop()
 		close(ms.forceRefresh)
-		ms.done <- ms.client.Agent().ServiceDeregister(ms.serviceID)
+		if err := ms.client.Agent().ServiceDeregister(ms.serviceID); err != nil {
+			ms.logf(false, "maintain() - Error deregistering service: %s", err)
+		} else {
+			ms.logf(false, "maintain() - Service successfully deregistered")
+		}
+		close(wpStopped)
+		close(wpUpdate)
 		close(ms.done)
+
 	}()
 
 	for {
 		select {
 		case ch := <-ms.forceRefresh:
+			ms.logf(true, "maintain() - forceRefresh hit")
 			refreshTimer.Stop()
-
 			ms.mu.Lock()
 			ctx, cancel := context.WithTimeout(ms.ctx, ms.rttl)
-			_, err := ms.refreshService(ctx)
+			qm, err := ms.refreshService(ctx)
+			if err != nil {
+				ms.logf(false, "maintain() - forceRefresh failed. err: %s; QueryMeta: %v", err, qm)
+			}
 			cancel()
 			ms.mu.Unlock()
-
 			ch <- err
-
 			refreshTimer = time.NewTimer(ms.refreshInterval)
 
-		//case svcs := <-wpUpdate:
-		//	if len(svcs) == 0 {
-		//		// TODO: handle empty here...
-		//	}
-		//
-		//// TODO: finish updated on watch
+		case <-wpStopped:
+			ms.logf(false, "maintain() - Watch plan stopped with error: %s")
+			if wp, err = ms.buildAndRunWatchPlan(wpUpdate, wpStopped); err != nil {
+				ms.logf(false, "maintain() - Error building watch plan after stop: %s", err)
+			} else {
+				ms.logf(false, "maintain() - Watch plan successfully rebuilt, running...")
+			}
 
-		case <-refreshTimer.C:
+		case idx := <-wpUpdate:
+			ms.logf(true, "maintain() - Watch plan has received update (idx: %v)", idx)
+			refreshTimer.Stop()
 			ms.mu.Lock()
 			ctx, cancel := context.WithTimeout(ms.ctx, ms.rttl)
-			// TODO: yell about errors here...
-			_, err := ms.refreshService(ctx)
-			cancel()
-			if err != nil {
-				if err := ms.registerService(ms.svc.Tags); err != nil {
-					// TODO: inform the implementor
-					ms.mu.Unlock()
-					return
-				}
+			if qm, err := ms.refreshService(ctx); err != nil {
+				ms.logf(false, "maintain() - Error refreshing service after watch plan update. err %s; QueryMeta %v", err, qm)
+			} else {
+				ms.logf(true, "maintain() - Service updated successfully after watch plan update hit")
 			}
+			cancel()
 			ms.mu.Unlock()
+			refreshTimer = time.NewTimer(ms.refreshInterval)
 
+		case t := <-refreshTimer.C:
+			ms.logf(true, "maintain() - refreshTimer hit (%s)", t)
+			ms.mu.Lock()
+			ctx, cancel := context.WithTimeout(ms.ctx, ms.rttl)
+			if qm, err := ms.refreshService(ctx); err != nil {
+				ms.logf(false, "maintain() - refresh failed. err: %s; QueryMeta: %v", err, qm)
+			}
+			cancel()
+			ms.mu.Unlock()
+			if wp == nil {
+				ms.logf(false, "maintain() - Watch plan is nil, attempting to rebuild...")
+				if wp, err = ms.buildAndRunWatchPlan(wpUpdate, wpStopped); err != nil {
+					ms.logf(false, "maintain() - Error building watch plan during refresh: %s", err)
+				} else {
+					ms.logf(false, "maintain() - Watch plan successfully rebuilt")
+				}
+			} else {
+				ms.logf(true, "maintain() - Watch plan is still running, hooray.")
+			}
 			refreshTimer = time.NewTimer(ms.refreshInterval)
 
 		case <-ms.ctx.Done():
+			ms.logf(true, "maintain() - Internal context closed: %s", ms.ctx.Err())
 			return
 		}
 	}
@@ -529,22 +679,13 @@ func NewManagedServiceBuilder(base *api.AgentServiceRegistration, fns ...Managed
 }
 
 // NewBareManagedServiceBuilder constructs a new builder with the name, address, and port fields defined.  The Address
-// value is inferred using the LocalAddress() method and may be overwritten at any time.
+// value is guessed using LocalAddress() and may be overwritten at any time.
 func NewBareManagedServiceBuilder(name string, port int, fns ...ManagedServiceBuilderMutator) *ManagedServiceBuilder {
 	reg := new(api.AgentServiceRegistration)
 	reg.Name = name
 	reg.Port = port
 	reg.Address, _ = LocalAddress()
 	return NewManagedServiceBuilder(reg, fns...)
-}
-
-// UseRandomID sets the service's ID to a randomly generated string of at least 12 characters in length
-func (b *ManagedServiceBuilder) UseRandomID(n int) *ManagedServiceBuilder {
-	if n <= 0 {
-		n = 12
-	}
-	b.ID = LazyRandomString(n)
-	return b
 }
 
 // SetID set's the service's ID to the provided format string with values.  There are a few additional replacements you
@@ -560,6 +701,9 @@ func (b *ManagedServiceBuilder) UseRandomID(n int) *ManagedServiceBuilder {
 //  3. All !NAME! are replaced
 //  4. All !ADDR! are replaced
 func (b *ManagedServiceBuilder) SetID(f string, v ...interface{}) *ManagedServiceBuilder {
+	if b.AgentServiceRegistration == nil {
+		b.AgentServiceRegistration = new(api.AgentServiceRegistration)
+	}
 	b.ID = svcAddrReplaceRegexp.ReplaceAllStringFunc(
 		svcNameReplaceRegexp.ReplaceAllStringFunc(
 			svcRandReplaceRegexp.ReplaceAllStringFunc(
@@ -575,6 +719,9 @@ func (b *ManagedServiceBuilder) SetID(f string, v ...interface{}) *ManagedServic
 
 // AddCheck will add a new check to the builder after processing all provided mutators
 func (b *ManagedServiceBuilder) AddCheck(check *api.AgentServiceCheck, fns ...ManagedServiceCheckMutator) *ManagedServiceBuilder {
+	if b.AgentServiceRegistration == nil {
+		b.AgentServiceRegistration = new(api.AgentServiceRegistration)
+	}
 	for _, fn := range fns {
 		fn(check)
 	}
@@ -584,8 +731,11 @@ func (b *ManagedServiceBuilder) AddCheck(check *api.AgentServiceCheck, fns ...Ma
 
 // AddHTTPCheck compiles and adds a new HTTP service check based upon the address and port set for the service
 func (b *ManagedServiceBuilder) AddHTTPCheck(method, scheme, path string, interval time.Duration, fns ...ManagedServiceCheckMutator) *ManagedServiceBuilder {
+	if b.AgentServiceRegistration == nil {
+		b.AgentServiceRegistration = new(api.AgentServiceRegistration)
+	}
 	check := new(api.AgentServiceCheck)
-	check.HTTP = fmt.Sprintf("%s://%s:%d/%s", strings.TrimRight(scheme, ":/"), b.Address, b.Port, strings.TrimLeft(path, "/"))
+	check.HTTP = fmt.Sprintf("%s://%s:%d/%s", scheme, b.Address, b.Port, strings.TrimLeft(path, "/"))
 	check.Method = method
 	check.Interval = interval.String()
 	return b.AddCheck(check, fns...)
@@ -593,6 +743,9 @@ func (b *ManagedServiceBuilder) AddHTTPCheck(method, scheme, path string, interv
 
 // AddTCPCheck compiles and adds a new TCP service check based upon the address and port set for the service.
 func (b *ManagedServiceBuilder) AddTCPCheck(interval time.Duration, fns ...ManagedServiceCheckMutator) *ManagedServiceBuilder {
+	if b.AgentServiceRegistration == nil {
+		b.AgentServiceRegistration = new(api.AgentServiceRegistration)
+	}
 	check := new(api.AgentServiceCheck)
 	check.TCP = fmt.Sprintf("%s:%d", b.Address, b.Port)
 	check.Interval = interval.String()
@@ -601,6 +754,9 @@ func (b *ManagedServiceBuilder) AddTCPCheck(interval time.Duration, fns ...Manag
 
 // AddTTLCheck compiles and adds a new TTL service check.
 func (b *ManagedServiceBuilder) AddTTLCheck(originalStatus string, ttl time.Duration, fns ...ManagedServiceCheckMutator) *ManagedServiceBuilder {
+	if b.AgentServiceRegistration == nil {
+		b.AgentServiceRegistration = new(api.AgentServiceRegistration)
+	}
 	check := new(api.AgentServiceCheck)
 	check.TTL = ttl.String()
 	check.Status = originalStatus
@@ -609,6 +765,9 @@ func (b *ManagedServiceBuilder) AddTTLCheck(originalStatus string, ttl time.Dura
 
 // AddScriptCheck compiles and adds a new script service check.
 func (b *ManagedServiceBuilder) AddScriptCheck(args []string, interval time.Duration, fns ...ManagedServiceCheckMutator) *ManagedServiceBuilder {
+	if b.AgentServiceRegistration == nil {
+		b.AgentServiceRegistration = new(api.AgentServiceRegistration)
+	}
 	check := new(api.AgentServiceCheck)
 	check.Args = args
 	check.Interval = interval.String()
@@ -617,6 +776,9 @@ func (b *ManagedServiceBuilder) AddScriptCheck(args []string, interval time.Dura
 
 // AddDockerCheck compiles and adds a new Docker container service check.
 func (b *ManagedServiceBuilder) AddDockerCheck(containerID string, shell string, args []string, interval time.Duration, fns ...ManagedServiceCheckMutator) *ManagedServiceBuilder {
+	if b.AgentServiceRegistration == nil {
+		b.AgentServiceRegistration = new(api.AgentServiceRegistration)
+	}
 	check := new(api.AgentServiceCheck)
 	check.DockerContainerID = containerID
 	check.Shell = shell
@@ -628,6 +790,9 @@ func (b *ManagedServiceBuilder) AddDockerCheck(containerID string, shell string,
 // AddGRPCCheck compiles and adds a gRPC service check based upon the address and port originally configured with the
 // builder.
 func (b *ManagedServiceBuilder) AddGRPCCheck(interval time.Duration, fns ...ManagedServiceCheckMutator) *ManagedServiceBuilder {
+	if b.AgentServiceRegistration == nil {
+		b.AgentServiceRegistration = new(api.AgentServiceRegistration)
+	}
 	check := new(api.AgentServiceCheck)
 	check.GRPC = fmt.Sprintf("%s:%d", b.Address, b.Port)
 	check.Interval = interval.String()
@@ -636,6 +801,9 @@ func (b *ManagedServiceBuilder) AddGRPCCheck(interval time.Duration, fns ...Mana
 
 // AddAliasCheck compiles and adds an alias service check.
 func (b *ManagedServiceBuilder) AddAliasCheck(service, node string, interval time.Duration, fns ...ManagedServiceCheckMutator) *ManagedServiceBuilder {
+	if b.AgentServiceRegistration == nil {
+		b.AgentServiceRegistration = new(api.AgentServiceRegistration)
+	}
 	check := new(api.AgentServiceCheck)
 	check.AliasService = service
 	check.AliasNode = node
@@ -651,8 +819,15 @@ func (b *ManagedServiceBuilder) AddAliasCheck(service, node string, interval tim
 // agent.
 //
 // If no ID was specified before this method is called, one will be randomly generated for you.
-func (b *ManagedServiceBuilder) Build(ctx context.Context, cfg *ManagedServiceConfig) (*ManagedService, error) {
-	var err error
+func (b *ManagedServiceBuilder) Build(ctx context.Context, cfg *ManagedServiceConfig, logger Logger) (*ManagedService, error) {
+	if b.AgentServiceRegistration == nil {
+		b.AgentServiceRegistration = new(api.AgentServiceRegistration)
+	}
+
+	var (
+		client *api.Client
+		err    error
+	)
 
 	if cfg == nil {
 		cfg = new(ManagedServiceConfig)
@@ -698,15 +873,19 @@ func (b *ManagedServiceBuilder) Build(ctx context.Context, cfg *ManagedServiceCo
 		b.Tags = append(b.Tags, b.ID)
 	}
 
-	if cfg.Client == nil {
-		if cfg.Client, err = api.NewClient(api.DefaultConfig()); err != nil {
+	if cfg.APIConfig == nil {
+		cfg.APIConfig = api.DefaultConfig()
+		if client, err = api.NewClient(api.DefaultConfig()); err != nil {
 			return nil, fmt.Errorf("error creating default client: %s", err)
 		}
 	}
 
-	if err = cfg.Client.Agent().ServiceRegister(b.AgentServiceRegistration); err != nil {
+	// ensure EnableTagOverride is true
+	b.EnableTagOverride = true
+
+	if err = client.Agent().ServiceRegister(b.AgentServiceRegistration); err != nil {
 		return nil, fmt.Errorf("error registering service: %s", err)
 	}
 
-	return NewManagedService(ctx, cfg)
+	return NewManagedService(ctx, cfg, logger)
 }

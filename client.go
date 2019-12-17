@@ -18,6 +18,22 @@ type Logger interface {
 	Printf(string, ...interface{})
 }
 
+type loggerWriter struct {
+	logger Logger
+}
+
+func (lw *loggerWriter) Write(b []byte) (int, error) {
+	if lw.logger == nil {
+		return 0, nil
+	}
+	l := len(b)
+	if l == 0 {
+		return 0, nil
+	}
+	lw.logger.Printf(string(b))
+	return l, nil
+}
+
 type Client struct {
 	*api.Client
 

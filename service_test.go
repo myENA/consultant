@@ -1,7 +1,10 @@
 package consultant_test
 
 import (
+	"context"
 	"fmt"
+	"log"
+	"os"
 	"regexp"
 	"testing"
 
@@ -71,20 +74,8 @@ func TestNewManagedServiceBuilder(t *testing.T) {
 				t.Logf("Expected Address %q, saw %q", localAddr, b.Address)
 				t.Fail()
 			}
-			if b.Tags == nil {
-				t.Log("Expected Tags to be non-nil")
-				t.Fail()
-			}
-			if b.Checks == nil {
-				t.Log("Expected Checks to be non-nil")
-				t.Fail()
-			}
-			if b.TaggedAddresses == nil {
-				t.Log("Expected TaggedAddresses to be non-nil")
-				t.Fail()
-			}
-			if b.Meta == nil {
-				t.Log("Expected Meta to be non-nil")
+			if b.Kind != "" {
+				t.Logf("Expected Kind to be empty, saw %q", b.Kind)
 				t.Fail()
 			}
 		})
@@ -139,20 +130,8 @@ func TestNewBareManagedServiceBuilder(t *testing.T) {
 				t.Logf("Expected Address %q, saw %q", localAddr, b.Address)
 				t.Fail()
 			}
-			if b.Tags == nil {
-				t.Log("Expected Tags to be non-nil")
-				t.Fail()
-			}
-			if b.Checks == nil {
-				t.Log("Expected Checks to be non-nil")
-				t.Fail()
-			}
-			if b.TaggedAddresses == nil {
-				t.Log("Expected TaggedAddresses to be non-nil")
-				t.Fail()
-			}
-			if b.Meta == nil {
-				t.Log("Expected Meta to be non-nil")
+			if b.Kind != "" {
+				t.Logf("Expected Kind to be empty, saw %q", b.Kind)
 				t.Fail()
 			}
 		})
@@ -207,10 +186,62 @@ func TestManagedServiceBuilder_SetID(t *testing.T) {
 }
 
 func TestManagedServiceBuilder_Build(t *testing.T) {
-	//server, client := makeTestServerAndClient(t, nil)
-	//defer func() {
-	//	// TODO: may not be sufficient...
-	//	_ = server.Stop()
-	//}()
-	//t.Run()
+	var (
+		localAddr = getTestLocalAddr(t)
+	)
+
+	server, client := makeTestServerAndClient(t, nil)
+	defer func() {
+		// TODO: may not be sufficient...
+		_ = server.Stop()
+	}()
+
+	server.WaitForSerfCheck(t)
+
+	cfg := new(consultant.ManagedServiceConfig)
+	cfg.Debug = true
+	cfg.APIConfig = api.DefaultConfig()
+	cfg.APIConfig.Address = server.HTTPAddr
+
+	b := consultant.NewBareManagedServiceBuilder(managedServiceName, managedServicePort)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ms, err := b.Build(ctx, cfg, log.New(os.Stdout, "", log.LstdFlags))
+
+	if err != nil {
+		t.Logf("Error calling .Build(): %s", err)
+		t.FailNow()
+	} else if ms == nil {
+		t.Log("No error, but ManagedService is nil")
+		t.FailNow()
+	}
+
+	if t.Failed() {
+		return
+	}
+
+	t.Log(client.Catalog().Service(managedServiceName, "", nil))
+
+	svc, _, err := client.Agent().Service(b.ID, nil)
+	if err != nil {
+		t.Logf("Error fetching new service from consul: %s", err)
+		t.FailNow()
+	}
+
+	if t.Failed() {
+		return
+	}
+
+	if svc.ID != b.ID {
+		t.Logf("Expected id %q, saw %q", b.ID, svc.ID)
+		t.Fail()
+	}
+	if svc.Service != b.Name {
+		t.Logf("Expected name %q, saw %q", b.Name, svc.Service)
+		t.Fail()
+	}
+	if svc.Address != localAddr {
+		t.Logf("Expected address %q, saw %q", b.Address, svc.Address)
+		t.Fail()
+	}
 }

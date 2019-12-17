@@ -447,6 +447,7 @@ func (ms *ManagedService) refreshService(ctx context.Context) (*api.QueryMeta, e
 		ms.logf(false, "refreshService() - Service successfully re-registered")
 	}
 	ms.svc = svc
+	ms.logf(true, "refreshService() - Service refreshed: %v", svc)
 	ms.localRefreshed = time.Now()
 	return qm, nil
 }
@@ -501,6 +502,9 @@ func (ms *ManagedService) buildWatchPlan(up chan<- watch.WaitIndexVal) (*watch.P
 			ms.logf(false, "Watcher expected val to be of type watch.WaitIndexVal, saw %T", val)
 			return
 		}
+		if ms.ctx.Err() != nil {
+			return
+		}
 		mu.Lock()
 		defer mu.Unlock()
 		if bp.Equal(last) {
@@ -524,7 +528,15 @@ func (ms *ManagedService) runWatchPlan(wp *watch.Plan, stopped chan<- error) {
 	} else {
 		logger = log.New(&loggerWriter{ms.logger}, "", log.LstdFlags)
 	}
-	stopped <- wp.RunWithClientAndLogger(ms.client, logger)
+	err := wp.RunWithClientAndLogger(ms.client, logger)
+	if ms.ctx.Err() != nil {
+		return
+	}
+	select {
+	case stopped <- err:
+	default:
+		ms.logf(false, "Watcher unable to push to stopped chan")
+	}
 }
 
 func (ms *ManagedService) buildAndRunWatchPlan(up chan<- watch.WaitIndexVal, stopped chan<- error) (*watch.Plan, error) {
@@ -561,20 +573,28 @@ func (ms *ManagedService) maintain() {
 
 	defer func() {
 		ms.logf(false, "maintain() - exiting loop")
+
 		// always cancel...
 		ms.cancel()
+
+		// stop watcher
+		wp.Stop()
+
+		// stop timer
 		refreshTimer.Stop()
-		//ms.wp.Stop()
-		close(ms.forceRefresh)
+
+		// deregister service
 		if err := ms.client.Agent().ServiceDeregister(ms.serviceID); err != nil {
 			ms.logf(false, "maintain() - Error deregistering service: %s", err)
 		} else {
 			ms.logf(false, "maintain() - Service successfully deregistered")
 		}
+
+		// channel cleanup
+		close(ms.forceRefresh)
 		close(wpStopped)
 		close(wpUpdate)
 		close(ms.done)
-
 	}()
 
 	for {
@@ -660,18 +680,6 @@ func NewManagedServiceBuilder(base *api.AgentServiceRegistration, fns ...Managed
 		base = new(api.AgentServiceRegistration)
 	}
 	b.AgentServiceRegistration = base
-	if b.Tags == nil {
-		b.Tags = make([]string, 0)
-	}
-	if b.Checks == nil {
-		b.Checks = make(api.AgentServiceChecks, 0)
-	}
-	if b.TaggedAddresses == nil {
-		b.TaggedAddresses = make(map[string]api.ServiceAddress)
-	}
-	if b.Meta == nil {
-		b.Meta = make(map[string]string)
-	}
 	for _, fn := range fns {
 		fn(b)
 	}
@@ -724,6 +732,9 @@ func (b *ManagedServiceBuilder) AddCheck(check *api.AgentServiceCheck, fns ...Ma
 	}
 	for _, fn := range fns {
 		fn(check)
+	}
+	if b.Checks == nil {
+		b.Checks = make(api.AgentServiceChecks, 0)
 	}
 	b.Checks = append(b.Checks, check)
 	return b
@@ -819,7 +830,7 @@ func (b *ManagedServiceBuilder) AddAliasCheck(service, node string, interval tim
 // agent.
 //
 // If no ID was specified before this method is called, one will be randomly generated for you.
-func (b *ManagedServiceBuilder) Build(ctx context.Context, cfg *ManagedServiceConfig, logger Logger) (*ManagedService, error) {
+func (b *ManagedServiceBuilder) Build(serviceCtx context.Context, cfg *ManagedServiceConfig, logger Logger) (*ManagedService, error) {
 	if b.AgentServiceRegistration == nil {
 		b.AgentServiceRegistration = new(api.AgentServiceRegistration)
 	}
@@ -875,9 +886,9 @@ func (b *ManagedServiceBuilder) Build(ctx context.Context, cfg *ManagedServiceCo
 
 	if cfg.APIConfig == nil {
 		cfg.APIConfig = api.DefaultConfig()
-		if client, err = api.NewClient(api.DefaultConfig()); err != nil {
-			return nil, fmt.Errorf("error creating default client: %s", err)
-		}
+	}
+	if client, err = api.NewClient(cfg.APIConfig); err != nil {
+		return nil, fmt.Errorf("error creating default client: %s", err)
 	}
 
 	// ensure EnableTagOverride is true
@@ -887,5 +898,5 @@ func (b *ManagedServiceBuilder) Build(ctx context.Context, cfg *ManagedServiceCo
 		return nil, fmt.Errorf("error registering service: %s", err)
 	}
 
-	return NewManagedService(ctx, cfg, logger)
+	return NewManagedService(serviceCtx, cfg, logger)
 }

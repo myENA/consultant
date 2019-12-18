@@ -7,12 +7,26 @@ import (
 	"net"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/hashicorp/consul/api"
 )
 
 const (
+	// EnvConsulLocalAddr is an environment variable you may define that will be used for LocalAddress() results
+	EnvConsulLocalAddr = "CONSUL_LOCAL_ADDR"
+	// EnvConsulLocalInterface is an environment variable you may define to limit the interfaces looped over to find
+	// a RFC1918 address on
+	EnvConsulLocalInterface = "CONSUL_LOCAL_INTERFACE"
+
+	SlugRand = "!RAND!"
+	SlugName = "!NAME!"
+	SlugAddr = "!ADDR!"
+	SlugNode = "!NODE!"
+	SlugUnix = "!UNIX!"
+
 	rnb = "0123456789"
 	rlb = "abcdefghijklmnopqrstuvwxyz"
 	rLb = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
@@ -35,14 +49,34 @@ func init() {
 	var err error // simple error holder
 	// RFC1918 blocks
 	if _, localAddressBlock10, err = net.ParseCIDR("10.0.0.0/8"); err != nil {
-		panic(err.Error())
+		panic(fmt.Sprintf("error parsing cidir 10.0.0.0/8: %s", err))
 	}
 	if _, localAddressBlock172, err = net.ParseCIDR("172.16.0.0/12"); err != nil {
-		panic(err.Error())
+		panic(fmt.Sprintf("error parsing cidr 172.16.0.0/12: %s", err))
 	}
 	if _, localAddressBlock192, err = net.ParseCIDR("192.168.0.0/16"); err != nil {
-		panic(err.Error())
+		panic(fmt.Sprintf("error parsing cidr 192.168.0.0/16: %s", err))
 	}
+}
+
+type Logger interface {
+	Printf(string, ...interface{})
+}
+
+type loggerWriter struct {
+	logger Logger
+}
+
+func (lw *loggerWriter) Write(b []byte) (int, error) {
+	if lw.logger == nil {
+		return 0, nil
+	}
+	l := len(b)
+	if l == 0 {
+		return 0, nil
+	}
+	lw.logger.Printf(string(b))
+	return l, nil
 }
 
 // LocalAddress returns the string output from LocalAddressIP, or the error if there was one.
@@ -57,7 +91,7 @@ func LocalAddress() (string, error) {
 // LocalAddressIP searches available interfaces (skip loopback) and returns the first
 // private ipv4 address found giving preference to smaller RFC1918 blocks: 192.168.0.0/16 < 172.16.0.0/12 < 10.0.0.0/8
 func LocalAddressIP() (net.IP, error) {
-	envAddr := os.Getenv("CONSUL_SERVICE_ADDR")
+	envAddr := os.Getenv(EnvConsulLocalAddr)
 	if envAddr != "" {
 		return net.ParseIP(envAddr), nil
 	}
@@ -67,7 +101,7 @@ func LocalAddressIP() (net.IP, error) {
 		return nil, err
 	}
 
-	myInterface := os.Getenv("CONSUL_SERVICE_INTERFACE")
+	myInterface := os.Getenv(EnvConsulLocalInterface)
 
 	for _, iface := range ifaces {
 		// We are looking for a specific interface and only that one will be considered
@@ -187,4 +221,23 @@ func SpecificChecks(serviceID string, checks api.HealthChecks) api.HealthChecks 
 // IsNotFoundErr performs a simple test to see if the provided error describes a "404 not found" response from an agent
 func IsNotFoundError(err error) bool {
 	return err != nil && strings.HasPrefix(err.Error(), notFoundErrPrefix)
+}
+
+// SlugParams is used by the ReplaceSlugs helper function
+type SlugParams struct {
+	Name string
+	Addr string
+	Node string
+}
+
+// ReplaceSlugs does just that based on the provided input
+func ReplaceSlugs(s string, p SlugParams) string {
+	for i, cnt := 0, strings.Count(s, SlugRand); i < cnt; i++ {
+		s = strings.Replace(s, SlugRand, LazyRandomString(12), 1)
+	}
+	s = strings.ReplaceAll(s, SlugName, p.Name)
+	s = strings.ReplaceAll(s, SlugAddr, p.Addr)
+	s = strings.ReplaceAll(s, SlugNode, p.Node)
+	s = strings.ReplaceAll(s, SlugUnix, strconv.Itoa(int(time.Now().Unix())))
+	return s
 }

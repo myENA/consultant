@@ -1,544 +1,639 @@
 package consultant
 
 import (
+	"context"
 	"errors"
 	"fmt"
-	"log"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/hashicorp/consul/api"
+	"github.com/myENA/go-helpers"
 )
+
+type SessionState uint8
 
 const (
 	SessionStateStopped SessionState = iota
 	SessionStateRunning
 )
 
-const (
-	SessionDefaultTTL = "30s"
-)
+func (s SessionState) String() string {
+	switch s {
+	case SessionStateStopped:
+		return "stopped"
+	case SessionStateRunning:
+		return "running"
 
-type (
-	SessionState uint8
-
-	SessionNameParts struct {
-		Key      string
-		NodeName string
-		RandomID string
+	default:
+		return "UNKNOWN"
 	}
-
-	SessionUpdate struct {
-		ID          string
-		Name        string
-		LastRenewed time.Time
-		Error       error
-		State       SessionState
-	}
-
-	SessionConfig struct {
-		// Key [suggested]
-		//
-		// Implementation-specific Key to be placed in session key.
-		Key string
-
-		// TTL [optional]
-		//
-		// Session TTL, defaults to value of SessionDefaultTTL
-		TTL string
-
-		// Behavior [optional]
-		//
-		// Session timeout behavior, defaults to "release"
-		Behavior string
-
-		// Log [optional]
-		//
-		// Logger for this session.  One will be created if value is empty
-		Log *log.Logger
-
-		// Client [optional]
-		//
-		// Consul API client, default will be created if not provided
-		Client *api.Client
-
-		// UpdateFunc [optional]
-		//
-		// Callback to be executed after session state change
-		UpdateFunc SessionWatchFunc
-
-		// AutoRun [optional]
-		//
-		// Whether the session should start immediately after successful construction
-		AutoRun bool
-	}
-
-	Session struct {
-		mu     sync.RWMutex
-		log    *log.Logger
-		client *api.Client
-
-		node string
-		key  string
-
-		id       string
-		name     string
-		ttl      time.Duration
-		behavior string
-
-		interval    time.Duration
-		lastRenewed time.Time
-
-		stop  chan chan error
-		state SessionState
-
-		watchers *sessionWatchers
-	}
-)
-
-func NewSession(conf *SessionConfig) (*Session, error) {
-	var (
-		key, ttl, behavior string
-		client             *api.Client
-		l                  *log.Logger
-		updateFunc         SessionWatchFunc
-		autoRun            bool
-		err                error
-	)
-
-	if conf != nil {
-		key = conf.Key
-		ttl = conf.TTL
-		behavior = conf.Behavior
-		l = conf.Log
-		client = conf.Client
-		updateFunc = conf.UpdateFunc
-		autoRun = conf.AutoRun
-	}
-
-	if behavior == "" {
-		behavior = api.SessionBehaviorRelease
-	} else {
-		switch behavior {
-		case api.SessionBehaviorDelete, api.SessionBehaviorRelease:
-		default:
-			return nil, fmt.Errorf("\"%s\" is not a valid session behavior", behavior)
-		}
-	}
-
-	if client == nil {
-		client, err = api.NewClient(api.DefaultConfig())
-		if err != nil {
-			return nil, fmt.Errorf("no Consul api client provided and unable to create: %s", err)
-		}
-	}
-
-	if ttl == "" {
-		ttl = SessionDefaultTTL
-	}
-
-	ttlTD, err := time.ParseDuration(ttl)
-	if err != nil {
-		return nil, fmt.Errorf("\"%s\" is not valid: %s", ttl, err)
-	}
-
-	ttlSeconds := ttlTD.Seconds()
-	if ttlSeconds < 10 {
-		ttlTD = 10 * time.Second
-	} else if ttlSeconds > 86400 {
-		ttlTD = 86400 * time.Second
-	}
-
-	cs := &Session{
-		log:      l,
-		client:   client,
-		key:      key,
-		ttl:      ttlTD,
-		behavior: behavior,
-		interval: time.Duration(int64(ttlTD) / 2),
-		stop:     make(chan chan error, 1),
-		watchers: newSessionWatchers(),
-	}
-
-	if updateFunc != nil {
-		cs.watchers.Add("", updateFunc)
-	}
-
-	if cs.node, err = client.Agent().NodeName(); err != nil {
-		return nil, fmt.Errorf("unable to determine node: %s", err)
-	}
-
-	l.Printf("Lock interval: %d seconds", int64(ttlTD.Seconds()))
-	l.Printf("Session renew interval: %d seconds", int64(cs.interval.Seconds()))
-
-	if autoRun {
-		l.Printf("AutoRun enabled")
-		cs.Run()
-	}
-
-	return cs, nil
 }
 
-func (cs *Session) ID() string {
-	cs.mu.RLock()
-	sid := cs.id
-	cs.mu.RUnlock()
+const (
+	SessionDefaultTTL        = 30 * time.Second
+	SessionDefaultNameFormat = "managed_session_" + SlugNode + "_" + SlugRand
+)
+
+// ManagedSessionConfig describes a ManagedSession
+type ManagedSessionConfig struct {
+	// Definition [suggested]
+	//
+	// This is the base definition of the session you wish to have managed by a ManagedSession instance.  It must
+	// contain all necessary values to build and re-build the session as you see fit, as all values other than ID will
+	// be used per session create attempt.
+	//
+	// If left blank, default values will be used for Name and TTL
+	Definition *api.SessionEntry
+
+	// StartImmediately [optional]
+	//
+	// If provided, the session will be immediately ran with this context
+	StartImmediately context.Context
+
+	// QueryOptions [optional]
+	//
+	// Options to use whenever making a read api query.  This will be shallow copied per internal request made.
+	QueryOptions *api.QueryOptions
+
+	// WriteOptions [optional]
+	//
+	// Options to use whenever making a write api query.  This will be shallow copied per internal request made.
+	WriteOptions *api.WriteOptions
+
+	// RequestTTL [optional]
+	//
+	// Optionally specify a TTL to pass to internal API requests.  Defaults to 2 seconds
+	RequestTTL time.Duration
+
+	// Logger [optional]
+	//
+	// Optionally specify a logger to use.  No logging will take place if left empty
+	Logger Logger
+
+	// Debug [optional]
+	//
+	// Enables debug-level logging
+	Debug bool
+
+	// Client [optional]
+	//
+	// API client to use for managing this session.  If left empty, a new one will be created using api.DefaultConfig()
+	Client *api.Client
+}
+
+// ManagedSession
+type ManagedSession struct {
+	mu sync.RWMutex
+
+	client *api.Client
+	qo     *api.QueryOptions
+	wo     *api.WriteOptions
+	base   *api.SessionEntry
+	rttl   time.Duration
+
+	nf string
+
+	id            string
+	ttl           time.Duration
+	renewInterval time.Duration
+	lastRenewed   time.Time
+	lastErr       error
+
+	stop  chan chan error
+	state SessionState
+
+	watchers *managedSessionWatchers
+
+	logger Logger
+	dbg    bool
+}
+
+// NewManagedSession attempts to create a managed session instance for your immediate use.
+func NewManagedSession(conf *ManagedSessionConfig) (*ManagedSession, error) {
+	var (
+		err error
+
+		ms = new(ManagedSession)
+	)
+
+	ms.dbg = conf.Debug
+	ms.logger = conf.Logger
+	ms.stop = make(chan chan error, 1)
+	ms.watchers = newManagedSessionWatchers()
+	ms.qo = conf.QueryOptions
+	ms.wo = conf.WriteOptions
+	ms.base = new(api.SessionEntry)
+
+	if conf.Definition != nil {
+		*ms.base = *conf.Definition
+		if l := len(conf.Definition.Checks); l > 0 {
+			ms.base.Checks = make([]string, l, l)
+			copy(ms.base.Checks, conf.Definition.Checks)
+		}
+	} else {
+		ms.base.TTL = SessionDefaultTTL.String()
+		ms.base.Behavior = api.SessionBehaviorDelete
+	}
+
+	if conf.RequestTTL > 0 {
+		ms.rttl = conf.RequestTTL
+	} else {
+		ms.rttl = defaultInternalRequestTTL
+	}
+
+	ms.ttl, err = time.ParseDuration(ms.base.TTL)
+	if err != nil {
+		return nil, fmt.Errorf("provided TTL of %q is not valid: %s", ms.base.TTL, err)
+	}
+	if ms.ttl < 10*time.Second {
+		ms.ttl = 10 * time.Second
+	} else if ms.ttl > 86400*time.Second {
+		ms.ttl = 86400 * time.Second
+	}
+	ms.base.TTL = ms.ttl.String()
+
+	ms.renewInterval = ms.ttl / 2
+
+	switch ms.base.Behavior {
+	case api.SessionBehaviorDelete, api.SessionBehaviorRelease:
+	default:
+		return nil, fmt.Errorf("ttlBehavior must be one of %v, saw %q", []string{api.SessionBehaviorRelease, api.SessionBehaviorDelete}, ms.base.Behavior)
+	}
+
+	if conf.Client != nil {
+		ms.client = conf.Client
+	} else if ms.client, err = api.NewClient(api.DefaultConfig()); err != nil {
+		return nil, fmt.Errorf("no client provided and error when creating with default config: %s", err)
+	}
+
+	if ms.base.Node == "" {
+		if ms.base.Node, err = ms.client.Agent().NodeName(); err != nil {
+			return nil, fmt.Errorf("node name not set and unable to determine name of local agent node: %s", err)
+		}
+	}
+
+	if ms.base.Name == "" {
+		ms.base.Name = ReplaceSlugs(SessionDefaultNameFormat, SlugParams{Node: ms.base.Node})
+	}
+
+	if conf.StartImmediately != nil {
+		ms.logf(true, "StartImmediately enabled")
+		if err := ms.Run(conf.StartImmediately); err != nil {
+			return nil, err
+		}
+	}
+
+	ms.logf(true, "Lock timeout: %s", ms.base.TTL)
+	ms.logf(true, "Renew renewInterval: %s", ms.renewInterval)
+
+	return ms, nil
+}
+
+// ID returns the is of the session as it exists in consul.  This value will be empty until the session has been
+// initialized, and then may become empty later if the session is removed.
+func (ms *ManagedSession) ID() string {
+	ms.mu.RLock()
+	sid := ms.id
+	ms.mu.RUnlock()
 	return sid
 }
 
-func (cs *Session) Name() string {
-	cs.mu.RLock()
-	name := cs.name
-	cs.mu.RUnlock()
+// Name returns the name of the session as it exists in consul.  This value will be empty until the session has been
+// initialized, and then may become empty later if the session is removed.
+func (ms *ManagedSession) Name() string {
+	ms.mu.RLock()
+	name := ms.base.Name
+	ms.mu.RUnlock()
 	return name
 }
 
-func (cs *Session) TTL() time.Duration {
-	return cs.ttl
+// TTL is the timeout limit for this session before which a refresh must happen, or the configured TTLBehavior will take
+// place
+func (ms *ManagedSession) TTL() time.Duration {
+	return ms.ttl
 }
 
-func (cs *Session) Key() string {
-	return cs.key
+// TTLBehavior is the action that will take place if the TTL is allowed to expire
+func (ms *ManagedSession) Behavior() string {
+	return ms.base.Behavior
 }
 
-func (cs *Session) Behavior() string {
-	return cs.behavior
+// RenewInterval is the renewInterval at which a TTL reset will be attempted
+func (ms *ManagedSession) RenewInterval() time.Duration {
+	return ms.renewInterval
 }
 
-func (cs *Session) RenewInterval() time.Duration {
-	return cs.interval
-}
-
-func (cs *Session) LastRenewed() time.Time {
-	cs.mu.RLock()
-	t := cs.lastRenewed
-	cs.mu.RUnlock()
+// LastRenewed returns the last point at which the TTL was successfully reset
+func (ms *ManagedSession) LastRenewed() time.Time {
+	ms.mu.RLock()
+	t := ms.lastRenewed
+	ms.mu.RUnlock()
 	return t
 }
 
+// SessionEntry attempts to immediately pull the latest state of the upstream session from Consul
+func (ms *ManagedSession) SessionEntry(ctx context.Context) (*api.SessionEntry, *api.QueryMeta, error) {
+	ms.mu.RLock()
+	defer ms.mu.RUnlock()
+	if ms.state != SessionStateRunning {
+		return nil, nil, errors.New("session is not running")
+	}
+	if ms.id == "" {
+		return nil, nil, errors.New("session is not currently defined")
+	}
+	return ms.client.Session().Info(ms.id, ms.qo.WithContext(ctx))
+}
+
 // Watch allows you to register a function that will be called when the election SessionState has changed
-func (cs *Session) Watch(id string, fn SessionWatchFunc) string {
-	return cs.watchers.Add(id, fn)
+func (ms *ManagedSession) Watch(id string, fn ManagedSessionWatchFunc) string {
+	return ms.watchers.Add(id, fn)
 }
 
 // Unwatch will remove a function from the list of watchers.
-func (cs *Session) Unwatch(id string) {
-	cs.watchers.Remove(id)
+func (ms *ManagedSession) Unwatch(id string) {
+	ms.watchers.Remove(id)
 }
 
 // RemoveWatchers will clear all watchers
-func (cs *Session) RemoveWatchers() {
-	cs.watchers.RemoveAll()
+func (ms *ManagedSession) RemoveWatchers() {
+	ms.watchers.RemoveAll()
 }
 
 // UpdateWatchers will immediately push the current state of this Candidate to all currently registered Watchers
-func (cs *Session) UpdateWatchers() {
-	cs.mu.RLock()
-	cs.watchers.notify(SessionUpdate{cs.id, cs.name, cs.lastRenewed, nil, cs.state})
-	cs.mu.RUnlock()
+func (ms *ManagedSession) UpdateWatchers() {
+	ms.mu.RLock()
+	ms.watchers.notify(ManagedSessionUpdate{ms.id, ms.base.Name, ms.lastRenewed, ms.lastErr, ms.state})
+	ms.mu.RUnlock()
 }
 
-func (cs *Session) Running() bool {
-	cs.mu.RLock()
-	b := cs.state == SessionStateRunning
-	cs.mu.RUnlock()
+// Running returns true so long as the internal session state is active
+func (ms *ManagedSession) Running() bool {
+	ms.mu.RLock()
+	b := ms.state == SessionStateRunning
+	ms.mu.RUnlock()
 	return b
 }
 
-func (cs *Session) Run() {
-	cs.mu.Lock()
-	if cs.state == SessionStateRunning {
+// Run immediately starts attempting to acquire a session lock on the configured kv key
+func (ms *ManagedSession) Run(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	ms.mu.Lock()
+	if ms.state == SessionStateRunning {
 		// if our state is already running, just continue to do so.
-		cs.log.Printf("Run() called but I'm already running")
-		cs.mu.Unlock()
-		return
+		ms.logf(true, "Run() called but I'm already running")
+		ms.mu.Unlock()
+		return nil
 	}
 
 	// modify state
-	cs.state = SessionStateRunning
+	ms.state = SessionStateRunning
 
 	// try to create session immediately
-	if err := cs.create(); err != nil {
-		cs.log.Printf(
+	if err := ms.create(ctx); err != nil {
+		ms.logf(
+			false,
 			"Unable to perform initial session creation, will try again in \"%d\" seconds: %s",
-			int64(cs.interval.Seconds()),
+			int64(ms.renewInterval.Seconds()),
 			err)
 	}
 
 	// release lock before beginning maintenance loop
-	cs.mu.Unlock()
+	ms.mu.Unlock()
 
-	go cs.maintain()
+	go ms.maintain(ctx)
+
+	return nil
 }
 
-func (cs *Session) Stop() error {
-	cs.mu.Lock()
-	if cs.state == SessionStateStopped {
-		cs.log.Printf("Stop() called but I'm already stopped")
-		cs.mu.Unlock()
+// Stop immediately attempts to cease session management
+func (ms *ManagedSession) Stop() error {
+	ms.mu.Lock()
+	if ms.state == SessionStateStopped {
+		ms.logf(true, "Stop() called but I'm already stopped")
+		ms.mu.Unlock()
 		return nil
 	}
-	cs.state = SessionStateStopped
-	cs.mu.Unlock()
+	ms.state = SessionStateStopped
+	ms.mu.Unlock()
 
 	stopped := make(chan error, 1)
-	cs.stop <- stopped
+	ms.stop <- stopped
 	err := <-stopped
 	close(stopped)
+
 	return err
 }
 
-func (cs *Session) State() SessionState {
-	cs.mu.RLock()
-	s := cs.state
-	cs.mu.RUnlock()
+// State returns the current running state of the managed session
+func (ms *ManagedSession) State() SessionState {
+	ms.mu.RLock()
+	s := ms.state
+	ms.mu.RUnlock()
 	return s
 }
 
-// create will attempt to do just that. Caller MUST hold lock!
-func (cs *Session) create() error {
-	var name string
-
-	if cs.key == "" {
-		name = fmt.Sprintf("%s_%s", cs.node, LazyRandomString(12))
-	} else {
-		name = fmt.Sprintf("%s_%s_%s", cs.key, cs.node, LazyRandomString(12))
+func (ms *ManagedSession) logf(debug bool, f string, v ...interface{}) {
+	if ms.logger == nil || debug && !ms.dbg {
+		return
 	}
+	ms.logger.Printf(f, v...)
+}
 
-	cs.log.Printf("Attempting to create Consul Session \"%s\"...", name)
+// create will attempt to do just that.
+//
+// caller must hold lock
+func (ms *ManagedSession) create(ctx context.Context) error {
+	ms.logf(true, "create() - Attempting to create upstream session...")
 
-	se := &api.SessionEntry{
-		Name:     name,
-		Behavior: cs.behavior,
-		TTL:      cs.ttl.String(),
-	}
+	se := *ms.base
 
-	sid, _, err := cs.client.Session().Create(se, nil)
+	ctx, cancel := context.WithTimeout(ctx, ms.rttl)
+	defer cancel()
+	sid, _, err := ms.client.Session().Create(&se, ms.wo.WithContext(ctx))
 	if err != nil {
-		cs.id = ""
-		cs.name = ""
+		ms.id = ""
+		ms.lastErr = err
 	} else if sid != "" {
-		cs.log.Printf("New upstream session %q created", sid)
-		cs.id = sid
-		cs.name = name
-		cs.lastRenewed = time.Now()
+		ms.logf(true, "create() - New upstream session %q created", sid)
+		ms.id = sid
+		ms.lastRenewed = time.Now()
+		ms.lastErr = nil
 	} else {
-		cs.id = ""
-		cs.name = ""
+		ms.id = ""
 		err = errors.New("internal error creating session")
+		ms.lastErr = err
 	}
 
 	return err
 }
 
-// renew will attempt to do just that.  Caller MUST hold lock!
-func (cs *Session) renew() error {
-	if cs.id == "" {
-		cs.log.Print("Session cannot be renewed as it doesn't exist yet")
+// renew will attempt to do just that.
+//
+// caller must hold lock
+func (ms *ManagedSession) renew(ctx context.Context) error {
+	if ms.id == "" {
+		ms.logf(true, "renew() - session cannot be renewed as it doesn't exist yet")
 		return errors.New("session does not exist yet")
 	}
 
-	se, _, err := cs.client.Session().Renew(cs.id, nil)
+	ctx, cancel := context.WithTimeout(ctx, ms.rttl)
+	defer cancel()
+	se, _, err := ms.client.Session().Renew(ms.id, ms.wo.WithContext(ctx))
 	if err != nil {
-		cs.id = ""
-		cs.name = ""
+		ms.id = ""
+		ms.lastErr = err
 	} else if se != nil {
-		cs.id = se.ID
-		cs.lastRenewed = time.Now()
+		ms.logf(true, "renew() - Upstream session %q renewed", se.ID)
+		ms.id = se.ID
+		ms.lastRenewed = time.Now()
+		ms.lastErr = nil
 	} else {
-		cs.id = ""
-		cs.name = ""
+		ms.id = ""
 		err = errors.New("internal error renewing session")
+		ms.lastErr = err
 	}
 
 	return err
 }
 
 // destroy will attempt to destroy the upstream session and removes internal references to it.
-// caller MUST hold lock!
-func (cs *Session) destroy() error {
-	sid := cs.id
-	cs.id = ""
-	cs.name = ""
-	cs.lastRenewed = time.Time{}
-	_, err := cs.client.Session().Destroy(sid, nil)
+//
+// caller must hold lock
+func (ms *ManagedSession) destroy(ctx context.Context) error {
+	sid := ms.id
+	ctx, cancel := context.WithTimeout(ctx, ms.rttl)
+	defer cancel()
+	_, err := ms.client.Session().Destroy(sid, ms.wo.WithContext(ctx))
+	if err != nil {
+		ms.logf(true, "destroy() - Upstream session %q destroyed", sid)
+	}
+	ms.id = ""
+	ms.lastRenewed = time.Time{}
+	ms.lastErr = err
 	return err
 }
 
-func (cs *Session) updateWatchers(err error) {
-	cs.mu.RLock()
-	cs.watchers.notify(SessionUpdate{cs.id, cs.name, cs.lastRenewed, err, cs.state})
-	cs.mu.RUnlock()
-}
-
 // maintainTick is responsible for ensuring our session is kept alive in Consul
-func (cs *Session) maintainTick(tick time.Time) {
+//
+// caller must hold lock
+func (ms *ManagedSession) maintainTick(ctx context.Context) {
 	var (
 		sid, name string
 		err       error
 	)
 
-	cs.mu.Lock()
-
-	if cs.id != "" {
+	if ms.id != "" {
 		// if we were previously able to create an upstream session...
-		sid, name = cs.id, cs.name
-		if !cs.lastRenewed.IsZero() && time.Now().Sub(cs.lastRenewed) > cs.ttl {
+		sid = ms.id
+		if !ms.lastRenewed.IsZero() && time.Now().Sub(ms.lastRenewed) > ms.ttl {
 			// if we have a session but the last time we were able to successfully renew it was beyond the TTL,
 			// attempt to destroy and allow re-creation down below
-			cs.log.Printf(
-				"maintainTick() - Last renewed time (%s) is > ttl (%s), expiring upstream session %q (%q)...",
-				cs.lastRenewed.Format(time.RFC822),
-				cs.ttl,
-				cs.name,
-				cs.id,
+			ms.logf(
+				true,
+				"maintainTick() - Last renewed time (%s) is > ttl (%s), expiring upstream session %q...",
+				ms.lastRenewed.Format(time.RFC822),
+				ms.ttl,
+				ms.id,
 			)
-			if err = cs.destroy(); err != nil {
-				cs.log.Printf(
+			if err = ms.destroy(ctx); err != nil {
+				ms.logf(
+					false,
 					"maintainTick() - Error destroying expired upstream session %q (%q). This can probably be ignored: %s",
 					name,
 					sid,
 					err,
 				)
 			}
-		} else if err = cs.renew(); err != nil {
+		} else if err = ms.renew(ctx); err != nil {
 			// if error during renewal
-			cs.log.Printf("maintainTick() - Unable to renew Consul Session: %s", err)
+			ms.logf(false, "maintainTick() - Unable to renew Consul ManagedSession: %s", err)
 			// TODO: possibly attempt to destroy the session at this point?  the above timeout test statement
 			// should eventually be hit if this continues to fail...
 		} else {
 			// session should be in a happy state.
-			cs.log.Printf("maintainTick() - Upstream session %q (%q) renewed", cs.name, cs.id)
+			ms.logf(true, "maintainTick() - Upstream session %q renewed", ms.id)
 		}
 	}
 
-	if cs.id == "" {
+	if ms.id == "" {
 		// if this is the first iteration of the loop or if an error occurred above, test and try to create
 		// a new session
-		if err = cs.create(); err != nil {
-			cs.log.Printf("maintainTick() - Unable to create upstream session: %s", err)
+		if err = ms.create(ctx); err != nil {
+			ms.logf(false, "maintainTick() - Unable to create upstream session: %s", err)
 		} else {
-			cs.log.Printf("maintainTick() - New upstream session %q (%q) created.", cs.name, cs.id)
+			ms.logf(true, "maintainTick() - New upstream session %q created.", ms.id)
 		}
 	}
-
-	cs.mu.Unlock()
-
-	//send update after unlock
-	cs.updateWatchers(err)
 }
 
-func (cs *Session) shutdown(stopped chan<- error) {
+func (ms *ManagedSession) shutdown(intervalTimer *time.Timer, stopped chan<- error) {
 	var (
-		sid, name string
-		err       error
+		sid string
+		err error
 	)
 
-	cs.mu.Lock()
+	ms.mu.Lock()
 
-	cs.log.Printf("shutdown() - Stopping session...")
+	if !intervalTimer.Stop() {
+		<-intervalTimer.C
+	}
+
+	ms.logf(false, "shutdown() - Stopping session...")
 
 	// localize most recent upstream session info
-	sid = cs.id
-	name = cs.name
+	sid = ms.id
 
-	if cs.id != "" {
+	if ms.id != "" {
 		// if we have a reference to an upstream session id, attempt to destroy it.
-		if derr := cs.destroy(); derr != nil {
-			msg := fmt.Sprintf("shutdown() - Error destroying upstream session %q (%q) during shutdown: %s", name, sid, derr)
-			log.Print(msg)
-			if err != nil {
-				// if there was an existing error, append this error to it to be sent along the Stop() resp chan
-				err = fmt.Errorf("%s; %s", err, msg)
-			}
+		// use background context here to ensure attempt is made
+		if err = ms.destroy(context.Background()); err != nil {
+			ms.logf(false, "shutdown() - Error destroying upstream session %q: %s", sid, err)
+			// if there was an existing error, append this error to it to be sent along the Stop() resp chan
+			err = fmt.Errorf("error destroying session %q during shutdown: %s", sid, err)
 		} else {
-			log.Printf("shutdown() - Upstream session %q (%q) destroyed", name, sid)
+			ms.logf(true, "shutdown() - Upstream session %q destroyed", sid)
 		}
 	}
 
 	// set our state to stopped, preventing further interaction.
-	cs.state = SessionStateStopped
+	ms.state = SessionStateStopped
 
-	cs.mu.Unlock()
+	ms.lastErr = err
 
-	// just in case...
+	// if this session was stopped via context, this will be nil
 	if stopped != nil {
 		// send along the last seen error, whatever it was.
 		stopped <- err
 	}
 
-	// send final update
-	cs.updateWatchers(err)
+	ms.mu.Unlock()
 
-	cs.log.Print("shutdown() - Session stopped")
+	ms.UpdateWatchers()
+
+	ms.logf(false, "shutdown() - ManagedSession stopped")
 }
 
 // TODO: improve updates to include the action taken this loop, and whether it is the last action to be taken this loop
 // i.e., destroy / renew can happen in the same loop as create.
-func (cs *Session) maintain() {
+func (ms *ManagedSession) maintain(ctx context.Context) {
 	var (
 		tick    time.Time
 		stopped chan error
+
+		intervalTimer = time.NewTimer(ms.renewInterval)
 	)
 
-	intervalTicker := time.NewTicker(cs.interval)
+	defer ms.shutdown(intervalTimer, stopped)
 
-maintaining:
 	for {
 		select {
-		case tick = <-intervalTicker.C:
-			cs.maintainTick(tick)
-		case stopped = <-cs.stop:
-			break maintaining
+		case tick = <-intervalTimer.C:
+			ms.logf(true, "maintain() - intervalTimer hit: %s", tick)
+			ms.mu.Lock()
+			ms.maintainTick(ctx)
+			ms.mu.Unlock()
+			ms.UpdateWatchers()
+			intervalTimer = time.NewTimer(ms.renewInterval)
+
+		case <-ctx.Done():
+			ms.logf(false, "maintain() - running context completed with: %s", ctx.Err())
+			return
+
+		case stopped = <-ms.stop:
+			ms.logf(false, "maintain() - explicit stop called")
+			return
 		}
 	}
-
-	intervalTicker.Stop()
-
-	cs.shutdown(stopped)
-
-	cs.log.Printf("maintain() - Exiting maintain loop")
 }
 
-// ParseSessionName is provided so you don't have to parse it yourself :)
-func ParseSessionName(name string) (*SessionNameParts, error) {
-	split := strings.Split(name, "_")
+// ManagedSessionEntry is a thin wrapper that provides guided construction to a SessionEntry, resulting in a
+// ManagedSession instance once built
+type ManagedSessionEntry struct {
+	api.SessionEntry
+}
 
-	switch len(split) {
-	case 2:
-		return &SessionNameParts{
-			NodeName: split[0],
-			RandomID: split[1],
-		}, nil
-	case 3:
-		return &SessionNameParts{
-			Key:      split[0],
-			NodeName: split[1],
-			RandomID: split[2],
-		}, nil
+// ManagedSessionEntryMutator defines a callback that may mutate a new MangedSessionBuilder instance
+type ManagedSessionEntryMutator func(*ManagedSessionEntry)
 
-	default:
-		return nil, fmt.Errorf("expected 2 or 3 parts in session name \"%s\", saw only \"%d\"", name, len(split))
+// NewManagedSessionEntry creates a new
+func NewManagedSessionEntry(base *api.SessionEntry, fns ...ManagedSessionEntryMutator) *ManagedSessionEntry {
+	b := new(ManagedSessionEntry)
+	if base == nil {
+		base = new(api.SessionEntry)
 	}
+	b.SessionEntry = *base
+	for _, fn := range fns {
+		fn(b)
+	}
+	return b
 }
 
-type SessionWatchFunc func(update SessionUpdate)
+// SetTTL allows setting of the session TTL from an existing time.Duration instance
+func (b *ManagedSessionEntry) SetTTL(ttl time.Duration) *ManagedSessionEntry {
+	b.TTL = ttl.String()
+	return b
+}
 
-type sessionWatchers struct {
+// AddCheckNames adds the provided list of check name(s) to final session entry, ensuring uniqueness of input
+func (b *ManagedSessionEntry) AddCheckNames(checkNames ...string) *ManagedSessionEntry {
+	if b.Checks == nil {
+		b.Checks = make([]string, 0)
+	}
+	b.Checks = helpers.UniqueStringSlice(append(b.Checks, checkNames...))
+	return b
+}
+
+// SetName sets the name of the to be created session, optionally allowing for replacing
+func (b *ManagedSessionEntry) SetName(f string, v ...interface{}) *ManagedSessionEntry {
+	b.Name = ReplaceSlugs(fmt.Sprintf(f, v...), SlugParams{Node: b.Node})
+	return b
+}
+
+// Create attempts to
+func (b *ManagedSessionEntry) Create(cfg *ManagedSessionConfig) (*ManagedSession, error) {
+	var act = new(ManagedSessionConfig)
+
+	if cfg == nil {
+		cfg = new(ManagedSessionConfig)
+	}
+
+	*act = *cfg
+
+	act.Definition = &b.SessionEntry
+
+	return NewManagedSession(act)
+}
+
+// ManagedSessionUpdate will be sent to any / all watchers of this managed session upon a significant event happening
+type ManagedSessionUpdate struct {
+	ID          string       `json:"id"`
+	Name        string       `json:"name"`
+	LastRenewed time.Time    `json:"last_renewed"`
+	Error       error        `json:"error"`
+	State       SessionState `json:"state"`
+}
+
+// ManagedSessionWatchFunc can be defined in your implementation to be called when a significant event happens in the
+// lifecycle of a ManagedSession
+type ManagedSessionWatchFunc func(update ManagedSessionUpdate)
+
+type managedSessionWatchers struct {
 	mu    sync.RWMutex
-	funcs map[string]SessionWatchFunc
+	funcs map[string]ManagedSessionWatchFunc
 }
 
-func newSessionWatchers() *sessionWatchers {
-	w := &sessionWatchers{
-		funcs: make(map[string]SessionWatchFunc),
+func newManagedSessionWatchers() *managedSessionWatchers {
+	w := &managedSessionWatchers{
+		funcs: make(map[string]ManagedSessionWatchFunc),
 	}
 	return w
 }
 
 // Watch allows you to register a function that will be called when the election SessionState has changed
-func (c *sessionWatchers) Add(id string, fn SessionWatchFunc) string {
+func (c *managedSessionWatchers) Add(id string, fn ManagedSessionWatchFunc) string {
 	c.mu.Lock()
 	if id == "" {
 		id = LazyRandomString(8)
@@ -551,21 +646,21 @@ func (c *sessionWatchers) Add(id string, fn SessionWatchFunc) string {
 	return id
 }
 
-// Unwatch will remove a function from the list of sessionWatchers.
-func (c *sessionWatchers) Remove(id string) {
+// Unwatch will remove a function from the list of managedSessionWatchers.
+func (c *managedSessionWatchers) Remove(id string) {
 	c.mu.Lock()
 	delete(c.funcs, id)
 	c.mu.Unlock()
 }
 
-func (c *sessionWatchers) RemoveAll() {
+func (c *managedSessionWatchers) RemoveAll() {
 	c.mu.Lock()
-	c.funcs = make(map[string]SessionWatchFunc)
+	c.funcs = make(map[string]ManagedSessionWatchFunc)
 	c.mu.Unlock()
 }
 
 // notifyWatchers is a thread safe update of leader status
-func (c *sessionWatchers) notify(update SessionUpdate) {
+func (c *managedSessionWatchers) notify(update ManagedSessionUpdate) {
 	c.mu.RLock()
 	for _, fn := range c.funcs {
 		go fn(update)

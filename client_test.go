@@ -50,7 +50,7 @@ func (cs *ClientTestSuite) TearDownSuite() {
 func (cs *ClientTestSuite) TestClientConstructionMethods() {
 	var err error
 
-	cs.server = testutil.MakeServer(cs.T(), nil)
+	cs.server = makeTestServer(cs.T(), nil)
 
 	os.Setenv(api.HTTPAddrEnvName, cs.server.HTTPAddr)
 
@@ -64,7 +64,7 @@ func (cs *ClientTestSuite) TestClientConstructionMethods() {
 }
 
 func (cs *ClientTestSuite) TestSimpleClientInteraction() {
-	cs.server, cs.client = testutil.MakeServerAndClient(cs.T(), nil)
+	cs.server, cs.client = makeTestServerAndClient(cs.T(), nil)
 
 	_, err := cs.client.KV().Put(&api.KVPair{Key: clientTestKVKey, Value: []byte(clientTestKVValue)}, nil)
 	require.Nil(cs.T(), err, fmt.Sprintf("Unable to put key \"%s\": %s", clientTestKVKey, err))
@@ -84,7 +84,7 @@ func (cs *ClientTestSuite) TestSimpleClientInteraction() {
 }
 
 func (cs *ClientTestSuite) TestSimpleServiceRegister() {
-	cs.server, cs.client = testutil.MakeServerAndClient(cs.T(), nil)
+	cs.server, cs.client = makeTestServerAndClient(cs.T(), nil)
 
 	reg := &consultant.SimpleServiceRegistration{
 		Name: clientSimpleServiceRegistrationName,
@@ -107,7 +107,7 @@ func (cs *ClientTestSuite) TestSimpleServiceRegister() {
 }
 
 func (cs *ClientTestSuite) TestServiceTagSelection() {
-	cs.server, cs.client = testutil.MakeServerAndClient(cs.T(), nil)
+	cs.server, cs.client = makeTestServerAndClient(cs.T(), nil)
 
 	reg1 := &consultant.SimpleServiceRegistration{
 		Name:     clientSimpleServiceRegistrationName,
@@ -195,7 +195,7 @@ func (cs *ClientTestSuite) TestServiceTagSelection() {
 }
 
 func (cs *ClientTestSuite) TestGetServiceAddress_OK() {
-	cs.server, cs.client = testutil.MakeServerAndClient(cs.T(), nil)
+	cs.server, cs.client = makeTestServerAndClient(cs.T(), nil)
 
 	reg := &consultant.SimpleServiceRegistration{
 		Name: clientSimpleServiceRegistrationName,
@@ -221,7 +221,7 @@ func (cs *ClientTestSuite) TestGetServiceAddress_OK() {
 }
 
 func (cs *ClientTestSuite) TestGetServiceAddress_Empty() {
-	cs.server, cs.client = testutil.MakeServerAndClient(cs.T(), nil)
+	cs.server, cs.client = makeTestServerAndClient(cs.T(), nil)
 
 	url, err := cs.client.BuildServiceURL("whatever", "nope", "nope", false, nil)
 	require.Nil(cs.T(), url, fmt.Sprintf("URL should be nil, saw %+v", url))
@@ -229,7 +229,7 @@ func (cs *ClientTestSuite) TestGetServiceAddress_Empty() {
 }
 
 func (cs *ClientTestSuite) TestEnsureKey() {
-	cs.server, cs.client = testutil.MakeServerAndClient(cs.T(), nil)
+	cs.server, cs.client = makeTestServerAndClient(cs.T(), nil)
 	_, err := cs.client.KV().Put(&api.KVPair{Key: "foo/bar", Value: []byte("hello")}, nil)
 	require.Nil(cs.T(), err, fmt.Sprintf("Failed to write key %s : %s", "foo/bar", err))
 

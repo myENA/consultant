@@ -14,25 +14,9 @@ import (
 	"github.com/hashicorp/consul/api"
 )
 
-type Logger interface {
-	Printf(string, ...interface{})
-}
-
-type loggerWriter struct {
-	logger Logger
-}
-
-func (lw *loggerWriter) Write(b []byte) (int, error) {
-	if lw.logger == nil {
-		return 0, nil
-	}
-	l := len(b)
-	if l == 0 {
-		return 0, nil
-	}
-	lw.logger.Printf(string(b))
-	return l, nil
-}
+const (
+	defaultInternalRequestTTL = 2 * time.Second
+)
 
 type Client struct {
 	*api.Client
@@ -312,14 +296,14 @@ type SimpleServiceRegistration struct {
 
 	ID                string        // [optional] specific id for service, will be generated if not set
 	RandomID          bool          // [optional] if ID is not set, use a random uuid if true, or hostname if false
-	Address           string        // [optional] determined automatically by Register() if not set
-	Tags              []string      // [optional] desired tags: Register() adds serviceId
+	Address           string        // [optional] determined automatically by Create() if not set
+	Tags              []string      // [optional] desired tags: Create() adds serviceId
 	CheckTCP          bool          // [optional] if true, register a TCP check
 	CheckTTL          string        // [optional] if defined, registers a ttl check with the value as the starting status
 	CheckPath         string        // [optional] if defined, register a http check with this path
 	CheckScheme       string        // [optional] override the http check scheme (default: http)
 	CheckPort         int           // [optional] tcp or http check port, if defined
-	Interval          string        // [optional] check interval
+	Interval          string        // [optional] check renewInterval
 	Timeout           time.Duration // [optional] tcp
 	EnableTagOverride bool          // [optional] whether we should allow tag overriding (new in 0.6+)
 }
@@ -329,7 +313,7 @@ func (c *Client) SimpleServiceRegister(reg *SimpleServiceRegistration) (string, 
 	var err error                        // generic error holder
 	var serviceID string                 // local service identifier
 	var address string                   // service host address
-	var interval string                  // check interval
+	var interval string                  // check renewInterval
 	var checkHTTP *api.AgentServiceCheck // http type check
 	var serviceName string               // service registration name
 
@@ -363,7 +347,7 @@ func (c *Client) SimpleServiceRegister(reg *SimpleServiceRegistration) (string, 
 	}
 
 	if interval = reg.Interval; interval == "" {
-		// set a default interval
+		// set a default renewInterval
 		interval = "30s"
 	}
 

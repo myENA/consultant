@@ -24,7 +24,7 @@ func TestNewManagedServiceBuilder(t *testing.T) {
 
 	tests := map[string]struct {
 		base     *api.AgentServiceRegistration
-		mutators []consultant.ManagedServiceBuilderMutator
+		mutators []consultant.MangedAgentServiceRegistrationMutator
 	}{
 		"base-no-mutators": {
 			base: &api.AgentServiceRegistration{
@@ -37,22 +37,22 @@ func TestNewManagedServiceBuilder(t *testing.T) {
 			base: &api.AgentServiceRegistration{
 				Address: localAddr,
 			},
-			mutators: []consultant.ManagedServiceBuilderMutator{
-				func(builder *consultant.ManagedServiceBuilder) {
+			mutators: []consultant.MangedAgentServiceRegistrationMutator{
+				func(builder *consultant.ManagedAgentServiceRegistration) {
 					builder.Name = managedServiceName
 					builder.Port = managedServicePort
 				},
 			},
 		},
 		"nil-base-mutators": {
-			mutators: []consultant.ManagedServiceBuilderMutator{
-				func(builder *consultant.ManagedServiceBuilder) {
+			mutators: []consultant.MangedAgentServiceRegistrationMutator{
+				func(builder *consultant.ManagedAgentServiceRegistration) {
 					builder.Address = localAddr
 				},
-				func(builder *consultant.ManagedServiceBuilder) {
+				func(builder *consultant.ManagedAgentServiceRegistration) {
 					builder.Name = managedServiceName
 				},
-				func(builder *consultant.ManagedServiceBuilder) {
+				func(builder *consultant.ManagedAgentServiceRegistration) {
 					builder.Port = managedServicePort
 				},
 			},
@@ -61,7 +61,7 @@ func TestNewManagedServiceBuilder(t *testing.T) {
 
 	for name, setup := range tests {
 		t.Run(name, func(t *testing.T) {
-			b := consultant.NewManagedServiceBuilder(setup.base, setup.mutators...)
+			b := consultant.NewManagedAgentServiceRegistration(setup.base, setup.mutators...)
 			if b.Name != managedServiceName {
 				t.Logf("Expected Name %q, saw %q", managedServiceName, b.Name)
 				t.Fail()
@@ -88,28 +88,28 @@ func TestNewBareManagedServiceBuilder(t *testing.T) {
 	tests := map[string]struct {
 		name     string
 		port     int
-		mutators []consultant.ManagedServiceBuilderMutator
+		mutators []consultant.MangedAgentServiceRegistrationMutator
 	}{
 		"args-no-mutators": {
 			name: managedServiceName,
 			port: managedServicePort,
 		},
 		"no-args-mutators": {
-			mutators: []consultant.ManagedServiceBuilderMutator{func(builder *consultant.ManagedServiceBuilder) {
+			mutators: []consultant.MangedAgentServiceRegistrationMutator{func(builder *consultant.ManagedAgentServiceRegistration) {
 				builder.Name = managedServiceName
 				builder.Port = managedServicePort
 			}},
 		},
 		"args-mutators": {
 			port: managedServicePort,
-			mutators: []consultant.ManagedServiceBuilderMutator{func(builder *consultant.ManagedServiceBuilder) {
+			mutators: []consultant.MangedAgentServiceRegistrationMutator{func(builder *consultant.ManagedAgentServiceRegistration) {
 				builder.Name = managedServiceName
 			}},
 		},
 		"args-mutators-override": {
 			name: "something",
 			port: 90001,
-			mutators: []consultant.ManagedServiceBuilderMutator{func(builder *consultant.ManagedServiceBuilder) {
+			mutators: []consultant.MangedAgentServiceRegistrationMutator{func(builder *consultant.ManagedAgentServiceRegistration) {
 				builder.Name = managedServiceName
 				builder.Port = managedServicePort
 			}},
@@ -117,7 +117,7 @@ func TestNewBareManagedServiceBuilder(t *testing.T) {
 	}
 	for name, setup := range tests {
 		t.Run(name, func(t *testing.T) {
-			b := consultant.NewBareManagedServiceBuilder(setup.name, setup.port, setup.mutators...)
+			b := consultant.NewBareManagedAgentServiceRegistration(setup.name, setup.port, setup.mutators...)
 			if b.Name != managedServiceName {
 				t.Logf("Expected Name %q, saw %q", managedServiceName, b.Name)
 				t.Fail()
@@ -175,7 +175,7 @@ func TestManagedServiceBuilder_SetID(t *testing.T) {
 
 	for name, setup := range tests {
 		t.Run(name, func(t *testing.T) {
-			b := consultant.NewBareManagedServiceBuilder(managedServiceName, managedServicePort)
+			b := consultant.NewBareManagedAgentServiceRegistration(managedServiceName, managedServicePort)
 			b.SetID(setup.format, setup.args...)
 			if !setup.expected.MatchString(b.ID) {
 				t.Logf("Expected Name to match %q, saw %q", setup.expected, b.ID)
@@ -200,16 +200,16 @@ func TestManagedServiceBuilder_Build(t *testing.T) {
 
 	cfg := new(consultant.ManagedServiceConfig)
 	cfg.Debug = true
-	cfg.APIConfig = api.DefaultConfig()
-	cfg.APIConfig.Address = server.HTTPAddr
+	cfg.Logger = log.New(os.Stdout, "", log.LstdFlags)
+	cfg.Client = client.Client
 
-	b := consultant.NewBareManagedServiceBuilder(managedServiceName, managedServicePort)
+	b := consultant.NewBareManagedAgentServiceRegistration(managedServiceName, managedServicePort)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	ms, err := b.Build(ctx, cfg, log.New(os.Stdout, "", log.LstdFlags))
+	ms, err := b.Create(ctx, cfg)
 
 	if err != nil {
-		t.Logf("Error calling .Build(): %s", err)
+		t.Logf("Error calling .Create(): %s", err)
 		t.FailNow()
 	} else if ms == nil {
 		t.Log("No error, but ManagedService is nil")

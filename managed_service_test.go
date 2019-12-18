@@ -25,7 +25,7 @@ package consultant_test
 //}
 //
 //func (ms *ManagedServiceTestSuite) SetupTest() {
-//	ms.server, ms.client = testutil.MakeServerAndClient(ms.T(), nil)
+//	ms.server, ms.client = makeTestServerAndClient(ms.T(), nil)
 //}
 //
 //func (ms *ManagedServiceTestSuite) TearDownTest() {

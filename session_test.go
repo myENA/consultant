@@ -17,25 +17,12 @@ const (
 	sessionTestTTL = "5s"
 )
 
-func init() {
-	consultant.Printf()
-}
-
-type SessionTestSuite struct {
-	suite.Suite
-
-	server *cst.TestServer
-	client *api.Client
-
-	session *consultant.Session
-}
-
 func TestSession(t *testing.T) {
 	suite.Run(t, &SessionTestSuite{})
 }
 
 func (ss *SessionTestSuite) SetupSuite() {
-	server, client := testutil.MakeServerAndClient(ss.T(), nil)
+	server, client := makeTestServerAndClient(ss.T(), nil)
 	ss.server = server
 	ss.client = client.Client
 }
@@ -59,19 +46,31 @@ func (ss *SessionTestSuite) TearDownTest() {
 	ss.session = nil
 }
 
-func (ss *SessionTestSuite) config(conf *consultant.SessionConfig) *consultant.SessionConfig {
-	if conf == nil {
-		conf = new(consultant.SessionConfig)
+func TestNew_Empty(t *testing.T) {
+	t.Run("nil-config", func(t *testing.T) {
+		ms, err := consultant.NewManagedSession(nil)
+		if err != nil {
+			t.Logf("expected no error, saw: %s", err)
+			t.FailNow()
+		}
+		if t.Failed() {
+			return
+		}
+
+		if ttl := ms.TTL(); ttl != consultant.SessionDefaultTTL {
+			m
+		}
+	})
+
+	t.Run("empty-key", func(t *testing.T) {
+
 	}
-	conf.Client = ss.client
-	return conf
-}
 
-func (ss *SessionTestSuite) TestNew_Empty() {
-	var err error
-
-	ss.session, err = consultant.NewSession(ss.config(nil))
-	require.Nil(ss.T(), err, "Error constructing empty: %s", err)
+	session, err := consultant.NewManagedSession(nil)
+	if err != nil {
+		t.Logf("Error building session with ")
+	}
+	require.Nil(t, err, "Error constructing empty: %s", err)
 
 	ttl := ss.session.TTL()
 	require.Equal(ss.T(), 30*time.Second, ttl, "Expected default TTL of 30s, saw \"%s\"", ttl)
@@ -80,13 +79,13 @@ func (ss *SessionTestSuite) TestNew_Empty() {
 	require.Equal(ss.T(), 15*time.Second, interval, "Expected default Renew Interval of 15s, saw \"%s\"", interval)
 
 	behavior := ss.session.Behavior()
-	require.Equal(ss.T(), api.SessionBehaviorRelease, behavior, "Expected default Behavior to be \"%s\", saw \"%s\"", api.SessionBehaviorRelease, behavior)
+	require.Equal(ss.T(), api.SessionBehaviorRelease, behavior, "Expected default TTLBehavior to be \"%s\", saw \"%s\"", api.SessionBehaviorRelease, behavior)
 }
 
 func (ss *SessionTestSuite) TestNew_Populated() {
 	var err error
 
-	ss.session, err = consultant.NewSession(ss.config(&consultant.SessionConfig{TTL: "20s", Behavior: api.SessionBehaviorDelete}))
+	ss.session, err = consultant.NewManagedSession(ss.config(&consultant.ManagedSessionConfig{TTL: "20s", TTLBehavior: api.SessionBehaviorDelete}))
 	require.Nil(ss.T(), err, "Error constructing with config: %s", err)
 
 	ttl := ss.session.TTL()
@@ -96,7 +95,7 @@ func (ss *SessionTestSuite) TestNew_Populated() {
 	require.Equal(ss.T(), 10*time.Second, interval, "Expected Renew Interval of \"10s\", saw \"%s\"", interval)
 
 	behavior := ss.session.Behavior()
-	require.Equal(ss.T(), api.SessionBehaviorDelete, behavior, "Expected Behavior \"%s\", saw \"%s\"", api.SessionBehaviorDelete, behavior)
+	require.Equal(ss.T(), api.SessionBehaviorDelete, behavior, "Expected TTLBehavior \"%s\", saw \"%s\"", api.SessionBehaviorDelete, behavior)
 }
 
 func (ss *SessionTestSuite) TestNew_Failures() {
@@ -105,17 +104,17 @@ func (ss *SessionTestSuite) TestNew_Failures() {
 	const badTTL = "thursday"
 	const badBehavior = "cheese place"
 
-	_, err = consultant.NewSession(ss.config(&consultant.SessionConfig{TTL: badTTL}))
+	_, err = consultant.NewManagedSession(ss.config(&consultant.ManagedSessionConfig{TTL: badTTL}))
 	require.NotNil(ss.T(), err, "Expected TTL of \"%s\" to return error", badTTL)
 
-	_, err = consultant.NewSession(ss.config(&consultant.SessionConfig{Behavior: badBehavior}))
-	require.NotNil(ss.T(), err, "Expected Behavior of \"%s\" to return error", badBehavior)
+	_, err = consultant.NewManagedSession(ss.config(&consultant.ManagedSessionConfig{TTLBehavior: badBehavior}))
+	require.NotNil(ss.T(), err, "Expected TTLBehavior of \"%s\" to return error", badBehavior)
 }
 
 func (ss *SessionTestSuite) TestNew_TTLMinimum() {
 	var err error
 
-	ss.session, err = consultant.NewSession(ss.config(&consultant.SessionConfig{TTL: "1s"}))
+	ss.session, err = consultant.NewManagedSession(ss.config(&consultant.ManagedSessionConfig{TTL: "1s"}))
 	require.Nil(ss.T(), err, "Error constructing session: %s", err)
 
 	ttl := ss.session.TTL()
@@ -128,7 +127,7 @@ func (ss *SessionTestSuite) TestNew_TTLMinimum() {
 func (ss *SessionTestSuite) TestNew_TTLMaximum() {
 	var err error
 
-	ss.session, err = consultant.NewSession(ss.config(&consultant.SessionConfig{TTL: "96400s"}))
+	ss.session, err = consultant.NewManagedSession(ss.config(&consultant.ManagedSessionConfig{TTL: "96400s"}))
 	require.Nil(ss.T(), err, "Error constructing session: %s", err)
 
 	ttl := ss.session.TTL()
@@ -141,12 +140,12 @@ func (ss *SessionTestSuite) TestNew_TTLMaximum() {
 func (ss *SessionTestSuite) TestSession_Run() {
 	var err error
 
-	upChan := make(chan consultant.SessionUpdate)
-	updateFunc := func(up consultant.SessionUpdate) {
+	upChan := make(chan consultant.ManagedSessionUpdate)
+	updateFunc := func(up consultant.ManagedSessionUpdate) {
 		upChan <- up
 	}
 
-	ss.session, err = consultant.NewSession(ss.config(&consultant.SessionConfig{TTL: sessionTestTTL, UpdateFunc: updateFunc}))
+	ss.session, err = consultant.NewManagedSession(ss.config(&consultant.ManagedSessionConfig{TTL: sessionTestTTL, UpdateFunc: updateFunc}))
 	require.Nil(ss.T(), err, "Error constructing session: %s", err)
 
 	ss.session.Run()
@@ -165,10 +164,10 @@ func (ss *SessionTestSuite) TestSession_Run() {
 func (ss *SessionTestSuite) TestSession_AutoRun() {
 	var err error
 
-	ss.session, err = consultant.NewSession(ss.config(&consultant.SessionConfig{TTL: sessionTestTTL, AutoRun: true}))
+	ss.session, err = consultant.NewManagedSession(ss.config(&consultant.ManagedSessionConfig{TTL: sessionTestTTL, StartImmediately: true}))
 	require.Nil(ss.T(), err, "Error constructing session: %s", err)
 
-	require.True(ss.T(), ss.session.Running(), "AutoRun session not automatically started")
+	require.True(ss.T(), ss.session.Running(), "StartImmediately session not automatically started")
 }
 
 func (ss *SessionTestSuite) TestSession_SessionKilled() {
@@ -177,12 +176,12 @@ func (ss *SessionTestSuite) TestSession_SessionKilled() {
 		err       error
 	)
 
-	upChan := make(chan consultant.SessionUpdate, 1)
-	updateFunc := func(up consultant.SessionUpdate) {
+	upChan := make(chan consultant.ManagedSessionUpdate, 1)
+	updateFunc := func(up consultant.ManagedSessionUpdate) {
 		upChan <- up
 	}
 
-	ss.session, err = consultant.NewSession(ss.config(&consultant.SessionConfig{TTL: sessionTestTTL, UpdateFunc: updateFunc}))
+	ss.session, err = consultant.NewManagedSession(ss.config(&consultant.ManagedSessionConfig{TTL: sessionTestTTL, UpdateFunc: updateFunc}))
 	require.Nil(ss.T(), err, "Error constructing session: %s", err)
 
 	ss.session.Run()
@@ -193,7 +192,7 @@ TestLoop:
 		case up := <-upChan:
 			if i == 0 {
 				if up.ID == "" {
-					ss.FailNowf("Expected to have session on first pass", "Session create failed: %#v", up)
+					ss.FailNowf("Expected to have session on first pass", "ManagedSession create failed: %#v", up)
 					break TestLoop
 				}
 				initialID = up.ID
@@ -205,7 +204,7 @@ TestLoop:
 				}
 			} else if i == 1 {
 				if up.ID == "" {
-					ss.FailNowf("Expected to have new session on 2nd pass", "Session create failed: %#v", up)
+					ss.FailNowf("Expected to have new session on 2nd pass", "ManagedSession create failed: %#v", up)
 					break TestLoop
 				}
 				if up.ID == initialID {
@@ -225,7 +224,7 @@ type SessionUtilTestSuite struct {
 	server *cst.TestServer
 	client *api.Client
 
-	session *consultant.Session
+	session *consultant.ManagedSession
 }
 
 func TestSessionUtil(t *testing.T) {
@@ -233,7 +232,7 @@ func TestSessionUtil(t *testing.T) {
 }
 
 func (us *SessionUtilTestSuite) SetupSuite() {
-	server, client := testutil.MakeServerAndClient(us.T(), nil)
+	server, client := makeTestServerAndClient(us.T(), nil)
 	us.server = server
 	us.client = client.Client
 }
@@ -260,12 +259,12 @@ func (us *SessionUtilTestSuite) TearDownTest() {
 func (us *SessionUtilTestSuite) TestParseName_NoKey() {
 	var err error
 
-	updated := make(chan consultant.SessionUpdate, 1)
-	updater := func(up consultant.SessionUpdate) {
+	updated := make(chan consultant.ManagedSessionUpdate, 1)
+	updater := func(up consultant.ManagedSessionUpdate) {
 		updated <- up
 	}
 
-	us.session, err = consultant.NewSession(&consultant.SessionConfig{
+	us.session, err = consultant.NewManagedSession(&consultant.ManagedSessionConfig{
 		Client:     us.client,
 		TTL:        "10s",
 		UpdateFunc: updater,
@@ -274,19 +273,19 @@ func (us *SessionUtilTestSuite) TestParseName_NoKey() {
 
 	us.session.Run()
 
-	var up consultant.SessionUpdate
+	var up consultant.ManagedSessionUpdate
 
 	select {
 	case <-time.After(10 * time.Second):
 		us.FailNow("Expected to receive session update by now")
 	case up = <-updated:
-		require.Nil(us.T(), up.Error, "Session update error: %s", err)
+		require.Nil(us.T(), up.Error, "ManagedSession update error: %s", err)
 	}
 
 	name := us.session.Name()
 	require.NotZero(us.T(), name, "Expected name to be populated")
 
-	parsed, err := consultant.ParseSessionName(name)
+	parsed, err := consultant.ParseManagedSessionName(name)
 	require.Nil(us.T(), err, "Error parsing session name: %s", err)
 
 	require.Zero(us.T(), parsed.Key, "Expected Key to be empty: %+v", parsed)
@@ -302,13 +301,13 @@ func (us *SessionUtilTestSuite) TestParseName_NoKey() {
 func (us *SessionUtilTestSuite) TestParseName_Keyed() {
 	var err error
 
-	updated := make(chan consultant.SessionUpdate, 1)
-	updater := func(up consultant.SessionUpdate) {
+	updated := make(chan consultant.ManagedSessionUpdate, 1)
+	updater := func(up consultant.ManagedSessionUpdate) {
 		updated <- up
 	}
 
-	us.session, err = consultant.NewSession(&consultant.SessionConfig{
-		Key:        consultant.testKey,
+	us.session, err = consultant.NewManagedSession(&consultant.ManagedSessionConfig{
+		Key:        clientTestKVKey,
 		Client:     us.client,
 		TTL:        "10s",
 		UpdateFunc: updater,
@@ -317,19 +316,19 @@ func (us *SessionUtilTestSuite) TestParseName_Keyed() {
 
 	us.session.Run()
 
-	var up consultant.SessionUpdate
+	var up consultant.ManagedSessionUpdate
 
 	select {
 	case <-time.After(10 * time.Second):
 		us.FailNow("Expected to receive session update by now")
 	case up = <-updated:
-		require.Nil(us.T(), up.Error, "Session update error: %s", err)
+		require.Nil(us.T(), up.Error, "ManagedSession update error: %s", err)
 	}
 
 	name := us.session.Name()
 	require.NotZero(us.T(), name, "Expected name to be populated")
 
-	parsed, err := consultant.ParseSessionName(name)
+	parsed, err := consultant.ParseManagedSessionName(name)
 	require.Nil(us.T(), err, "Error parsing session name: %s", err)
 
 	require.NotZero(us.T(), parsed.Key, "Expected Key to be populated: %+v", parsed)

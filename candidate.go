@@ -1,10 +1,10 @@
 package consultant
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"net"
 	"regexp"
 	"strings"
@@ -25,7 +25,7 @@ const (
 	CandidateIDRegex = `^[a-zA-Z0-9:.-]+$` // only allow certain characters in an ID
 
 	CandidateSessionKeyPrefix = "candidate-"
-	CandidatesessionKeyFormat = CandidateSessionKeyPrefix + "%s"
+	CandidateSessionKeyFormat = CandidateSessionKeyPrefix + "%s"
 )
 
 var (
@@ -36,15 +36,15 @@ var (
 type (
 	// CandidateLeaderKVValue is the body of the acquired KV
 	CandidateLeaderKVValue struct {
-		LeaderAddress string
+		LeaderAddress string `json:"leader_address"`
 	}
 
 	// CandidateElectionUpdate is sent to watchers on election state change
 	CandidateElectionUpdate struct {
 		// Elected tracks whether this specific candidate has been elected
-		Elected bool
+		Elected bool `json:"elected"`
 		// State tracks the current state of this candidate
-		State State
+		State State `json:"state"`
 	}
 
 	CandidateConfig struct {
@@ -69,21 +69,25 @@ type (
 		// If not defined, will default to value of session.DefaultTTL
 		SessionTTL string
 
-		// Client [optional]
+		// APIConfig [optional]
 		//
-		// Consul API client.  If not specified, one will be created using api.DefaultConfig()
-		Client *api.Client
+		// Consul API Client configuration.  If set, one will be created using api.DefaultConfig()
+		APIConfig *api.Config
 
-		// AutoRun [optional]
+		// StartImmediately [optional]
 		//
 		// If set to true, the Candidate will immediately enter its election pool after successful construction
 		AutoRun bool
+
+		// Debug [optional]
+		//
+		// Enables debug logging output
+		Debug bool
 	}
 
 	Candidate struct {
-		mu       sync.RWMutex
-		log      *log.Logger
-		client   *api.Client
+		mu sync.RWMutex
+
 		id       string
 		watchers *candidateWatchers
 		kvKey    string
@@ -91,67 +95,76 @@ type (
 		elected  *bool
 		state    State
 
-		session    *Session
+		session    *ManagedSession
 		sessionTTL string
+
+		apiConfig *api.Config
+		client    *api.Client
+
+		logger Logger
+		dbg    bool
 
 		stop chan chan struct{}
 	}
 )
 
-func NewCandidate(conf *CandidateConfig) (*Candidate, error) {
+func NewCandidate(ctx context.Context, conf *CandidateConfig, logger Logger) (*Candidate, error) {
 	var (
-		id, kvKey, sessionTTL string
-		client                *api.Client
-		autoRun               bool
-		err                   error
+		id        string
+		apiConfig *api.Config
+		err       error
+
+		c = new(Candidate)
 	)
 
-	if conf != nil {
-		id = conf.ID
-		kvKey = conf.KVKey
-		sessionTTL = conf.SessionTTL
-		client = conf.Client
-		autoRun = conf.AutoRun
+	if conf == nil {
+		return nil, errors.New("conf cannot be nil")
+	}
+	if conf.KVKey == "" {
+		return nil, errors.New("conf.KVKey cannot be empty")
 	}
 
-	if kvKey == "" {
-		return nil, errors.New("key cannot be empty")
-	}
-
-	if client == nil {
-		client, err = api.NewClient(api.DefaultConfig())
-		if err != nil {
-			return nil, fmt.Errorf("unable to create consul api client: %s", err)
-		}
-	}
-
-	id = strings.TrimSpace(id)
-	if id == "" {
+	if conf.ID == "" {
 		if addr, err := LocalAddress(); err != nil {
 			id = LazyRandomString(8)
 		} else {
 			id = addr
 		}
+	} else {
+		id = conf.ID
 	}
 
 	if !candidateValidIDTest.MatchString(id) {
 		return nil, CandidateInvalidIDErr
 	}
 
-	c := &Candidate{
-		client:     client,
-		id:         id,
-		watchers:   newCandidateWatchers(),
-		kvKey:      kvKey,
-		elected:    new(bool),
-		sessionTTL: sessionTTL,
-		stop:       make(chan chan struct{}, 1),
+	if conf.APIConfig != nil {
+		apiConfig = conf.APIConfig
+	} else {
+		apiConfig = api.DefaultConfig()
 	}
 
-	if autoRun {
-		c.log.Printf("AutoRun enabled")
+	c.id = id
+	c.watchers = newCandidateWatchers()
+	c.logger = logger
+	c.kvKey = conf.KVKey
+	c.elected = new(bool)
+	c.stop = make(chan chan struct{}, 1)
+
+	if conf.SessionTTL != "" {
+		c.sessionTTL = conf.SessionTTL
+	} else {
+		c.sessionTTL = api.DefaultLockSessionTTL
+	}
+
+	if c.client, err = api.NewClient(apiConfig); err != nil {
+		return nil, fmt.Errorf("unable to create consul api client: %s", err)
+	}
+
+	if conf.AutoRun {
+		c.logf(true, "StartImmediately enabled")
 		if err := c.Run(); err != nil {
-			return nil, fmt.Errorf("error occurred during autostart: %s", err)
+			return nil, fmt.Errorf("error occurred during auto run: %s", err)
 		}
 	}
 
@@ -288,7 +301,7 @@ waitLoop:
 			if _, err = c.LeaderService(); nil == err {
 				break waitLoop
 			}
-			c.log.Printf("Error locating leader service: %s", err)
+			c.logf(false, "Error locating leader service: %s", err)
 		}
 
 		time.Sleep(time.Second)
@@ -380,16 +393,23 @@ func (c *Candidate) Resign() {
 
 	if c.session != nil {
 		if err := c.session.Stop(); err != nil {
-			c.log.Printf("Error stopping session during resign: %s", err)
+			c.logf(false, "Error stopping session during resign: %s", err)
 		}
 	}
 
 	c.mu.Unlock()
 
-	c.log.Print("Resigned")
+	c.logf(false, "Resigned")
 
 	// notify watchers of updated state
 	c.watchers.notify(CandidateElectionUpdate{false, CandidateStateResigned})
+}
+
+func (c *Candidate) logf(debug bool, f string, v ...interface{}) {
+	if c.logger != nil || debug && !c.dbg {
+		return
+	}
+	c.logger.Printf(f, v...)
 }
 
 // acquire will attempt to do just that.  Caller must hold lock!
@@ -410,23 +430,23 @@ func (c *Candidate) acquire(sid string) (bool, error) {
 
 	kvp.Value, err = json.Marshal(kvpValue)
 	if err != nil {
-		c.log.Printf("Unable to marshal KV body: %s", err)
+		c.logf(false, "Unable to marshal KV body: %s", err)
 	}
 
 	elected, _, err = c.client.KV().Acquire(kvp, nil)
 	return elected, err
 }
 
-func (c *Candidate) createSession() (*Session, error) {
-	sessionConfig := SessionConfig{
-		Key:        fmt.Sprintf(CandidatesessionKeyFormat, c.id),
-		TTL:        c.sessionTTL,
-		Behavior:   api.SessionBehaviorDelete,
-		Log:        c.log,
-		Client:     c.client,
-		UpdateFunc: c.sessionUpdate,
+func (c *Candidate) createSession() (*ManagedSession, error) {
+	sessionConfig := ManagedSessionConfig{
+		Key:         fmt.Sprintf(CandidateSessionKeyFormat, c.id),
+		TTL:         c.sessionTTL,
+		TTLBehavior: api.SessionBehaviorDelete,
+		Log:         c.log,
+		Client:      c.client,
+		UpdateFunc:  c.sessionUpdate,
 	}
-	return NewSession(&sessionConfig)
+	return NewManagedSession(&sessionConfig)
 }
 
 // refreshLock is responsible for attempting to create / refresh the session lock on the kv
@@ -443,7 +463,7 @@ func (c *Candidate) refreshLock() {
 			// this should only ever happen very early on in the election process
 			elected = false
 			updated = c.elected != nil && *c.elected != elected
-			c.log.Printf("refreshLock() - Session does not exist, will try locking again in %d seconds...", int64(c.session.RenewInterval().Seconds()))
+			c.log.Printf("refreshLock() - ManagedSession does not exist, will try locking again in %d seconds...", int64(c.session.RenewInterval().Seconds()))
 		} else if elected, err = c.acquire(sid); err != nil {
 			// most likely hit due to transport error.
 			updated = c.elected != nil && *c.elected != elected
@@ -454,7 +474,7 @@ func (c *Candidate) refreshLock() {
 			updated = c.elected == nil || *c.elected != elected
 		}
 	} else {
-		c.log.Print("refreshLock() - Session is in stopped state, attempting to restart...")
+		c.log.Print("refreshLock() - ManagedSession is in stopped state, attempting to restart...")
 		elected = false
 		updated = c.elected != nil && *c.elected != elected
 		c.session.Run()
@@ -500,7 +520,7 @@ Locker:
 }
 
 // sessionUpdate is the receiver for the session update callback
-func (c *Candidate) sessionUpdate(update SessionUpdate) {
+func (c *Candidate) sessionUpdate(update ManagedSessionUpdate) {
 	if !c.Running() {
 		c.log.Printf("sessionUpdate() - Not in the running but received update: %v", update)
 		return
@@ -555,7 +575,7 @@ type CandidateNameParts struct {
 }
 
 func ParseCandidateSessionName(name string) (*CandidateNameParts, error) {
-	sn, err := ParseSessionName(name)
+	sn, err := ParseManagedSessionName(name)
 	if err != nil {
 		return nil, err
 	}

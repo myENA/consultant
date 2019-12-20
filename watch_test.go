@@ -19,7 +19,7 @@ func TestWatch(t *testing.T) {
 		_, errs["event"] = consultant.WatchEvent("event", "", "")
 		_, errs["connect-roots"] = consultant.WatchConnectRoots("", "")
 		_, errs["connect-leaf"] = consultant.WatchConnectLeaf("service", "", "")
-		_, errs["proxy-config"] = consultant.WatchAgentService("sid", "", "")
+		_, errs["agent-service"] = consultant.WatchAgentService("sid")
 
 		for n, err := range errs {
 			if err != nil {

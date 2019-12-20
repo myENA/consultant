@@ -31,16 +31,19 @@ func TestNotifierBase_AttachNotificationHandler(t *testing.T) {
 				}
 			}()
 			ms := consultant.NewBasicNotifier()
+			id, replaced := ms.AttachNotificationHandler(setup.id, setup.fn)
 			if setup.id == "" {
-				id, replaced := ms.AttachNotificationHandler(setup.id, setup.fn)
 				if id == "" {
 					t.Log("Expected random ID to be created, saw empty string")
 					t.Fail()
 				}
-				if replaced {
-					t.Log("Expected replaced to be false, saw true")
-					t.Fail()
-				}
+			} else if setup.id != id {
+				t.Logf("Expected ID to be %q, saw %q", setup.id, id)
+				t.Fail()
+			}
+			if replaced {
+				t.Log("Expected replaced to be false, saw true")
+				t.Fail()
 			}
 		})
 	}

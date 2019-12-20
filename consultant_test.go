@@ -3,6 +3,7 @@ package consultant_test
 import (
 	"fmt"
 	"math/rand"
+	"strings"
 	"sync"
 	"testing"
 
@@ -11,7 +12,14 @@ import (
 	"github.com/myENA/consultant/v2"
 )
 
-const testNounLen = 1000
+const (
+	slugErr      = "!ERR!"
+	slugField    = "!FIELD!"
+	slugTestName = "!TESTNAME!"
+	slugValue    = "!VALUE!"
+
+	testNounLen = 1000
+)
 
 // sourced from http://www.desiquintans.com/downloads/nounlist/nounlist.txt
 var testUtilNouns = [1000]string{
@@ -1027,6 +1035,24 @@ func getTestLocalAddr(t *testing.T) string {
 		return ""
 	}
 	return addr
+}
+
+type tsp struct {
+	err      error
+	field    string
+	value    interface{}
+	testName string
+}
+
+func replaceTestSlugs(in string, p tsp) string {
+	out := in
+	if p.err != nil {
+		out = strings.ReplaceAll(in, slugErr, p.err.Error())
+	}
+	out = strings.ReplaceAll(in, slugField, p.field)
+	out = strings.ReplaceAll(in, slugValue, fmt.Sprintf("%v", p.value))
+	out = strings.ReplaceAll(in, slugTestName, p.testName)
+	return out
 }
 
 func makeTestServerConfigCallback(cb cst.ServerConfigCallback) cst.ServerConfigCallback {

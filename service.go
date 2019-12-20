@@ -600,8 +600,11 @@ func (ms *ManagedService) maintainShutdown(refreshTimer *time.Timer, wp *watch.P
 
 func (ms *ManagedService) maintain() {
 	var (
-		wp  *watch.Plan
-		err error
+		tick time.Time
+		idx  watch.WaitIndexVal
+		frch chan error
+		wp   *watch.Plan
+		err  error
 
 		wpUpdate     = make(chan watch.WaitIndexVal, 5) // TODO: do more fun stuff...
 		wpStopped    = make(chan error, 1)
@@ -624,11 +627,11 @@ func (ms *ManagedService) maintain() {
 
 	for {
 		select {
-		case ch := <-ms.forceRefresh:
-			ms.logf(true, "maintain() - forceRefresh hit")
+		case frch = <-ms.forceRefresh:
 			refreshTimer.Stop()
-			ms.maintainForceRefresh(ch)
-			refreshTimer = time.NewTimer(ms.refreshInterval)
+			ms.logf(true, "maintain() - forceRefresh hit")
+			ms.maintainForceRefresh(frch)
+			refreshTimer.Reset(ms.refreshInterval)
 
 		case <-wpStopped:
 			ms.logf(false, "maintain() - Watch plan stopped with error: %s")
@@ -638,14 +641,14 @@ func (ms *ManagedService) maintain() {
 				ms.logf(false, "maintain() - Watch plan successfully rebuilt, running...")
 			}
 
-		case idx := <-wpUpdate:
-			ms.logf(true, "maintain() - Watch plan has received update (idx: %v)", idx)
+		case idx = <-wpUpdate:
 			refreshTimer.Stop()
+			ms.logf(true, "maintain() - Watch plan has received update (idx: %v)", idx)
 			ms.maintainWatchPlanUpdate(idx)
-			refreshTimer = time.NewTimer(ms.refreshInterval)
+			refreshTimer.Reset(ms.refreshInterval)
 
-		case t := <-refreshTimer.C:
-			ms.logf(true, "maintain() - refreshTimer hit (%s)", t)
+		case tick = <-refreshTimer.C:
+			ms.logf(true, "maintain() - refreshTimer hit (%s)", tick)
 			ms.maintainRefreshTimerTick()
 			if wp == nil {
 				ms.logf(false, "maintain() - Watch plan is nil, attempting to rebuild...")
@@ -657,7 +660,7 @@ func (ms *ManagedService) maintain() {
 			} else {
 				ms.logf(true, "maintain() - Watch plan is still running, hooray.")
 			}
-			refreshTimer = time.NewTimer(ms.refreshInterval)
+			refreshTimer.Reset(ms.refreshInterval)
 
 		case <-ms.ctx.Done():
 			ms.logf(true, "maintain() - Internal context closed: %s", ms.ctx.Err())

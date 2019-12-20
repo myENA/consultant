@@ -64,7 +64,7 @@ func (cs *CandidateTestSuite) makeCandidate(num int, conf *consultant.CandidateC
 	if conf != nil {
 		*lc = *conf
 	}
-	lc.ID = fmt.Sprintf("test-%d", num)
+	lc.CandidateID = fmt.Sprintf("test-%d", num)
 	if lc.SessionTTL == "" {
 		lc.SessionTTL = candidateLockTTL
 	}
@@ -85,20 +85,20 @@ func (cs *CandidateTestSuite) TestNew_EmptyID() {
 	cand, err := consultant.NewCandidate(cs.configKeyed(nil))
 	require.Nil(cs.T(), err, "Error creating candidate: %s", err)
 	if myAddr, err := consultant.LocalAddress(); err != nil {
-		require.NotZero(cs.T(), cand.ID(), "Expected Candidate ID to not be empty")
+		require.NotZero(cs.T(), cand.ID(), "Expected Candidate CandidateID to not be empty")
 	} else {
-		require.Equal(cs.T(), myAddr, cand.ID(), "Expected Candidate ID to be \"%s\", saw \"%s\"", myAddr, cand.ID())
+		require.Equal(cs.T(), myAddr, cand.ID(), "Expected Candidate CandidateID to be \"%s\", saw \"%s\"", myAddr, cand.ID())
 	}
 }
 
 func (cs *CandidateTestSuite) TestNew_InvalidID() {
 	var err error
 
-	_, err = consultant.NewCandidate(cs.configKeyed(&consultant.CandidateConfig{ID: "thursday dancing in the sun"}))
-	require.Equal(cs.T(), consultant.CandidateInvalidIDErr, err, "Expected \"thursday dancing in the sun\" to return invalid ID error, saw %+v", err)
+	_, err = consultant.NewCandidate(cs.configKeyed(&consultant.CandidateConfig{CandidateID: "thursday dancing in the sun"}))
+	require.Equal(cs.T(), consultant.CandidateInvalidIDErr, err, "Expected \"thursday dancing in the sun\" to return invalid CandidateID error, saw %+v", err)
 
-	_, err = consultant.NewCandidate(cs.configKeyed(&consultant.CandidateConfig{ID: "Große"}))
-	require.Equal(cs.T(), consultant.CandidateInvalidIDErr, err, "Expected \"Große\" to return invalid ID error, saw %+v", err)
+	_, err = consultant.NewCandidate(cs.configKeyed(&consultant.CandidateConfig{CandidateID: "Große"}))
+	require.Equal(cs.T(), consultant.CandidateInvalidIDErr, err, "Expected \"Große\" to return invalid CandidateID error, saw %+v", err)
 }
 
 func (cs *CandidateTestSuite) TestRun_SimpleElectionCycle() {
@@ -357,7 +357,7 @@ func (us *CandidateUtilTestSuite) TestSessionNameParse() {
 
 	us.candidate.Run()
 
-	err = us.candidate.WaitFor(20 * time.Second)
+	err = us.candidate.WaitUntil(20 * time.Second)
 	require.Nil(us.T(), err, "Wait deadline of 20s breached: %s", err)
 
 	ip, err := us.candidate.LeaderIP()

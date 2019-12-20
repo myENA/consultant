@@ -6,113 +6,88 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"regexp"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/hashicorp/consul/api"
 )
 
-type State uint8
+type CandidateState uint8
 
 const (
-	CandidateStateResigned State = iota
+	CandidateStateResigned CandidateState = iota
 	CandidateStateRunning
 )
 
-const (
-	CandidateIDRegex = `^[a-zA-Z0-9:.-]+$` // only allow certain characters in an ID
+// CandidateLeaderKVValue is the body of the acquired KV
+type CandidateLeaderKVValue struct {
+	LeaderID      string    `json:"leader_id"`
+	LeaderAddress string    `json:"leader_address"`
+	LeaderSince   time.Time `json:"leader_since"`
+}
 
-	CandidateSessionKeyPrefix = "candidate-"
-	CandidateSessionKeyFormat = CandidateSessionKeyPrefix + "%s"
-)
+// CandidateElectionUpdate is sent to watchers on election state change
+type CandidateElectionUpdate struct {
+	// Elected tracks whether this specific candidate has been elected
+	Elected bool `json:"elected"`
+	// State tracks the current state of this candidate
+	State CandidateState `json:"state"`
+}
 
-var (
-	candidateValidIDTest  = regexp.MustCompile(CandidateIDRegex)
-	CandidateInvalidIDErr = fmt.Errorf("candidate ID must obey \"%s\"", CandidateIDRegex)
-)
+// CandidateConfig describes a Candidate
+type CandidateConfig struct {
+	ManagedSessionConfig
 
-type (
-	// CandidateLeaderKVValue is the body of the acquired KV
-	CandidateLeaderKVValue struct {
-		LeaderAddress string `json:"leader_address"`
-	}
+	// KVKey [required]
+	//
+	// Must be the key to attempt to acquire a session lock on.  This key must be considered ephemeral, and not contain
+	// anything you don't want overwritten / destroyed.
+	KVKey string
 
-	// CandidateElectionUpdate is sent to watchers on election state change
-	CandidateElectionUpdate struct {
-		// Elected tracks whether this specific candidate has been elected
-		Elected bool `json:"elected"`
-		// State tracks the current state of this candidate
-		State State `json:"state"`
-	}
+	// CandidateID [suggested]
+	//
+	// Should be a unique identifier for this specific Candidate that makes sense within the scope of your
+	// implementation. If left blank it will attempt to use the local IP address, otherwise a random string will be
+	// generated.  This is a way to identify which Candidate is holding the lock.
+	CandidateID string
 
-	CandidateConfig struct {
-		// KVKey [required]
-		//
-		// Must be the key to attempt to acquire a session lock on.  This key must be considered ephemeral, and not contain
-		// anything you don't want overwritten / destroyed.
-		KVKey string
+	// Debug [optional]
+	//
+	// Enables debug logging output.  If true here but false in ManagedSessionConfig instance only Candidate will have
+	// debug logging enabled and vice versa.
+	Debug bool
 
-		// ID [suggested]
-		//
-		// Should be a unique identifier that makes sense within the scope of your implementation.
-		// If left blank it will attempt to use the local IP address, otherwise a random string will be generated.
-		ID string
+	// Logger [optional]
+	//
+	// Logger for logging.  No logger means no logging.  Allows for a separate logger instance to be used from the
+	// underlying ManagedSession instance.
+	Logger Logger
+}
 
-		// SessionTTL [optional]
-		//
-		// The duration of time a given candidate can be elected without re-trying.  A "good" value for this depends
-		// entirely upon your implementation.  Keep in mind that once the KVKey lock is acquired with the session, it will
-		// remain locked until either the specified session TTL is up or Resign() is explicitly called.
-		//
-		// If not defined, will default to value of session.DefaultTTL
-		SessionTTL string
+// Candidate represents an extension to the ManagedSession type that will additionally attempt to apply the session
+// to a specific KV key.  This can then be used to facilitate "leader election" by way of the "leader" being the
+// Candidate who's session is locking the target key.
+type Candidate struct {
+	mu sync.RWMutex
 
-		// APIConfig [optional]
-		//
-		// Consul API Client configuration.  If set, one will be created using api.DefaultConfig()
-		APIConfig *api.Config
+	ms *ManagedSession
 
-		// StartImmediately [optional]
-		//
-		// If set to true, the Candidate will immediately enter its election pool after successful construction
-		AutoRun bool
+	id       string
+	watchers *candidateWatchers
+	kvKey    string
+	elected  *bool
+	state    CandidateState
 
-		// Debug [optional]
-		//
-		// Enables debug logging output
-		Debug bool
-	}
+	dbg    bool
+	logger Logger
 
-	Candidate struct {
-		mu sync.RWMutex
+	stop chan chan struct{}
+}
 
-		id       string
-		watchers *candidateWatchers
-		kvKey    string
-		ttl      time.Duration
-		elected  *bool
-		state    State
-
-		session    *ManagedSession
-		sessionTTL string
-
-		apiConfig *api.Config
-		client    *api.Client
-
-		logger Logger
-		dbg    bool
-
-		stop chan chan struct{}
-	}
-)
-
-func NewCandidate(ctx context.Context, conf *CandidateConfig, logger Logger) (*Candidate, error) {
+func NewCandidate(conf *CandidateConfig) (*Candidate, error) {
 	var (
-		id        string
-		apiConfig *api.Config
-		err       error
+		id  string
+		err error
 
 		c = new(Candidate)
 	)
@@ -124,46 +99,31 @@ func NewCandidate(ctx context.Context, conf *CandidateConfig, logger Logger) (*C
 		return nil, errors.New("conf.KVKey cannot be empty")
 	}
 
-	if conf.ID == "" {
+	if c.ms, err = NewManagedSession(&conf.ManagedSessionConfig); err != nil {
+		return nil, fmt.Errorf("error constructing ManagedSession: %s", err)
+	}
+
+	if conf.CandidateID == "" {
 		if addr, err := LocalAddress(); err != nil {
 			id = LazyRandomString(8)
 		} else {
 			id = addr
 		}
 	} else {
-		id = conf.ID
-	}
-
-	if !candidateValidIDTest.MatchString(id) {
-		return nil, CandidateInvalidIDErr
-	}
-
-	if conf.APIConfig != nil {
-		apiConfig = conf.APIConfig
-	} else {
-		apiConfig = api.DefaultConfig()
+		id = conf.CandidateID
 	}
 
 	c.id = id
 	c.watchers = newCandidateWatchers()
-	c.logger = logger
 	c.kvKey = conf.KVKey
 	c.elected = new(bool)
 	c.stop = make(chan chan struct{}, 1)
 
-	if conf.SessionTTL != "" {
-		c.sessionTTL = conf.SessionTTL
-	} else {
-		c.sessionTTL = api.DefaultLockSessionTTL
-	}
+	c.ms.Watch(fmt.Sprintf("candidate_%s", c.id), c.sessionUpdate)
 
-	if c.client, err = api.NewClient(apiConfig); err != nil {
-		return nil, fmt.Errorf("unable to create consul api client: %s", err)
-	}
-
-	if conf.AutoRun {
+	if conf.StartImmediately != nil {
 		c.logf(true, "StartImmediately enabled")
-		if err := c.Run(); err != nil {
+		if err := c.Run(conf.StartImmediately); err != nil {
 			return nil, fmt.Errorf("error occurred during auto run: %s", err)
 		}
 	}
@@ -171,19 +131,9 @@ func NewCandidate(ctx context.Context, conf *CandidateConfig, logger Logger) (*C
 	return c, nil
 }
 
-// ID returns the unique identifier given at construct
-func (c *Candidate) ID() string {
+// CandidateID returns the configured identifier for this Candidate
+func (c *Candidate) CandidateID() string {
 	return c.id
-}
-
-// SessionID is the name of this candidate's session
-func (c *Candidate) SessionID() string {
-	return c.session.ID()
-}
-
-// SessionTTL returns the parsed TTL
-func (c *Candidate) SessionTTL() time.Duration {
-	return c.session.TTL()
 }
 
 // Elected will return true if this candidate's session is "locking" the kv
@@ -198,26 +148,27 @@ func (c *Candidate) Elected() bool {
 }
 
 // LeaderService will attempt to locate the leader's session entry in your local agent's datacenter
-func (c *Candidate) LeaderService() (*api.SessionEntry, error) {
-	return c.ForeignLeaderService("")
+func (c *Candidate) LeaderService(ctx context.Context) (*api.SessionEntry, *api.QueryMeta, error) {
+	return c.ForeignLeaderService(ctx, "")
 }
 
-// Return the leader, assuming its ID can be interpreted as an IP address
-func (c *Candidate) LeaderIP() (net.IP, error) {
-	return c.ForeignLeaderIP("")
-
+// Return the leader, assuming its CandidateID can be interpreted as an IP address
+func (c *Candidate) LeaderIP(ctx context.Context) (net.IP, error) {
+	return c.ForeignLeaderIP(ctx, "")
 }
 
 // ForeignLeaderIP will attempt to parse the body of the locked kv key to locate the current leader
-func (c *Candidate) ForeignLeaderIP(dc string) (net.IP, error) {
-	kv, _, err := c.client.KV().Get(c.kvKey, &api.QueryOptions{Datacenter: dc})
+func (c *Candidate) ForeignLeaderIP(ctx context.Context, dc string) (net.IP, error) {
+	qo := c.ms.qo.WithContext(ctx)
+	qo.Datacenter = dc
+	kv, _, err := c.ms.client.KV().Get(c.kvKey, qo)
 	if err != nil {
 		return nil, err
 	} else if kv == nil || len(kv.Value) == 0 {
 		return nil, errors.New("no leader has been elected")
 	}
 
-	info := &CandidateLeaderKVValue{}
+	info := new(CandidateLeaderKVValue)
 	if err = json.Unmarshal(kv.Value, info); err == nil && info.LeaderAddress != "" {
 		if ip := net.ParseIP(info.LeaderAddress); ip != nil {
 			return ip, nil
@@ -227,28 +178,35 @@ func (c *Candidate) ForeignLeaderIP(dc string) (net.IP, error) {
 }
 
 // ForeignLeaderService will attempt to locate the leader's session entry in a datacenter of your choosing
-func (c *Candidate) ForeignLeaderService(dc string) (*api.SessionEntry, error) {
-	var kv *api.KVPair
-	var se *api.SessionEntry
-	var err error
+func (c *Candidate) ForeignLeaderService(ctx context.Context, dc string) (*api.SessionEntry, *api.QueryMeta, error) {
+	var (
+		kv  *api.KVPair
+		se  *api.SessionEntry
+		qm  *api.QueryMeta
+		err error
 
-	kv, _, err = c.client.KV().Get(c.kvKey, &api.QueryOptions{Datacenter: dc})
+		qo = c.ms.qo.WithContext(ctx)
+	)
+
+	qo.Datacenter = dc
+
+	kv, qm, err = c.ms.client.KV().Get(c.kvKey, qo)
 	if err != nil {
-		return nil, err
+		return nil, qm, err
 	}
 
 	if nil == kv {
-		return nil, fmt.Errorf("kv \"%s\" not found in datacenter \"%s\"", c.kvKey, dc)
+		return nil, qm, fmt.Errorf("kv \"%s\" not found in datacenter \"%s\"", c.kvKey, dc)
 	}
 
 	if kv.Session != "" {
-		se, _, err = c.client.Session().Info(kv.Session, &api.QueryOptions{Datacenter: dc})
+		se, qm, err = c.ms.client.Session().Info(kv.Session, qo)
 		if nil != se {
-			return se, nil
+			return se, qm, nil
 		}
 	}
 
-	return nil, fmt.Errorf("kv \"%s\" has no session in datacenter \"%s\"", c.kvKey, dc)
+	return nil, qm, fmt.Errorf("kv \"%s\" has no session in datacenter \"%s\"", c.kvKey, dc)
 }
 
 // Watch allows you to register a function that will be called when the election State has changed
@@ -281,55 +239,37 @@ func (c *Candidate) UpdateWatchers() {
 	c.mu.RUnlock()
 }
 
-// WaitFor will wait for a candidate to be elected or until duration has passed
-func (c *Candidate) WaitFor(td time.Duration) error {
-	var err error
-
+// WaitUntil will wait for a candidate to be elected or until duration has passed
+func (c *Candidate) WaitUntil(ctx context.Context) error {
 	if !c.Running() {
-		return fmt.Errorf("candidate %s is not in running", c.ID())
+		return fmt.Errorf("candidate %s is not in running", c.CandidateID())
 	}
 
-	timer := time.NewTimer(td)
+	var err error
 
-waitLoop:
-	for {
+	for i := 1; ; i++ {
 		select {
-		case <-timer.C:
-			err = errors.New("expire time breached")
-			// attempt to locate current leader
+		case <-ctx.Done():
+			c.logf(false, "Context finished before locating leader: %s", ctx.Err())
+			return ctx.Err()
+
 		default:
-			if _, err = c.LeaderService(); nil == err {
-				break waitLoop
+			if _, _, err = c.LeaderService(ctx); nil == err {
+				return nil
 			}
-			c.logf(false, "Error locating leader service: %s", err)
+			c.logf(false, "Attempt %d at locating leader service errored: %s", i, err)
 		}
 
 		time.Sleep(time.Second)
 	}
-
-	if !timer.Stop() {
-		<-timer.C
-	}
-
-	return err
-}
-
-// WaitUntil will for a candidate to be elected or until the deadline is breached
-func (c *Candidate) WaitUntil(t time.Time) error {
-	now := time.Now()
-	if now.After(t) {
-		return errors.New("\"t\" must represent a time in the future")
-	}
-
-	return c.WaitFor(t.Sub(now))
 }
 
 // Wait will block until a leader has been elected, regardless of Candidate
 func (c *Candidate) Wait() error {
-	return c.WaitFor(1<<63 - 1)
+	return c.WaitUntil(context.Background())
 }
 
-func (c *Candidate) State() State {
+func (c *Candidate) State() CandidateState {
 	c.mu.RLock()
 	s := c.state
 	c.mu.RUnlock()
@@ -340,27 +280,23 @@ func (c *Candidate) Running() bool {
 	return c.State() == CandidateStateRunning
 }
 
-// Run will enter this candidate into the election pool
-func (c *Candidate) Run() error {
+// Run will enter this candidate into the election pool.  If the candidate is already running this does nothing.
+func (c *Candidate) Run(ctx context.Context) error {
 	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	if c.state == CandidateStateRunning {
-		c.mu.Unlock()
 		return nil
 	}
 
-	var err error
-
-	// create new session
-	if c.session, err = c.createSession(); err != nil {
-		c.mu.Unlock()
-		return fmt.Errorf("unable to create session: %s", err)
+	if err := c.ms.Run(ctx); err != nil {
+		return fmt.Errorf("session for candidate could not be started: %s", err)
 	}
 
-	// kickstart session
-	c.session.Run()
+	c.logf(false, "Entering election pool...")
 
 	// start up the lock maintainer
-	go c.maintainLock()
+	go c.maintainLock(ctx)
 
 	c.state = CandidateStateRunning
 
@@ -377,7 +313,7 @@ func (c *Candidate) Resign() {
 		return
 	}
 
-	c.log.Print("Resigning...")
+	c.logf(false, "Leaving election pool...")
 
 	// wait for lock maintenance loop to stop
 	done := make(chan struct{}, 1)
@@ -391,10 +327,8 @@ func (c *Candidate) Resign() {
 	}
 	c.state = CandidateStateResigned
 
-	if c.session != nil {
-		if err := c.session.Stop(); err != nil {
-			c.logf(false, "Error stopping session during resign: %s", err)
-		}
+	if err := c.ms.Stop(); err != nil {
+		c.logf(false, "Error stopping candidate session: %s", err)
 	}
 
 	c.mu.Unlock()
@@ -413,7 +347,7 @@ func (c *Candidate) logf(debug bool, f string, v ...interface{}) {
 }
 
 // acquire will attempt to do just that.  Caller must hold lock!
-func (c *Candidate) acquire(sid string) (bool, error) {
+func (c *Candidate) acquire(ctx context.Context) (bool, error) {
 	var (
 		elected bool
 		err     error
@@ -425,7 +359,7 @@ func (c *Candidate) acquire(sid string) (bool, error) {
 
 	kvp := &api.KVPair{
 		Key:     c.kvKey,
-		Session: sid,
+		Session: c.ms.ID(),
 	}
 
 	kvp.Value, err = json.Marshal(kvpValue)
@@ -433,59 +367,49 @@ func (c *Candidate) acquire(sid string) (bool, error) {
 		c.logf(false, "Unable to marshal KV body: %s", err)
 	}
 
-	elected, _, err = c.client.KV().Acquire(kvp, nil)
+	elected, _, err = c.ms.client.KV().Acquire(kvp, c.ms.wo.WithContext(ctx))
 	return elected, err
 }
 
-func (c *Candidate) createSession() (*ManagedSession, error) {
-	sessionConfig := ManagedSessionConfig{
-		Key:         fmt.Sprintf(CandidateSessionKeyFormat, c.id),
-		TTL:         c.sessionTTL,
-		TTLBehavior: api.SessionBehaviorDelete,
-		Log:         c.log,
-		Client:      c.client,
-		UpdateFunc:  c.sessionUpdate,
-	}
-	return NewManagedSession(&sessionConfig)
-}
-
 // refreshLock is responsible for attempting to create / refresh the session lock on the kv
-func (c *Candidate) refreshLock() {
+func (c *Candidate) refreshLock(ctx context.Context) {
 	var (
 		sid              string
 		elected, updated bool
 		err              error
 	)
 	c.mu.Lock()
-	if c.session.Running() {
+	if c.ms.Running() {
 		// if our session manager is still running
-		if sid = c.session.ID(); sid == "" {
+		if sid = c.ms.ID(); sid == "" {
 			// this should only ever happen very early on in the election process
 			elected = false
 			updated = c.elected != nil && *c.elected != elected
-			c.log.Printf("refreshLock() - ManagedSession does not exist, will try locking again in %d seconds...", int64(c.session.RenewInterval().Seconds()))
-		} else if elected, err = c.acquire(sid); err != nil {
+			c.logf(true, "refreshLock() - ManagedSession does not exist, will try locking again in %d seconds...", int64(c.ms.RenewInterval().Seconds()))
+		} else if elected, err = c.acquire(ctx); err != nil {
 			// most likely hit due to transport error.
 			updated = c.elected != nil && *c.elected != elected
-			c.log.Printf("refreshLock() - Error attempting to acquire lock: %s", err)
+			c.logf(true, "refreshLock() - Error attempting to acquire lock: %s", err)
 		} else {
 			// if c.elected is nil, indicating this is the initial election loop, or if the election state
 			// changed mark update as true
 			updated = c.elected == nil || *c.elected != elected
 		}
 	} else {
-		c.log.Print("refreshLock() - ManagedSession is in stopped state, attempting to restart...")
+		c.logf(true, "refreshLock() - ManagedSession is in stopped state, attempting to restart...")
 		elected = false
 		updated = c.elected != nil && *c.elected != elected
-		c.session.Run()
+		if err := c.ms.Run(ctx); err != nil {
+			c.logf(false, "refreshLock() - Error restarting ManagedSession: %s", err)
+		}
 	}
 
 	// if election state changed
 	if updated {
 		if elected {
-			c.log.Printf("We have won the election")
+			c.logf(false, "We have won the election")
 		} else {
-			c.log.Printf("We have lost the election")
+			c.logf(false, "We have lost the election")
 		}
 
 		// update internal state
@@ -496,39 +420,39 @@ func (c *Candidate) refreshLock() {
 }
 
 // maintainLock is responsible for triggering the routine that attempts to create / re-acquire the session kv lock
-func (c *Candidate) maintainLock() {
-	c.log.Printf("maintainLock() - Starting lock maintenance loop")
+func (c *Candidate) maintainLock(ctx context.Context) {
+	c.logf(true, "maintainLock() - Starting lock maintenance loop")
 	var (
 		drop chan struct{}
 
-		interval = c.session.RenewInterval()
+		interval = c.ms.RenewInterval()
 		ticker   = time.NewTicker(interval)
 	)
 Locker:
 	for {
 		select {
 		case <-ticker.C:
-			c.refreshLock()
+			c.refreshLock(ctx)
 		case drop = <-c.stop:
 			break Locker
 		}
 	}
 	ticker.Stop()
 	drop <- struct{}{}
-	c.log.Print("maintainLock() - Exiting lock maintenance loop")
+	c.logf(false, "maintainLock() - Exiting lock maintenance loop")
 	// and roll...
 }
 
 // sessionUpdate is the receiver for the session update callback
 func (c *Candidate) sessionUpdate(update ManagedSessionUpdate) {
 	if !c.Running() {
-		c.log.Printf("sessionUpdate() - Not in the running but received update: %v", update)
+		c.logf(false, "sessionUpdate() - Not in the running but received update: %v", update)
 		return
 	}
 	c.mu.RLock()
-	if c.session.ID() != update.ID {
+	if c.ms.ID() != update.ID {
 		c.mu.RUnlock()
-		c.log.Printf("sessionUpdate() - Received update from session %q but our local session is %q...", update.ID, c.session.ID())
+		c.logf(true, "sessionUpdate() - Received update from session %q but our local session is %q...", update.ID, c.ms.ID())
 		return
 	}
 	c.mu.RUnlock()
@@ -540,12 +464,12 @@ func (c *Candidate) sessionUpdate(update ManagedSessionUpdate) {
 	if update.Error != nil {
 		// if there was an update either creating or renewing our session
 		consecutiveSessionErrorCount++
-		c.log.Printf("sessionUpdate() - Error (%d in a row): %s", consecutiveSessionErrorCount, update.Error)
+		c.logf(false, "sessionUpdate() - Error (%d in a row): %s", consecutiveSessionErrorCount, update.Error)
 		if update.State == SessionStateRunning && consecutiveSessionErrorCount > 2 {
 			// if the session is still running but we've seen more than 2 errors, attempt a stop -> start cycle
-			c.log.Print("sessionUpdate() - 2 successive errors seen, stopping session")
-			if err = c.session.Stop(); err != nil {
-				c.log.Printf("sessionUpdate() - Error stopping session: %s", err)
+			c.logf(false, "sessionUpdate() - 2 successive errors seen, stopping session")
+			if err = c.ms.Stop(); err != nil {
+				c.logf(false, "sessionUpdate() - Error stopping session: %s", err)
 			}
 			refresh = true
 		}
@@ -557,37 +481,18 @@ func (c *Candidate) sessionUpdate(update ManagedSessionUpdate) {
 		// on.  next acquire tick will attempt to restart session.
 		consecutiveSessionErrorCount = 0
 		refresh = true
-		c.log.Printf("sessionUpdate() - Stopped state seen: %#v", update)
+		c.logf(false, "sessionUpdate() - Stopped state seen: %#v", update)
 	} else {
 		// if we got a non-error / non-stopped update, there is nothing to do.
 		consecutiveSessionErrorCount = 0
-		c.log.Printf("sessionUpdate() - Received %#v", update)
+		c.logf(true, "sessionUpdate() - Received %#v", update)
 	}
 
 	if refresh {
-		c.refreshLock()
+		ctx, cancel := context.WithTimeout(context.Background(), c.ms.rttl)
+		defer cancel()
+		c.refreshLock(ctx)
 	}
-}
-
-type CandidateNameParts struct {
-	SessionNameParts
-	CandidateID string
-}
-
-func ParseCandidateSessionName(name string) (*CandidateNameParts, error) {
-	sn, err := ParseManagedSessionName(name)
-	if err != nil {
-		return nil, err
-	}
-
-	if !strings.HasPrefix(sn.Key, CandidateSessionKeyPrefix) {
-		return nil, fmt.Errorf("session key \"%s\" does not have expected prefix \"%s\"", sn.Key, CandidateSessionKeyPrefix)
-	}
-
-	return &CandidateNameParts{
-		SessionNameParts: *sn,
-		CandidateID:      sn.Key[len(CandidateSessionKeyPrefix):],
-	}, nil
 }
 
 type CandidateWatchFunc func(update CandidateElectionUpdate)

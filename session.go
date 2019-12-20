@@ -31,7 +31,10 @@ func (s SessionState) String() string {
 }
 
 const (
-	SessionDefaultTTL        = 30 * time.Second
+	SessionDefaultTTL = 30 * time.Second
+
+	// SessionDefaultNameFormat will be used to create a name for any created ManagedSession instance that did not have
+	// one set in its configured definition
 	SessionDefaultNameFormat = "managed_session_" + SlugNode + "_" + SlugRand
 )
 
@@ -117,6 +120,10 @@ func NewManagedSession(conf *ManagedSessionConfig) (*ManagedSession, error) {
 		ms = new(ManagedSession)
 	)
 
+	if conf == nil {
+		conf = new(ManagedSessionConfig)
+	}
+
 	ms.dbg = conf.Debug
 	ms.logger = conf.Logger
 	ms.stop = make(chan chan error, 1)
@@ -127,9 +134,12 @@ func NewManagedSession(conf *ManagedSessionConfig) (*ManagedSession, error) {
 
 	if conf.Definition != nil {
 		*ms.base = *conf.Definition
-		if l := len(conf.Definition.Checks); l > 0 {
+		if conf.Definition.Checks != nil {
+			l := len(conf.Definition.Checks)
 			ms.base.Checks = make([]string, l, l)
-			copy(ms.base.Checks, conf.Definition.Checks)
+			if l > 0 {
+				copy(ms.base.Checks, conf.Definition.Checks)
+			}
 		}
 	} else {
 		ms.base.TTL = SessionDefaultTTL.String()
@@ -215,7 +225,7 @@ func (ms *ManagedSession) TTL() time.Duration {
 }
 
 // TTLBehavior is the action that will take place if the TTL is allowed to expire
-func (ms *ManagedSession) Behavior() string {
+func (ms *ManagedSession) TTLBehavior() string {
 	return ms.base.Behavior
 }
 
@@ -531,12 +541,12 @@ func (ms *ManagedSession) maintain(ctx context.Context) {
 	for {
 		select {
 		case tick = <-intervalTimer.C:
-			ms.logf(true, "maintain() - intervalTimer hit: %s", tick)
+			ms.logf(true, "maintain() - intervalTimer hit (%s)", tick)
 			ms.mu.Lock()
 			ms.maintainTick(ctx)
 			ms.mu.Unlock()
 			ms.UpdateWatchers()
-			intervalTimer = time.NewTimer(ms.renewInterval)
+			intervalTimer.Reset(ms.renewInterval)
 
 		case <-ctx.Done():
 			ms.logf(false, "maintain() - running context completed with: %s", ctx.Err())

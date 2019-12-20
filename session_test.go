@@ -1,6 +1,7 @@
 package consultant_test
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/hashicorp/consul/api"
@@ -11,49 +12,21 @@ const (
 	sessionTestTTL = "5s"
 )
 
-//func TestSession(t *testing.T) {
-//	suite.Run(t, &SessionTestSuite{})
-//}
-//
-//func (ss *SessionTestSuite) SetupSuite() {
-//	server, client := makeTestServerAndClient(ss.T(), nil)
-//	ss.server = server
-//	ss.client = client.Client
-//}
-//
-//func (ss *SessionTestSuite) TearDownSuite() {
-//	if ss.session != nil {
-//		ss.session.Stop()
-//	}
-//	ss.session = nil
-//	if ss.server != nil {
-//		ss.server.Stop()
-//	}
-//	ss.client = nil
-//	ss.server = nil
-//}
-//
-//func (ss *SessionTestSuite) TearDownTest() {
-//	if ss.session != nil {
-//		ss.session.Stop()
-//	}
-//	ss.session = nil
-//}
-
-func TestNewManagedSession_NoConfig(t *testing.T) {
+func TestNewManagedSession(t *testing.T) {
 	noConfigTests := map[string]struct {
 		config *consultant.ManagedSessionConfig
 	}{
-		"nil": {
+		"config-nil": {
 			config: nil,
 		},
-		"empty": {
+		"config-empty": {
 			config: new(consultant.ManagedSessionConfig),
 		},
 	}
 
 	for name, setup := range noConfigTests {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			ms, err := consultant.NewManagedSession(setup.config)
 			if err != nil {
 				t.Logf("expected no error, saw: %s", err)
@@ -81,7 +54,7 @@ func TestNewManagedSession_NoConfig(t *testing.T) {
 		})
 	}
 
-	invalidConfigTests := map[string]struct {
+	invalidFieldTests := map[string]struct {
 		config *consultant.ManagedSessionConfig
 		field  string
 	}{
@@ -103,8 +76,9 @@ func TestNewManagedSession_NoConfig(t *testing.T) {
 		},
 	}
 
-	for name, setup := range invalidConfigTests {
+	for name, setup := range invalidFieldTests {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			_, err := consultant.NewManagedSession(setup.config)
 			if err == nil {
 				t.Logf("Expected error with invalid %q", setup.field)
@@ -112,23 +86,67 @@ func TestNewManagedSession_NoConfig(t *testing.T) {
 			}
 		})
 	}
-}
 
-//session, err := consultant.NewManagedSession(nil)
-//if err != nil {
-//	t.Logf("Error building session with ")
-//}
-//require.Nil(t, err, "Error constructing empty: %s", err)
-//
-//ttl := ss.session.TTL()
-//require.Equal(ss.T(), 30*time.Second, ttl, "Expected default TTL of 30s, saw \"%s\"", ttl)
-//
-//interval := ss.session.RenewInterval()
-//require.Equal(ss.T(), 15*time.Second, interval, "Expected default Renew Interval of 15s, saw \"%s\"", interval)
-//
-//behavior := ss.session.Behavior()
-//require.Equal(ss.T(), api.SessionBehaviorRelease, behavior, "Expected default TTLBehavior to be \"%s\", saw \"%s\"", api.SessionBehaviorRelease, behavior)
-//}
+	ttlNormalizeTests := map[string]struct {
+		ttl string
+	}{
+		"sub-minimum": {ttl: "1s"},
+		"sup-maximum": {ttl: "72h"},
+	}
+	for name, setup := range ttlNormalizeTests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			def := api.SessionEntry{
+				TTL: setup.ttl,
+			}
+			conf := consultant.ManagedSessionConfig{
+				Definition: &def,
+			}
+			ms, err := consultant.NewManagedSession(&conf)
+			if err != nil {
+				t.Logf("Expected no error, saw %s", err)
+				t.Fail()
+			} else if mttl := ms.TTL(); mttl.String() == setup.ttl {
+				t.Logf("Expected ttl to be normalized but saw original value: %s", mttl)
+				t.Fail()
+			} else if mttl < consultant.SessionMinimumTTL || mttl > consultant.SessionMaximumTTL {
+				t.Logf("Expected ttl to be normalized to %s <= x >= %s, saw %s", consultant.SessionMinimumTTL, consultant.SessionMaximumTTL, mttl)
+				t.Fail()
+			}
+		})
+	}
+
+	for _, b := range []string{"", api.SessionBehaviorDelete, api.SessionBehaviorRelease} {
+		var tname string
+		if b == "" {
+			tname = "behavior-empty"
+		} else {
+			tname = fmt.Sprintf("behavior-%s", b)
+		}
+		t.Run(tname, func(t *testing.T) {
+			t.Parallel()
+			def := api.SessionEntry{
+				Behavior: b,
+			}
+			conf := consultant.ManagedSessionConfig{
+				Definition: &def,
+			}
+			ms, err := consultant.NewManagedSession(&conf)
+			if err != nil {
+				t.Logf("Expected no error, saw %s", err)
+				t.Fail()
+			} else if b == "" {
+				if mb := ms.TTLBehavior(); mb != api.SessionBehaviorDelete {
+					t.Logf("Expected default TTL behavior to be %q, saw %q", api.SessionBehaviorDelete, mb)
+					t.Fail()
+				}
+			} else if mb := ms.TTLBehavior(); mb != b {
+				t.Logf("Expected behavior to be %q, saw %q", b, mb)
+				t.Fail()
+			}
+		})
+	}
+}
 
 //func (ss *SessionTestSuite) TestNew_Populated() {
 //	var err error

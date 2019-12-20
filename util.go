@@ -345,3 +345,16 @@ func simpleToReg(localAddr, localHostname string, reg *SimpleServiceRegistration
 
 	return serviceID, asr, nil
 }
+
+// buildDefaultSessionName provides us with a usable session name if the user did not configure one themselves.
+func buildDefaultSessionName(base *api.SessionEntry) string {
+	var nodeName string
+	if base.Node == "" {
+		if hostName, herr := os.Hostname(); herr != nil {
+			nodeName = SessionDefaultNodeName
+		} else {
+			nodeName = hostName
+		}
+	}
+	return ReplaceSlugs(SessionDefaultNameFormat, SlugParams{Node: nodeName})
+}

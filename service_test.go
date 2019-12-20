@@ -26,14 +26,14 @@ func TestNewManagedServiceBuilder(t *testing.T) {
 		base     *api.AgentServiceRegistration
 		mutators []consultant.ManagedAgentServiceRegistrationMutator
 	}{
-		"base-no-mutators": {
+		"def-no-mutators": {
 			base: &api.AgentServiceRegistration{
 				Name:    managedServiceName,
 				Port:    managedServicePort,
 				Address: localAddr,
 			},
 		},
-		"base-mutators": {
+		"def-mutators": {
 			base: &api.AgentServiceRegistration{
 				Address: localAddr,
 			},
@@ -44,7 +44,7 @@ func TestNewManagedServiceBuilder(t *testing.T) {
 				},
 			},
 		},
-		"nil-base-mutators": {
+		"nil-def-mutators": {
 			mutators: []consultant.ManagedAgentServiceRegistrationMutator{
 				func(builder *consultant.ManagedAgentServiceRegistration) {
 					builder.Address = localAddr

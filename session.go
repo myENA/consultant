@@ -40,11 +40,22 @@ type ManagedSessionUpdate struct {
 }
 
 const (
+	SessionMinimumTTL = 10 * time.Second
 	SessionDefaultTTL = 30 * time.Second
+	SessionMaximumTTL = 24 * time.Hour
 
 	// SessionDefaultNameFormat will be used to create a name for any created ManagedSession instance that did not have
 	// one set in its configured definition
 	SessionDefaultNameFormat = "managed_session_" + SlugNode + "_" + SlugRand
+
+	// SessionDefaultNodeName is only ever used when:
+	// 1. the connected consul node name could not be determined
+	// 2. os.Hostname() results in an error
+	SessionDefaultNodeName = "LOCAL"
+)
+
+var (
+	validSessionBehaviors = []string{api.SessionBehaviorDelete, api.SessionBehaviorRelease}
 )
 
 // ManagedSessionConfig describes a ManagedSession
@@ -102,7 +113,7 @@ type ManagedSession struct {
 	client *api.Client
 	qo     *api.QueryOptions
 	wo     *api.WriteOptions
-	base   *api.SessionEntry
+	def    *api.SessionEntry
 	rttl   time.Duration
 
 	nf string
@@ -138,20 +149,24 @@ func NewManagedSession(conf *ManagedSessionConfig) (*ManagedSession, error) {
 	ms.stop = make(chan chan error, 1)
 	ms.qo = conf.QueryOptions
 	ms.wo = conf.WriteOptions
-	ms.base = new(api.SessionEntry)
+	ms.def = new(api.SessionEntry)
 
 	if conf.Definition != nil {
-		*ms.base = *conf.Definition
+		*ms.def = *conf.Definition
 		if conf.Definition.Checks != nil {
 			l := len(conf.Definition.Checks)
-			ms.base.Checks = make([]string, l, l)
+			ms.def.Checks = make([]string, l, l)
 			if l > 0 {
-				copy(ms.base.Checks, conf.Definition.Checks)
+				copy(ms.def.Checks, conf.Definition.Checks)
 			}
 		}
-	} else {
-		ms.base.TTL = SessionDefaultTTL.String()
-		ms.base.Behavior = api.SessionBehaviorDelete
+	}
+
+	if ms.def.TTL == "" {
+		ms.def.TTL = SessionDefaultTTL.String()
+	}
+	if ms.def.Behavior == "" {
+		ms.def.Behavior = api.SessionBehaviorDelete
 	}
 
 	if conf.RequestTTL > 0 {
@@ -160,23 +175,23 @@ func NewManagedSession(conf *ManagedSessionConfig) (*ManagedSession, error) {
 		ms.rttl = defaultInternalRequestTTL
 	}
 
-	ms.ttl, err = time.ParseDuration(ms.base.TTL)
+	ms.ttl, err = time.ParseDuration(ms.def.TTL)
 	if err != nil {
-		return nil, fmt.Errorf("provided TTL of %q is not valid: %s", ms.base.TTL, err)
+		return nil, fmt.Errorf("provided TTL of %q is not valid: %s", ms.def.TTL, err)
 	}
-	if ms.ttl < 10*time.Second {
-		ms.ttl = 10 * time.Second
-	} else if ms.ttl > 86400*time.Second {
-		ms.ttl = 86400 * time.Second
+	if ms.ttl < SessionMinimumTTL {
+		ms.ttl = SessionMinimumTTL
+	} else if ms.ttl > SessionMaximumTTL {
+		ms.ttl = SessionMaximumTTL
 	}
-	ms.base.TTL = ms.ttl.String()
+	ms.def.TTL = ms.ttl.String()
 
 	ms.renewInterval = ms.ttl / 2
 
-	switch ms.base.Behavior {
+	switch ms.def.Behavior {
 	case api.SessionBehaviorDelete, api.SessionBehaviorRelease:
 	default:
-		return nil, fmt.Errorf("ttlBehavior must be one of %v, saw %q", []string{api.SessionBehaviorRelease, api.SessionBehaviorDelete}, ms.base.Behavior)
+		return nil, fmt.Errorf("behavior must be one of %v, saw %q", validSessionBehaviors, ms.def.Behavior)
 	}
 
 	if conf.Client != nil {
@@ -185,14 +200,14 @@ func NewManagedSession(conf *ManagedSessionConfig) (*ManagedSession, error) {
 		return nil, fmt.Errorf("no client provided and error when creating with default config: %s", err)
 	}
 
-	if ms.base.Node == "" {
-		if ms.base.Node, err = ms.client.Agent().NodeName(); err != nil {
+	if ms.def.Node == "" {
+		if ms.def.Node, err = ms.client.Agent().NodeName(); err != nil {
 			ms.logf(false, "node name not set and unable to determine name of local agent node: %s", err)
 		}
 	}
 
-	if ms.base.Name == "" {
-		ms.base.Name = ReplaceSlugs(SessionDefaultNameFormat, SlugParams{Node: ms.base.Node})
+	if ms.def.Name == "" {
+		ms.def.Name = buildDefaultSessionName(ms.def)
 	}
 
 	if conf.StartImmediately != nil {
@@ -202,7 +217,7 @@ func NewManagedSession(conf *ManagedSessionConfig) (*ManagedSession, error) {
 		}
 	}
 
-	ms.logf(true, "Lock timeout: %s", ms.base.TTL)
+	ms.logf(true, "Lock timeout: %s", ms.def.TTL)
 	ms.logf(true, "Renew renewInterval: %s", ms.renewInterval)
 
 	return ms, nil
@@ -221,7 +236,7 @@ func (ms *ManagedSession) ID() string {
 // initialized, and then may become empty later if the session is removed.
 func (ms *ManagedSession) Name() string {
 	ms.mu.RLock()
-	name := ms.base.Name
+	name := ms.def.Name
 	ms.mu.RUnlock()
 	return name
 }
@@ -234,7 +249,7 @@ func (ms *ManagedSession) TTL() time.Duration {
 
 // TTLBehavior is the action that will take place if the TTL is allowed to expire
 func (ms *ManagedSession) TTLBehavior() string {
-	return ms.base.Behavior
+	return ms.def.Behavior
 }
 
 // RenewInterval is the renewInterval at which a TTL reset will be attempted
@@ -352,7 +367,7 @@ func (ms *ManagedSession) logf(debug bool, f string, v ...interface{}) {
 func (ms *ManagedSession) pushNotification(ev NotificationEvent) {
 	n := ManagedSessionUpdate{
 		ms.id,
-		ms.base.Name,
+		ms.def.Name,
 		ms.lastRenewed.UnixNano(),
 		ms.lastErr,
 		ms.state,
@@ -366,7 +381,7 @@ func (ms *ManagedSession) pushNotification(ev NotificationEvent) {
 func (ms *ManagedSession) create(ctx context.Context) error {
 	ms.logf(true, "create() - Attempting to create upstream session...")
 
-	se := *ms.base
+	se := *ms.def
 
 	ctx, cancel := context.WithTimeout(ctx, ms.rttl)
 	defer cancel()

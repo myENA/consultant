@@ -263,10 +263,10 @@ func (cs *CandidateTestSuite) TestRun_SessionAnarchy() {
 
 	cand := cs.makeCandidate(1, &consultant.CandidateConfig{AutoRun: true})
 
-	updates := make([]consultant.CandidateElectionUpdate, 0)
+	updates := make([]consultant.CandidateUpdate, 0)
 	updatesMu := sync.Mutex{}
 
-	cand.Watch("", func(update consultant.CandidateElectionUpdate) {
+	cand.Watch("", func(update consultant.CandidateUpdate) {
 		updatesMu.Lock()
 		cs.T().Logf("Update received: %#v", update)
 		updates = append(updates, update)

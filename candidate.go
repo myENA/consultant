@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/hashicorp/consul/api"
@@ -26,8 +27,8 @@ type CandidateLeaderKVValue struct {
 	LeaderSince   time.Time `json:"leader_since"`
 }
 
-// CandidateElectionUpdate is sent to watchers on election state change
-type CandidateElectionUpdate struct {
+// CandidateUpdate is the value of .Data in all Notification pushes from a Candidate
+type CandidateUpdate struct {
 	// Elected tracks whether this specific candidate has been elected
 	Elected bool `json:"elected"`
 	// State tracks the current state of this candidate
@@ -68,20 +69,21 @@ type CandidateConfig struct {
 // to a specific KV key.  This can then be used to facilitate "leader election" by way of the "leader" being the
 // Candidate who's session is locking the target key.
 type Candidate struct {
+	*notifierBase
 	mu sync.RWMutex
 
 	ms *ManagedSession
 
-	id       string
-	watchers *candidateWatchers
-	kvKey    string
-	elected  *bool
-	state    CandidateState
+	id      string
+	kvKey   string
+	elected *bool
+	state   CandidateState
 
 	dbg    bool
 	logger Logger
 
-	stop chan chan struct{}
+	consecutiveSessionErrors *uint64
+	stop                     chan chan struct{}
 }
 
 func NewCandidate(conf *CandidateConfig) (*Candidate, error) {
@@ -114,12 +116,14 @@ func NewCandidate(conf *CandidateConfig) (*Candidate, error) {
 	}
 
 	c.id = id
-	c.watchers = newCandidateWatchers()
+	c.notifierBase = newNotifierBase()
 	c.kvKey = conf.KVKey
+	c.consecutiveSessionErrors = new(uint64)
+	*c.consecutiveSessionErrors = 0
 	c.elected = new(bool)
 	c.stop = make(chan chan struct{}, 1)
 
-	c.ms.Watch(fmt.Sprintf("candidate_%s", c.id), c.sessionUpdate)
+	c.ms.AttachNotificationHandler(fmt.Sprintf("candidate_%s", c.id), c.sessionUpdate)
 
 	if conf.StartImmediately != nil {
 		c.logf(true, "StartImmediately enabled")
@@ -207,36 +211,6 @@ func (c *Candidate) ForeignLeaderService(ctx context.Context, dc string) (*api.S
 	}
 
 	return nil, qm, fmt.Errorf("kv \"%s\" has no session in datacenter \"%s\"", c.kvKey, dc)
-}
-
-// Watch allows you to register a function that will be called when the election State has changed
-func (c *Candidate) Watch(id string, fn CandidateWatchFunc) string {
-	return c.watchers.Add(id, fn)
-}
-
-// Unwatch will remove a function from the list of watchers.
-func (c *Candidate) Unwatch(id string) {
-	c.watchers.Remove(id)
-}
-
-// RemoveWatchers will clear all watchers
-func (c *Candidate) RemoveWatchers() {
-	c.watchers.RemoveAll()
-}
-
-// UpdateWatchers will immediately push the current state of this Candidate to all currently registered Watchers
-func (c *Candidate) UpdateWatchers() {
-	c.mu.RLock()
-	var el bool
-	if c.elected != nil {
-		el = *c.elected
-	}
-	up := CandidateElectionUpdate{
-		Elected: el,
-		State:   c.state,
-	}
-	c.watchers.notify(up)
-	c.mu.RUnlock()
 }
 
 // WaitUntil will wait for a candidate to be elected or until duration has passed
@@ -336,7 +310,19 @@ func (c *Candidate) Resign() {
 	c.logf(false, "Resigned")
 
 	// notify watchers of updated state
-	c.watchers.notify(CandidateElectionUpdate{false, CandidateStateResigned})
+	c.pushNotification(NotificationEventCandidateResigned)
+}
+
+// pushNotification constructs and then pushes a new notification to currently registered recipients based on the
+// current state of the session.
+//
+// caller must hold at least read lock.
+func (c *Candidate) pushNotification(ev NotificationEvent) {
+	n := CandidateUpdate{
+		Elected: c.Elected(),
+		State:   c.State(),
+	}
+	c.sendNotification(NotificationSourceCandidate, ev, n)
 }
 
 func (c *Candidate) logf(debug bool, f string, v ...interface{}) {
@@ -374,14 +360,15 @@ func (c *Candidate) acquire(ctx context.Context) (bool, error) {
 // refreshLock is responsible for attempting to create / refresh the session lock on the kv
 func (c *Candidate) refreshLock(ctx context.Context) {
 	var (
-		sid              string
 		elected, updated bool
 		err              error
 	)
+
 	c.mu.Lock()
+
 	if c.ms.Running() {
 		// if our session manager is still running
-		if sid = c.ms.ID(); sid == "" {
+		if sid := c.ms.ID(); sid == "" {
 			// this should only ever happen very early on in the election process
 			elected = false
 			updated = c.elected != nil && *c.elected != elected
@@ -406,69 +393,47 @@ func (c *Candidate) refreshLock(ctx context.Context) {
 
 	// if election state changed
 	if updated {
-		if elected {
-			c.logf(false, "We have won the election")
-		} else {
-			c.logf(false, "We have lost the election")
-		}
-
 		// update internal state
 		*c.elected = elected
-		c.watchers.notify(CandidateElectionUpdate{State: CandidateStateRunning, Elected: elected})
+
+		if elected {
+			c.logf(false, "We have won the election")
+			c.pushNotification(NotificationEventCandidateElected)
+		} else {
+			c.logf(false, "We have lost the election")
+			c.pushNotification(NotificationEventCandidateLostElection)
+		}
 	}
+
+	if elected && !updated {
+		c.pushNotification(NotificationEventCandidateRenew)
+	}
+
 	c.mu.Unlock()
 }
 
-// maintainLock is responsible for triggering the routine that attempts to create / re-acquire the session kv lock
-func (c *Candidate) maintainLock(ctx context.Context) {
-	c.logf(true, "maintainLock() - Starting lock maintenance loop")
-	var (
-		drop chan struct{}
-
-		interval = c.ms.RenewInterval()
-		ticker   = time.NewTicker(interval)
-	)
-Locker:
-	for {
-		select {
-		case <-ticker.C:
-			c.refreshLock(ctx)
-		case drop = <-c.stop:
-			break Locker
-		}
-	}
-	ticker.Stop()
-	drop <- struct{}{}
-	c.logf(false, "maintainLock() - Exiting lock maintenance loop")
-	// and roll...
-}
-
 // sessionUpdate is the receiver for the session update callback
-func (c *Candidate) sessionUpdate(update ManagedSessionUpdate) {
+func (c *Candidate) sessionUpdate(n Notification) {
+	c.logf(true, "sessionUpdate() - Notification received: %v", n.Data)
 	if !c.Running() {
-		c.logf(false, "sessionUpdate() - Not in the running but received update: %v", update)
 		return
 	}
-	c.mu.RLock()
-	if c.ms.ID() != update.ID {
-		c.mu.RUnlock()
-		c.logf(true, "sessionUpdate() - Received update from session %q but our local session is %q...", update.ID, c.ms.ID())
+
+	update, ok := n.Data.(ManagedSessionUpdate)
+	if !ok {
+		c.logf(false, "sessionUpdate() - Expected data to be of type %T, saw %T", ManagedSessionUpdate{}, n.Data)
 		return
 	}
-	c.mu.RUnlock()
-	var (
-		consecutiveSessionErrorCount int
-		refresh                      bool
-		err                          error
-	)
+
+	var refresh bool
 	if update.Error != nil {
 		// if there was an update either creating or renewing our session
-		consecutiveSessionErrorCount++
-		c.logf(false, "sessionUpdate() - Error (%d in a row): %s", consecutiveSessionErrorCount, update.Error)
-		if update.State == SessionStateRunning && consecutiveSessionErrorCount > 2 {
+		atomic.AddUint64(c.consecutiveSessionErrors, 1)
+		c.logf(false, "sessionUpdate() - Error (%d in a row): %s", atomic.LoadUint64(c.consecutiveSessionErrors), update.Error)
+		if update.State == SessionStateRunning && atomic.LoadUint64(c.consecutiveSessionErrors) > 2 {
 			// if the session is still running but we've seen more than 2 errors, attempt a stop -> start cycle
 			c.logf(false, "sessionUpdate() - 2 successive errors seen, stopping session")
-			if err = c.ms.Stop(); err != nil {
+			if err := c.ms.Stop(); err != nil {
 				c.logf(false, "sessionUpdate() - Error stopping session: %s", err)
 			}
 			refresh = true
@@ -479,12 +444,12 @@ func (c *Candidate) sessionUpdate(update ManagedSessionUpdate) {
 		// if somehow the session state became stopped (this should basically never happen...), do not attempt
 		// to kickstart session here.  test if we need to update candidate state and notify watchers, then move
 		// on.  next acquire tick will attempt to restart session.
-		consecutiveSessionErrorCount = 0
+		atomic.StoreUint64(c.consecutiveSessionErrors, 0)
 		refresh = true
 		c.logf(false, "sessionUpdate() - Stopped state seen: %#v", update)
 	} else {
 		// if we got a non-error / non-stopped update, there is nothing to do.
-		consecutiveSessionErrorCount = 0
+		atomic.StoreUint64(c.consecutiveSessionErrors, 0)
 		c.logf(true, "sessionUpdate() - Received %#v", update)
 	}
 
@@ -495,52 +460,42 @@ func (c *Candidate) sessionUpdate(update ManagedSessionUpdate) {
 	}
 }
 
-type CandidateWatchFunc func(update CandidateElectionUpdate)
+// maintainLock is responsible for triggering the routine that attempts to create / re-acquire the session kv lock
+func (c *Candidate) maintainLock(ctx context.Context) {
+	c.logf(true, "maintainLock() - Starting lock maintenance loop")
+	var (
+		drop chan struct{}
 
-type candidateWatchers struct {
-	mu    sync.RWMutex
-	funcs map[string]CandidateWatchFunc
-}
+		renewInterval = c.ms.RenewInterval()
+		renewTimer    = time.NewTimer(renewInterval)
+	)
 
-func newCandidateWatchers() *candidateWatchers {
-	w := &candidateWatchers{
-		funcs: make(map[string]CandidateWatchFunc),
+	defer func() {
+		c.logf(false, "maintainLock() - Exiting lock maintenance loop")
+		renewTimer.Stop()
+		c.Resign()
+		if drop != nil {
+			drop <- struct{}{}
+		}
+		c.pushNotification(NotificationEventCandidateStopped)
+	}()
+
+	c.pushNotification(NotificationEventCandidateRunning)
+
+	for {
+		select {
+		case tick := <-renewTimer.C:
+			c.logf(true, "maintainLock() - renewTimer tick (%s)", tick)
+			c.refreshLock(ctx)
+			renewTimer.Reset(renewInterval)
+
+		case <-ctx.Done():
+			c.logf(false, "maintainLock() - context completed: %s", ctx.Err())
+			return
+
+		case drop = <-c.stop:
+			c.logf(false, "maintainLock() - stop hit")
+			return
+		}
 	}
-	return w
-}
-
-// Watch allows you to register a function that will be called when the election State has changed
-func (c *candidateWatchers) Add(id string, fn CandidateWatchFunc) string {
-	c.mu.Lock()
-	if id == "" {
-		id = LazyRandomString(8)
-	}
-	_, ok := c.funcs[id]
-	if !ok {
-		c.funcs[id] = fn
-	}
-	c.mu.Unlock()
-	return id
-}
-
-// Unwatch will remove a function from the list of watchers.
-func (c *candidateWatchers) Remove(id string) {
-	c.mu.Lock()
-	delete(c.funcs, id)
-	c.mu.Unlock()
-}
-
-func (c *candidateWatchers) RemoveAll() {
-	c.mu.Lock()
-	c.funcs = make(map[string]CandidateWatchFunc)
-	c.mu.Unlock()
-}
-
-// notifyWatchers is a thread safe update of leader status
-func (c *candidateWatchers) notify(update CandidateElectionUpdate) {
-	c.mu.RLock()
-	for _, fn := range c.funcs {
-		go fn(update)
-	}
-	c.mu.RUnlock()
 }

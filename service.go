@@ -539,7 +539,7 @@ func (ms *ManagedService) maintainForceRefresh(ch chan error) {
 	defer cancel()
 	qm, err := ms.refreshService(ctx)
 	if err != nil {
-		ms.logf(false, "maintain() - forceRefresh failed. err: %s; QueryMeta: %v", err, qm)
+		ms.logf(false, "maintainLock() - forceRefresh failed. err: %s; QueryMeta: %v", err, qm)
 	}
 
 	ms.mu.Unlock()
@@ -552,9 +552,9 @@ func (ms *ManagedService) maintainWatchPlanUpdate(idx watch.WaitIndexVal) {
 	ctx, cancel := context.WithTimeout(ms.ctx, ms.rttl)
 	defer cancel()
 	if qm, err := ms.refreshService(ctx); err != nil {
-		ms.logf(false, "maintain() - Error refreshing service after watch plan update. err %s; QueryMeta %v", err, qm)
+		ms.logf(false, "maintainLock() - Error refreshing service after watch plan update. err %s; QueryMeta %v", err, qm)
 	} else {
-		ms.logf(true, "maintain() - Service updated successfully after watch plan update hit")
+		ms.logf(true, "maintainLock() - Service updated successfully after watch plan update hit")
 	}
 
 	ms.mu.Unlock()
@@ -566,14 +566,14 @@ func (ms *ManagedService) maintainRefreshTimerTick() {
 	ctx, cancel := context.WithTimeout(ms.ctx, ms.rttl)
 	defer cancel()
 	if qm, err := ms.refreshService(ctx); err != nil {
-		ms.logf(false, "maintain() - refresh failed. err: %s; QueryMeta: %v", err, qm)
+		ms.logf(false, "maintainLock() - refresh failed. err: %s; QueryMeta: %v", err, qm)
 	}
 
 	ms.mu.Unlock()
 }
 
 func (ms *ManagedService) maintainShutdown(refreshTimer *time.Timer, wp *watch.Plan, wpUpdate chan watch.WaitIndexVal, wpStopped chan error) {
-	ms.logf(false, "maintain() - loop exited")
+	ms.logf(false, "maintainLock() - loop exited")
 
 	// always cancel...
 	ms.cancel()
@@ -586,9 +586,9 @@ func (ms *ManagedService) maintainShutdown(refreshTimer *time.Timer, wp *watch.P
 
 	// deregister service
 	if err := ms.client.Agent().ServiceDeregister(ms.serviceID); err != nil {
-		ms.logf(false, "maintain() - Error deregistering service: %s", err)
+		ms.logf(false, "maintainLock() - Error deregistering service: %s", err)
 	} else {
-		ms.logf(false, "maintain() - Service successfully deregistered")
+		ms.logf(false, "maintainLock() - Service successfully deregistered")
 	}
 
 	// channel cleanup
@@ -611,16 +611,16 @@ func (ms *ManagedService) maintain() {
 		refreshTimer = time.NewTimer(ms.refreshInterval)
 	)
 
-	ms.logf(true, "maintain() - building initial watch plan...")
+	ms.logf(true, "maintainLock() - building initial watch plan...")
 
 	if wp, err = ms.buildWatchPlan(wpUpdate); err != nil {
-		ms.logf(false, "maintain() - error building initial watch plan: %s", err)
+		ms.logf(false, "maintainLock() - error building initial watch plan: %s", err)
 	} else {
 		go ms.runWatchPlan(wp, wpStopped)
-		ms.logf(true, "maintain() - initial watch plan built and running")
+		ms.logf(true, "maintainLock() - initial watch plan built and running")
 	}
 
-	ms.logf(true, "maintain() - entering loop")
+	ms.logf(true, "maintainLock() - entering loop")
 
 	// queue up shutdown op
 	defer ms.maintainShutdown(refreshTimer, wp, wpUpdate, wpStopped)
@@ -629,41 +629,41 @@ func (ms *ManagedService) maintain() {
 		select {
 		case frch = <-ms.forceRefresh:
 			refreshTimer.Stop()
-			ms.logf(true, "maintain() - forceRefresh hit")
+			ms.logf(true, "maintainLock() - forceRefresh hit")
 			ms.maintainForceRefresh(frch)
 			refreshTimer.Reset(ms.refreshInterval)
 
 		case <-wpStopped:
-			ms.logf(false, "maintain() - Watch plan stopped with error: %s")
+			ms.logf(false, "maintainLock() - Watch plan stopped with error: %s")
 			if wp, err = ms.buildAndRunWatchPlan(wpUpdate, wpStopped); err != nil {
-				ms.logf(false, "maintain() - Error building watch plan after stop: %s", err)
+				ms.logf(false, "maintainLock() - Error building watch plan after stop: %s", err)
 			} else {
-				ms.logf(false, "maintain() - Watch plan successfully rebuilt, running...")
+				ms.logf(false, "maintainLock() - Watch plan successfully rebuilt, running...")
 			}
 
 		case idx = <-wpUpdate:
 			refreshTimer.Stop()
-			ms.logf(true, "maintain() - Watch plan has received update (idx: %v)", idx)
+			ms.logf(true, "maintainLock() - Watch plan has received update (idx: %v)", idx)
 			ms.maintainWatchPlanUpdate(idx)
 			refreshTimer.Reset(ms.refreshInterval)
 
 		case tick = <-refreshTimer.C:
-			ms.logf(true, "maintain() - refreshTimer hit (%s)", tick)
+			ms.logf(true, "maintainLock() - refreshTimer hit (%s)", tick)
 			ms.maintainRefreshTimerTick()
 			if wp == nil {
-				ms.logf(false, "maintain() - Watch plan is nil, attempting to rebuild...")
+				ms.logf(false, "maintainLock() - Watch plan is nil, attempting to rebuild...")
 				if wp, err = ms.buildAndRunWatchPlan(wpUpdate, wpStopped); err != nil {
-					ms.logf(false, "maintain() - Error building watch plan during refresh: %s", err)
+					ms.logf(false, "maintainLock() - Error building watch plan during refresh: %s", err)
 				} else {
-					ms.logf(false, "maintain() - Watch plan successfully rebuilt")
+					ms.logf(false, "maintainLock() - Watch plan successfully rebuilt")
 				}
 			} else {
-				ms.logf(true, "maintain() - Watch plan is still running, hooray.")
+				ms.logf(true, "maintainLock() - Watch plan is still running, hooray.")
 			}
 			refreshTimer.Reset(ms.refreshInterval)
 
 		case <-ms.ctx.Done():
-			ms.logf(true, "maintain() - Internal context closed: %s", ms.ctx.Err())
+			ms.logf(true, "maintainLock() - Internal context closed: %s", ms.ctx.Err())
 			return
 		}
 	}
@@ -803,7 +803,7 @@ func (b *ManagedAgentServiceRegistration) AddAliasCheck(service, node string, in
 // Create attempts to first register the configured service with the desired consul agent, then constructs a
 // ManagedService instance for you to use.
 //
-// The context parameter in this instance will be used to maintain the state of the created ManagedService instance.
+// The context parameter in this instance will be used to maintainLock the state of the created ManagedService instance.
 // Cancelling the context will terminate the ManagedService, making it defunct and removing the service from the consul
 // agent.
 //

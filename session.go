@@ -30,6 +30,15 @@ func (s SessionState) String() string {
 	}
 }
 
+// ManagedSessionUpdate is the value of .Data in all Notification types pushed by a ManagedSession instance
+type ManagedSessionUpdate struct {
+	ID          string       `json:"id"`
+	Name        string       `json:"name"`
+	LastRenewed int64        `json:"last_renewed"`
+	Error       error        `json:"error"`
+	State       SessionState `json:"state"`
+}
+
 const (
 	SessionDefaultTTL = 30 * time.Second
 
@@ -87,6 +96,7 @@ type ManagedSessionConfig struct {
 
 // ManagedSession
 type ManagedSession struct {
+	*notifierBase
 	mu sync.RWMutex
 
 	client *api.Client
@@ -106,8 +116,6 @@ type ManagedSession struct {
 	stop  chan chan error
 	state SessionState
 
-	watchers *managedSessionWatchers
-
 	logger Logger
 	dbg    bool
 }
@@ -124,10 +132,10 @@ func NewManagedSession(conf *ManagedSessionConfig) (*ManagedSession, error) {
 		conf = new(ManagedSessionConfig)
 	}
 
+	ms.notifierBase = newNotifierBase()
 	ms.dbg = conf.Debug
 	ms.logger = conf.Logger
 	ms.stop = make(chan chan error, 1)
-	ms.watchers = newManagedSessionWatchers()
 	ms.qo = conf.QueryOptions
 	ms.wo = conf.WriteOptions
 	ms.base = new(api.SessionEntry)
@@ -255,25 +263,10 @@ func (ms *ManagedSession) SessionEntry(ctx context.Context) (*api.SessionEntry, 
 	return ms.client.Session().Info(ms.id, ms.qo.WithContext(ctx))
 }
 
-// Watch allows you to register a function that will be called when the election SessionState has changed
-func (ms *ManagedSession) Watch(id string, fn ManagedSessionWatchFunc) string {
-	return ms.watchers.Add(id, fn)
-}
-
-// Unwatch will remove a function from the list of watchers.
-func (ms *ManagedSession) Unwatch(id string) {
-	ms.watchers.Remove(id)
-}
-
-// RemoveWatchers will clear all watchers
-func (ms *ManagedSession) RemoveWatchers() {
-	ms.watchers.RemoveAll()
-}
-
-// UpdateWatchers will immediately push the current state of this Candidate to all currently registered Watchers
-func (ms *ManagedSession) UpdateWatchers() {
+// PushStateNotification will immediate push the current managed session state to all attached notification recipients
+func (ms *ManagedSession) PushStateNotification() {
 	ms.mu.RLock()
-	ms.watchers.notify(ManagedSessionUpdate{ms.id, ms.base.Name, ms.lastRenewed, ms.lastErr, ms.state})
+	ms.pushNotification(NotificationEventManualPush)
 	ms.mu.RUnlock()
 }
 
@@ -352,6 +345,21 @@ func (ms *ManagedSession) logf(debug bool, f string, v ...interface{}) {
 	ms.logger.Printf(f, v...)
 }
 
+// pushNotification constructs and then pushes a new notification to currently registered recipients based on the
+// current state of the session.
+//
+// caller must hold at least read lock.
+func (ms *ManagedSession) pushNotification(ev NotificationEvent) {
+	n := ManagedSessionUpdate{
+		ms.id,
+		ms.base.Name,
+		ms.lastRenewed.UnixNano(),
+		ms.lastErr,
+		ms.state,
+	}
+	ms.sendNotification(NotificationSourceManagedSession, ev, n)
+}
+
 // create will attempt to do just that.
 //
 // caller must hold lock
@@ -376,7 +384,7 @@ func (ms *ManagedSession) create(ctx context.Context) error {
 		err = errors.New("internal error creating session")
 		ms.lastErr = err
 	}
-
+	ms.pushNotification(NotificationEventManagedSessionCreate)
 	return err
 }
 
@@ -405,7 +413,7 @@ func (ms *ManagedSession) renew(ctx context.Context) error {
 		err = errors.New("internal error renewing session")
 		ms.lastErr = err
 	}
-
+	ms.pushNotification(NotificationEventManagedSessionRenew)
 	return err
 }
 
@@ -423,6 +431,7 @@ func (ms *ManagedSession) destroy(ctx context.Context) error {
 	ms.id = ""
 	ms.lastRenewed = time.Time{}
 	ms.lastErr = err
+	ms.pushNotification(NotificationEventManagedSessionDestroy)
 	return err
 }
 
@@ -515,13 +524,13 @@ func (ms *ManagedSession) shutdown(intervalTimer *time.Timer, stopped chan<- err
 
 	// if this session was stopped via context, this will be nil
 	if stopped != nil {
-		// send along the last seen error, whatever it was.
+		// sendNotification along the last seen error, whatever it was.
 		stopped <- err
 	}
 
 	ms.mu.Unlock()
 
-	ms.UpdateWatchers()
+	ms.pushNotification(NotificationEventManagedSessionStopped)
 
 	ms.logf(false, "shutdown() - ManagedSession stopped")
 }
@@ -538,22 +547,23 @@ func (ms *ManagedSession) maintain(ctx context.Context) {
 
 	defer ms.shutdown(intervalTimer, stopped)
 
+	ms.pushNotification(NotificationEventManagedSessionRunning)
+
 	for {
 		select {
 		case tick = <-intervalTimer.C:
-			ms.logf(true, "maintain() - intervalTimer hit (%s)", tick)
+			ms.logf(true, "maintainLock() - intervalTimer hit (%s)", tick)
 			ms.mu.Lock()
 			ms.maintainTick(ctx)
 			ms.mu.Unlock()
-			ms.UpdateWatchers()
 			intervalTimer.Reset(ms.renewInterval)
 
 		case <-ctx.Done():
-			ms.logf(false, "maintain() - running context completed with: %s", ctx.Err())
+			ms.logf(false, "maintainLock() - running context completed with: %s", ctx.Err())
 			return
 
 		case stopped = <-ms.stop:
-			ms.logf(false, "maintain() - explicit stop called")
+			ms.logf(false, "maintainLock() - explicit stop called")
 			return
 		}
 	}
@@ -615,65 +625,4 @@ func (b *ManagedSessionEntry) Create(cfg *ManagedSessionConfig) (*ManagedSession
 	act.Definition = &b.SessionEntry
 
 	return NewManagedSession(act)
-}
-
-// ManagedSessionUpdate will be sent to any / all watchers of this managed session upon a significant event happening
-type ManagedSessionUpdate struct {
-	ID          string       `json:"id"`
-	Name        string       `json:"name"`
-	LastRenewed time.Time    `json:"last_renewed"`
-	Error       error        `json:"error"`
-	State       SessionState `json:"state"`
-}
-
-// ManagedSessionWatchFunc can be defined in your implementation to be called when a significant event happens in the
-// lifecycle of a ManagedSession
-type ManagedSessionWatchFunc func(update ManagedSessionUpdate)
-
-type managedSessionWatchers struct {
-	mu    sync.RWMutex
-	funcs map[string]ManagedSessionWatchFunc
-}
-
-func newManagedSessionWatchers() *managedSessionWatchers {
-	w := &managedSessionWatchers{
-		funcs: make(map[string]ManagedSessionWatchFunc),
-	}
-	return w
-}
-
-// Watch allows you to register a function that will be called when the election SessionState has changed
-func (c *managedSessionWatchers) Add(id string, fn ManagedSessionWatchFunc) string {
-	c.mu.Lock()
-	if id == "" {
-		id = LazyRandomString(8)
-	}
-	_, ok := c.funcs[id]
-	if !ok {
-		c.funcs[id] = fn
-	}
-	c.mu.Unlock()
-	return id
-}
-
-// Unwatch will remove a function from the list of managedSessionWatchers.
-func (c *managedSessionWatchers) Remove(id string) {
-	c.mu.Lock()
-	delete(c.funcs, id)
-	c.mu.Unlock()
-}
-
-func (c *managedSessionWatchers) RemoveAll() {
-	c.mu.Lock()
-	c.funcs = make(map[string]ManagedSessionWatchFunc)
-	c.mu.Unlock()
-}
-
-// notifyWatchers is a thread safe update of leader status
-func (c *managedSessionWatchers) notify(update ManagedSessionUpdate) {
-	c.mu.RLock()
-	for _, fn := range c.funcs {
-		go fn(update)
-	}
-	c.mu.RUnlock()
 }

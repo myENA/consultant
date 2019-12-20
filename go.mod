@@ -6,5 +6,4 @@ require (
 	github.com/hashicorp/consul/api v1.3.0
 	github.com/hashicorp/consul/sdk v0.3.0
 	github.com/myENA/go-helpers v1.0.0
-	github.com/stretchr/testify v1.4.0
 )

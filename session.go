@@ -168,7 +168,6 @@ func NewManagedSession(conf *ManagedSessionConfig) (*ManagedSession, error) {
 	if ms.def.Behavior == "" {
 		ms.def.Behavior = api.SessionBehaviorDelete
 	}
-
 	if conf.RequestTTL > 0 {
 		ms.rttl = conf.RequestTTL
 	} else {

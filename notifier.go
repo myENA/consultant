@@ -136,6 +136,18 @@ func newNotifierBase() *notifierBase {
 	return nb
 }
 
+// BasicNotifier is the base implementation of a Notifier
+type BasicNotifier struct {
+	*notifierBase
+}
+
+// NewBasicNotifier returns a new Notifier bereft of any recipients
+func NewBasicNotifier() *BasicNotifier {
+	b := new(BasicNotifier)
+	b.notifierBase = newNotifierBase()
+	return b
+}
+
 // AttachNotificationHandler immediately adds the provided handler to the list of handlers to be called per notification
 func (nb *notifierBase) AttachNotificationHandler(id string, fn NotificationHandler) (string, bool) {
 	if fn == nil {

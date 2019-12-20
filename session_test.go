@@ -58,7 +58,7 @@ func TestNewManagedSession(t *testing.T) {
 		config *consultant.ManagedSessionConfig
 		field  string
 	}{
-		"invalid-ttl": {
+		"invalid-def-ttl": {
 			config: &consultant.ManagedSessionConfig{
 				Definition: &api.SessionEntry{
 					TTL: "whatever",
@@ -90,8 +90,8 @@ func TestNewManagedSession(t *testing.T) {
 	ttlNormalizeTests := map[string]struct {
 		ttl string
 	}{
-		"sub-minimum": {ttl: "1s"},
-		"sup-maximum": {ttl: "72h"},
+		"def-ttl-sub-minimum": {ttl: "1s"},
+		"def-ttl-sup-maximum": {ttl: "72h"},
 	}
 	for name, setup := range ttlNormalizeTests {
 		t.Run(name, func(t *testing.T) {

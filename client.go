@@ -57,8 +57,8 @@ type Client struct {
 	localNodeName   string
 	localNodeAddr   string
 
-	logSlug      string
-	logSlugSlice []interface{}
+	confToken      string
+	confDatacenter string
 }
 
 // NewClient constructs a new consultant client.
@@ -77,6 +77,8 @@ func NewClient(conf *api.Config) (*Client, error) {
 
 	c.localHostname, _ = os.Hostname()
 	c.localAddr, _ = LocalAddress()
+	c.confToken = conf.Token
+	c.confDatacenter = conf.Datacenter
 
 	if c.Client, err = api.NewClient(conf); err != nil {
 		return nil, fmt.Errorf("unable to create Consul API Client: %s", err)

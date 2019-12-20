@@ -248,28 +248,26 @@ func WatchConnectLeafHybridHandler(service, token, datacenter string, handler wa
 	return
 }
 
-// WatchProxyConfig wraps the creation of a "connect_proxy_config" plan
-func WatchProxyConfig(proxyServiceID, token, datacenter string) (*watch.Plan, error) {
+// WatchAgentService wraps the creation of a "agent_service" plan
+func WatchAgentService(serviceID string) (*watch.Plan, error) {
 	return watch.Parse(map[string]interface{}{
-		"type":             "connect_proxy_config",
-		"proxy_service_id": proxyServiceID,
-		"token":            token,
-		"datacenter":       datacenter,
+		"type":       "agent_service",
+		"service_id": serviceID,
 	})
 }
 
-// WatchProxyConfigHandler wraps the creation of a "connect_proxy_config" plan, additionally setting an index handler
-func WatchProxyConfigHandler(proxyServiceID, token, datacenter string, handler watch.HandlerFunc) (wp *watch.Plan, err error) {
-	if wp, err = WatchProxyConfig(proxyServiceID, token, datacenter); wp != nil {
+// WatchAgentServiceHandler wraps the creation of a "connect_proxy_config" plan, additionally setting an index handler
+func WatchAgentServiceHandler(serviceID string, handler watch.HandlerFunc) (wp *watch.Plan, err error) {
+	if wp, err = WatchAgentService(serviceID); wp != nil {
 		wp.Handler = handler
 	}
 	return
 }
 
-// WatchProxyConfigHybridHandler wraps the creation of a "connect_proxy_config" plan, additionally setting a hash
+// WatchAgentServiceHybridHandler wraps the creation of a "connect_proxy_config" plan, additionally setting a hash
 // handler
-func WatchProxyConfigHybridHandler(proxyServiceID, token, datacenter string, handler watch.HybridHandlerFunc) (wp *watch.Plan, err error) {
-	if wp, err = WatchProxyConfig(proxyServiceID, token, datacenter); wp != nil {
+func WatchAgentServiceHybridHandler(serviceID string, handler watch.HybridHandlerFunc) (wp *watch.Plan, err error) {
+	if wp, err = WatchAgentService(serviceID); wp != nil {
 		wp.HybridHandler = handler
 	}
 	return
@@ -277,50 +275,50 @@ func WatchProxyConfigHybridHandler(proxyServiceID, token, datacenter string, han
 
 // WatchKey will attempt to create a "key" watch plan based on existing client configuration
 func (c *Client) WatchKey(key string, stale bool, handler watch.HandlerFunc) (*watch.Plan, error) {
-	return WatchKeyHandler(key, stale, "", "", handler)
+	return WatchKeyHandler(key, stale, c.confToken, c.confDatacenter, handler)
 }
 
 // WatchKeyPrefix will attempt to create a "keyprefix" watch plan based on existing client configuration
 func (c *Client) WatchKeyPrefix(prefix string, stale bool, handler watch.HandlerFunc) (*watch.Plan, error) {
-	return WatchKeyPrefixHandler(prefix, stale, "", "", handler)
+	return WatchKeyPrefixHandler(prefix, stale, c.confToken, c.confDatacenter, handler)
 }
 
 // WatchServices will attempt to create a "services" watch plan based on existing client configuration
 func (c *Client) WatchServices(stale bool, handler watch.HandlerFunc) (*watch.Plan, error) {
-	return WatchServicesHandler(stale, "", "", handler)
+	return WatchServicesHandler(stale, c.confToken, c.confDatacenter, handler)
 }
 
 // WatchNodes will attempt to create a "nodes" watch plan based on existing client configuration
 func (c *Client) WatchNodes(stale bool, handler watch.HandlerFunc) (*watch.Plan, error) {
-	return WatchNodesHandler(stale, "", "", handler)
+	return WatchNodesHandler(stale, c.confToken, c.confDatacenter, handler)
 }
 
 // WatchService will attempt to create a "service" watch plan based on existing client configuration
 func (c *Client) WatchService(service, tag string, passingOnly, stale bool, handler watch.HandlerFunc) (*watch.Plan, error) {
-	return WatchServiceHandler(service, tag, passingOnly, stale, "", "", handler)
+	return WatchServiceHandler(service, tag, passingOnly, stale, c.confToken, c.confDatacenter, handler)
 }
 
 // WatchChecks will attempt to create a "checks" watch plan based on existing client configuration
 func (c *Client) WatchChecks(service, state string, stale bool, handler watch.HandlerFunc) (*watch.Plan, error) {
-	return WatchChecksHandler(service, state, stale, "", "", handler)
+	return WatchChecksHandler(service, state, stale, c.confToken, c.confDatacenter, handler)
 }
 
 // WatchEvent will attempt to create an "event" watch plan based on existing client configuration
 func (c *Client) WatchEvent(name string, handler watch.HandlerFunc) (*watch.Plan, error) {
-	return WatchEventHandler(name, "", "", handler)
+	return WatchEventHandler(name, c.confToken, c.confDatacenter, handler)
 }
 
 // WatchConnectRoots will attempt to create a "connect_roots" watch plan based on existing client configuration
 func (c *Client) WatchConnectRoots(handler watch.HandlerFunc) (*watch.Plan, error) {
-	return WatchConnectRootsHandler("", "", handler)
+	return WatchConnectRootsHandler(c.confToken, c.confDatacenter, handler)
 }
 
 // WatchConnectLeaf will attempt to create a "connect_leaf" watch plan based on existing client configuration
 func (c *Client) WatchConnectLeaf(service string, handler watch.HandlerFunc) (*watch.Plan, error) {
-	return WatchConnectLeafHandler(service, "", "", handler)
+	return WatchConnectLeafHandler(service, c.confToken, c.confDatacenter, handler)
 }
 
-// WatchProxyConfig will attempt to create a "connect_proxy_config" watch plan based on existing client configuration
-func (c *Client) WatchProxyConfig(proxyServiceID string, handler watch.HandlerFunc) (*watch.Plan, error) {
-	return WatchProxyConfigHandler(proxyServiceID, "", "", handler)
+// WatchAgentService will attempt to create a "connect_proxy_config" watch plan based on existing client configuration
+func (c *Client) WatchAgentService(serviceID string, handler watch.HandlerFunc) (*watch.Plan, error) {
+	return WatchAgentServiceHandler(serviceID, handler)
 }

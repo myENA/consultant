@@ -24,7 +24,7 @@ func TestNewManagedServiceBuilder(t *testing.T) {
 
 	tests := map[string]struct {
 		base     *api.AgentServiceRegistration
-		mutators []consultant.MangedAgentServiceRegistrationMutator
+		mutators []consultant.ManagedAgentServiceRegistrationMutator
 	}{
 		"base-no-mutators": {
 			base: &api.AgentServiceRegistration{
@@ -37,7 +37,7 @@ func TestNewManagedServiceBuilder(t *testing.T) {
 			base: &api.AgentServiceRegistration{
 				Address: localAddr,
 			},
-			mutators: []consultant.MangedAgentServiceRegistrationMutator{
+			mutators: []consultant.ManagedAgentServiceRegistrationMutator{
 				func(builder *consultant.ManagedAgentServiceRegistration) {
 					builder.Name = managedServiceName
 					builder.Port = managedServicePort
@@ -45,7 +45,7 @@ func TestNewManagedServiceBuilder(t *testing.T) {
 			},
 		},
 		"nil-base-mutators": {
-			mutators: []consultant.MangedAgentServiceRegistrationMutator{
+			mutators: []consultant.ManagedAgentServiceRegistrationMutator{
 				func(builder *consultant.ManagedAgentServiceRegistration) {
 					builder.Address = localAddr
 				},
@@ -88,28 +88,28 @@ func TestNewBareManagedServiceBuilder(t *testing.T) {
 	tests := map[string]struct {
 		name     string
 		port     int
-		mutators []consultant.MangedAgentServiceRegistrationMutator
+		mutators []consultant.ManagedAgentServiceRegistrationMutator
 	}{
 		"args-no-mutators": {
 			name: managedServiceName,
 			port: managedServicePort,
 		},
 		"no-args-mutators": {
-			mutators: []consultant.MangedAgentServiceRegistrationMutator{func(builder *consultant.ManagedAgentServiceRegistration) {
+			mutators: []consultant.ManagedAgentServiceRegistrationMutator{func(builder *consultant.ManagedAgentServiceRegistration) {
 				builder.Name = managedServiceName
 				builder.Port = managedServicePort
 			}},
 		},
 		"args-mutators": {
 			port: managedServicePort,
-			mutators: []consultant.MangedAgentServiceRegistrationMutator{func(builder *consultant.ManagedAgentServiceRegistration) {
+			mutators: []consultant.ManagedAgentServiceRegistrationMutator{func(builder *consultant.ManagedAgentServiceRegistration) {
 				builder.Name = managedServiceName
 			}},
 		},
 		"args-mutators-override": {
 			name: "something",
 			port: 90001,
-			mutators: []consultant.MangedAgentServiceRegistrationMutator{func(builder *consultant.ManagedAgentServiceRegistration) {
+			mutators: []consultant.ManagedAgentServiceRegistrationMutator{func(builder *consultant.ManagedAgentServiceRegistration) {
 				builder.Name = managedServiceName
 				builder.Port = managedServicePort
 			}},

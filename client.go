@@ -1,36 +1,18 @@
 package consultant
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"math/rand"
 	"net/url"
 	"os"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/hashicorp/consul/api"
 )
-
-const (
-	defaultInternalRequestTTL = 2 * time.Second
-)
-
-type Client struct {
-	*api.Client
-
-	localAddr     string
-	localHostname string
-
-	localNodeNameMu sync.Mutex
-	localNodeName   string
-	localNodeAddr   string
-
-	logSlug      string
-	logSlugSlice []interface{}
-}
 
 type TagsOption int
 
@@ -47,6 +29,37 @@ const (
 	// TagsExclude means skip services that match any tags passed
 	TagsExclude
 )
+
+func (t TagsOption) String() string {
+	switch t {
+	case TagsAll:
+		return "all"
+	case TagsAny:
+		return "any"
+	case TagsExactly:
+		return "exactly"
+	case TagsExclude:
+		return "exclude"
+
+	default:
+		return "UNKNOWN"
+	}
+}
+
+// Client is a thin wrapper around the base Consul API client with some convenience methods added
+type Client struct {
+	*api.Client
+
+	localAddr     string
+	localHostname string
+
+	localNodeNameMu sync.Mutex
+	localNodeName   string
+	localNodeAddr   string
+
+	logSlug      string
+	logSlugSlice []interface{}
+}
 
 // NewClient constructs a new consultant client.
 func NewClient(conf *api.Config) (*Client, error) {
@@ -127,8 +140,12 @@ func (c *Client) LocalNodeName() (string, error) {
 
 // EnsureKey will fetch a key/value and ensure the key is present.  The value may still be empty.
 func (c *Client) EnsureKey(key string, options *api.QueryOptions) (*api.KVPair, *api.QueryMeta, error) {
-	kvp, qm, err := c.KV().Get(key, options)
-	if err != nil {
+	var (
+		kvp *api.KVPair
+		qm  *api.QueryMeta
+		err error
+	)
+	if kvp, qm, err = c.KV().Get(key, options); err != nil {
 		return nil, nil, err
 	}
 	if kvp != nil {
@@ -139,22 +156,31 @@ func (c *Client) EnsureKey(key string, options *api.QueryOptions) (*api.KVPair, 
 
 // EnsureKeyString is a convenience method that will typecast the kvp.Value byte slice to a string for you, if there were no errors.
 func (c *Client) EnsureKeyString(key string, options *api.QueryOptions) (string, *api.QueryMeta, error) {
-	if kvp, qm, err := c.EnsureKey(key, options); err != nil {
+	var (
+		kvp *api.KVPair
+		qm  *api.QueryMeta
+		err error
+	)
+	if kvp, qm, err = c.EnsureKey(key, options); err != nil {
 		return "", qm, err
-	} else {
-		return string(kvp.Value), qm, nil
 	}
+	return string(kvp.Value), qm, nil
 }
 
 // EnsureKeyJSON will attempt to unmarshal the kvp value into the provided type
 func (c *Client) EnsureKeyJSON(key string, options *api.QueryOptions, v interface{}) (*api.QueryMeta, error) {
-	if kvp, qm, err := c.EnsureKey(key, options); err != nil {
+	var (
+		kvp *api.KVPair
+		qm  *api.QueryMeta
+		err error
+	)
+	if kvp, qm, err = c.EnsureKey(key, options); err != nil {
 		return nil, err
-	} else if err = json.Unmarshal(kvp.Value, v); err != nil {
-		return nil, err
-	} else {
-		return qm, nil
 	}
+	if err = json.Unmarshal(kvp.Value, v); err != nil {
+		return nil, err
+	}
+	return qm, nil
 }
 
 // PickServiceMultipleTags will attempt to locate any registered service with a name + tags combination and return one
@@ -164,7 +190,6 @@ func (c *Client) PickServiceMultipleTags(service string, tags []string, passingO
 	if err != nil {
 		return nil, nil, err
 	}
-
 	svcLen := len(svcs)
 	switch svcLen {
 	case 0:
@@ -188,13 +213,18 @@ func (c *Client) PickService(service, tag string, passingOnly bool, options *api
 // EnsureServiceMultipleTags will return an error for an actual client error or if no service was found using the
 // provided criteria
 func (c *Client) EnsureServiceMultipleTags(service string, tags []string, passingOnly bool, options *api.QueryOptions) (*api.ServiceEntry, *api.QueryMeta, error) {
-	if svc, qm, err := c.PickServiceMultipleTags(service, tags, passingOnly, options); err != nil {
+	var (
+		svc *api.ServiceEntry
+		qm  *api.QueryMeta
+		err error
+	)
+	if svc, qm, err = c.PickServiceMultipleTags(service, tags, passingOnly, options); err != nil {
 		return nil, qm, err
-	} else if svc == nil {
-		return nil, qm, fmt.Errorf("service %q with tag %q not found", service, tags)
-	} else {
-		return svc, qm, nil
 	}
+	if svc == nil {
+		return nil, qm, fmt.Errorf("service %q with tag %q not found", service, tags)
+	}
+	return svc, qm, nil
 }
 
 // EnsureService will return an error for an actual client error or if no service was found using the provided criteria
@@ -285,7 +315,6 @@ func (c *Client) BuildServiceURL(protocol, serviceName, tag string, passingOnly 
 	if nil == svc {
 		return nil, fmt.Errorf("no services registered as \"%s\" with tag \"%s\" found", serviceName, tag)
 	}
-
 	return url.Parse(fmt.Sprintf("%s://%s:%d", protocol, svc.Service.Address, svc.Service.Port))
 }
 
@@ -310,100 +339,17 @@ type SimpleServiceRegistration struct {
 
 // SimpleServiceRegister is a helper method to ease consul service registration
 func (c *Client) SimpleServiceRegister(reg *SimpleServiceRegistration) (string, error) {
-	var err error                        // generic error holder
-	var serviceID string                 // local service identifier
-	var address string                   // service host address
-	var interval string                  // check renewInterval
-	var checkHTTP *api.AgentServiceCheck // http type check
-	var serviceName string               // service registration name
+	var (
+		asr       *api.AgentServiceRegistration
+		serviceID string
+		nodeName  string
+		err       error
+	)
 
-	// Perform some basic service name cleanup and validation
-	serviceName = strings.TrimSpace(reg.Name)
-	if serviceName == "" {
-		return "", errors.New("\"Name\" cannot be blank")
-	}
-	if strings.Contains(serviceName, " ") {
-		return "", fmt.Errorf("name \"%s\" is invalid, service names cannot contain spaces", serviceName)
-	}
+	nodeName, _ = c.LocalNodeName()
 
-	// Come on, guys...valid ports plz...
-	if reg.Port <= 0 {
-		return "", fmt.Errorf("%d is not a valid port", reg.Port)
-	}
-
-	if address = reg.Address; address == "" {
-		address = c.localAddr
-	}
-
-	if serviceID = reg.ID; serviceID == "" {
-		// Form a unique service id
-		var tail string
-		if reg.RandomID {
-			tail = LazyRandomString(12)
-		} else {
-			tail = strings.ToLower(c.localHostname)
-		}
-		serviceID = fmt.Sprintf("%s-%s", serviceName, tail)
-	}
-
-	if interval = reg.Interval; interval == "" {
-		// set a default renewInterval
-		interval = "30s"
-	}
-
-	// The serviceID is added in order to ensure detection in ServiceMonitor()
-	tags := append(reg.Tags, serviceID)
-
-	// Set up the service registration struct
-	asr := &api.AgentServiceRegistration{
-		ID:                serviceID,
-		Name:              serviceName,
-		Tags:              tags,
-		Port:              reg.Port,
-		Address:           address,
-		Checks:            api.AgentServiceChecks{},
-		EnableTagOverride: reg.EnableTagOverride,
-	}
-
-	// allow port override
-	checkPort := reg.CheckPort
-	if checkPort <= 0 {
-		checkPort = reg.Port
-	}
-
-	// build http check if specified
-	if reg.CheckPath != "" {
-
-		// allow scheme override
-		checkScheme := reg.CheckScheme
-		if checkScheme == "" {
-			checkScheme = "http"
-		}
-
-		// build check url
-		checkURL := &url.URL{
-			Scheme: checkScheme,
-			Host:   fmt.Sprintf("%s:%d", address, checkPort),
-			Path:   reg.CheckPath,
-		}
-
-		// build check
-		checkHTTP = &api.AgentServiceCheck{
-			HTTP:     checkURL.String(),
-			Interval: interval,
-		}
-
-		// add http check
-		asr.Checks = append(asr.Checks, checkHTTP)
-	}
-
-	// build tcp check if specified
-	if reg.CheckTCP {
-		// create tcp check definition
-		asr.Checks = append(asr.Checks, &api.AgentServiceCheck{
-			TCP:      fmt.Sprintf("%s:%d", address, checkPort),
-			Interval: interval,
-		})
+	if serviceID, asr, err = simpleToReg(c.LocalAddress(), nodeName, reg); err != nil {
+		return serviceID, err
 	}
 
 	// register and check error
@@ -413,4 +359,31 @@ func (c *Client) SimpleServiceRegister(reg *SimpleServiceRegistration) (string, 
 
 	// return registered service
 	return serviceID, nil
+}
+
+// ManagedServiceRegister creates a new ManagedService instance from a SimpleServiceRegistration type
+//
+// You are not required to provide a *ManagedServiceConfig instance to this method, and you are
+func (c *Client) ManagedServiceRegister(ctx context.Context, reg *SimpleServiceRegistration, cfg *ManagedServiceConfig, fns ...ManagedAgentServiceRegistrationMutator) (*ManagedService, error) {
+	var (
+		asr      *api.AgentServiceRegistration
+		nodeName string
+		err      error
+	)
+
+	nodeName, _ = c.LocalNodeName()
+
+	if _, asr, err = simpleToReg(c.LocalAddress(), nodeName, reg); err != nil {
+		return nil, err
+	}
+
+	msr := NewManagedAgentServiceRegistration(asr, fns...)
+
+	if cfg == nil {
+		cfg = new(ManagedServiceConfig)
+	}
+
+	cfg.Client = c.Client
+
+	return msr.Create(ctx, cfg)
 }

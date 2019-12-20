@@ -29,7 +29,7 @@ type ManagedServiceConfig struct {
 
 	// BaseChecks [optional] (recommended)
 	//
-	// These are the base service checks that will be re-registered with the service should it be removed exterenaly
+	// These are the base service checks that will be re-registered with the service should it be removed externally
 	// from the node the service was registered to.
 	//
 	// This will most likely be removed in the future once https://github.com/hashicorp/consul/issues/1680 is finally
@@ -678,15 +678,15 @@ type ManagedAgentServiceRegistration struct {
 	api.AgentServiceRegistration
 }
 
-// MangedAgentServiceRegistrationMutator defines a callback that may mutate a new ManagedAgentServiceRegistration instance
-type MangedAgentServiceRegistrationMutator func(*ManagedAgentServiceRegistration)
+// ManagedAgentServiceRegistrationMutator defines a callback that may mutate a new ManagedAgentServiceRegistration instance
+type ManagedAgentServiceRegistrationMutator func(*ManagedAgentServiceRegistration)
 
 // NewManagedAgentServiceRegistration constructs a new builder based on an existing AgentServiceRegistration instance.  It
 // also ensures that all slice and map fields (Tags, Checks, TaggedAddresses, and Meta) are non-nil.
 //
 // As a caution, the provided base is stored as-is.  If you modify the base registration type outside of the methods
 // provided by the returned type, the ttlBehavior is entirely undefined.
-func NewManagedAgentServiceRegistration(base *api.AgentServiceRegistration, fns ...MangedAgentServiceRegistrationMutator) *ManagedAgentServiceRegistration {
+func NewManagedAgentServiceRegistration(base *api.AgentServiceRegistration, fns ...ManagedAgentServiceRegistrationMutator) *ManagedAgentServiceRegistration {
 	b := new(ManagedAgentServiceRegistration)
 	if base == nil {
 		base = new(api.AgentServiceRegistration)
@@ -700,7 +700,7 @@ func NewManagedAgentServiceRegistration(base *api.AgentServiceRegistration, fns 
 
 // NewBareManagedAgentServiceRegistration constructs a new builder with the name, address, and port fields defined.  The Address
 // value is guessed using LocalAddress() and may be overwritten at any time.
-func NewBareManagedAgentServiceRegistration(name string, port int, fns ...MangedAgentServiceRegistrationMutator) *ManagedAgentServiceRegistration {
+func NewBareManagedAgentServiceRegistration(name string, port int, fns ...ManagedAgentServiceRegistrationMutator) *ManagedAgentServiceRegistration {
 	reg := new(api.AgentServiceRegistration)
 	reg.Name = name
 	reg.Port = port

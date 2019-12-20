@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/rand"
 	"net"
+	"net/url"
 	"os"
 	"sort"
 	"strconv"
@@ -36,6 +37,8 @@ const (
 	rLbl = int64(26)
 
 	notFoundErrPrefix = "Unexpected response code: 404 ("
+
+	defaultInternalRequestTTL = 2 * time.Second
 )
 
 // These are set on init
@@ -240,4 +243,105 @@ func ReplaceSlugs(s string, p SlugParams) string {
 	s = strings.ReplaceAll(s, SlugNode, p.Node)
 	s = strings.ReplaceAll(s, SlugUnix, strconv.Itoa(int(time.Now().Unix())))
 	return s
+}
+
+func simpleToReg(localAddr, localHostname string, reg *SimpleServiceRegistration) (string, *api.AgentServiceRegistration, error) {
+	var (
+		serviceID   string                 // local service identifier
+		address     string                 // service host address
+		interval    string                 // check renewInterval
+		checkHTTP   *api.AgentServiceCheck // http type check
+		serviceName string                 // service registration name
+	)
+
+	// Perform some basic service name cleanup and validation
+	serviceName = strings.TrimSpace(reg.Name)
+	if serviceName == "" {
+		return "", nil, errors.New("\"Name\" cannot be blank")
+	}
+	if strings.Contains(serviceName, " ") {
+		return "", nil, fmt.Errorf("name \"%s\" is invalid, service names cannot contain spaces", serviceName)
+	}
+
+	// Come on, guys...valid ports plz...
+	if reg.Port <= 0 {
+		return "", nil, fmt.Errorf("%d is not a valid port", reg.Port)
+	}
+
+	if address = reg.Address; address == "" {
+		address = localAddr
+	}
+
+	if serviceID = reg.ID; serviceID == "" {
+		// Form a unique service id
+		var tail string
+		if reg.RandomID {
+			tail = LazyRandomString(12)
+		} else {
+			tail = strings.ToLower(localHostname)
+		}
+		serviceID = fmt.Sprintf("%s-%s", serviceName, tail)
+	}
+
+	if interval = reg.Interval; interval == "" {
+		// set a default renewInterval
+		interval = "30s"
+	}
+
+	// The serviceID is added in order to ensure detection in ServiceMonitor()
+	tags := append(reg.Tags, serviceID)
+
+	// Set up the service registration struct
+	asr := &api.AgentServiceRegistration{
+		ID:                serviceID,
+		Name:              serviceName,
+		Tags:              tags,
+		Port:              reg.Port,
+		Address:           address,
+		Checks:            make(api.AgentServiceChecks, 0),
+		EnableTagOverride: reg.EnableTagOverride,
+	}
+
+	// allow port override
+	checkPort := reg.CheckPort
+	if checkPort <= 0 {
+		checkPort = reg.Port
+	}
+
+	// build http check if specified
+	if reg.CheckPath != "" {
+
+		// allow scheme override
+		checkScheme := reg.CheckScheme
+		if checkScheme == "" {
+			checkScheme = "http"
+		}
+
+		// build check url
+		checkURL := &url.URL{
+			Scheme: checkScheme,
+			Host:   fmt.Sprintf("%s:%d", address, checkPort),
+			Path:   reg.CheckPath,
+		}
+
+		// build check
+		checkHTTP = &api.AgentServiceCheck{
+			HTTP:     checkURL.String(),
+			Interval: interval,
+		}
+
+		// add http check
+		asr.Checks = append(asr.Checks, checkHTTP)
+	}
+
+	// build tcp check if specified
+	if reg.CheckTCP {
+		// create tcp check definition
+		asr.Checks = append(asr.Checks, &api.AgentServiceCheck{
+			TCP:      fmt.Sprintf("%s:%d", address, checkPort),
+			Interval: interval,
+		})
+	}
+
+	return serviceID, asr, nil
 }

@@ -187,7 +187,7 @@ func NewManagedSession(conf *ManagedSessionConfig) (*ManagedSession, error) {
 
 	if ms.base.Node == "" {
 		if ms.base.Node, err = ms.client.Agent().NodeName(); err != nil {
-			return nil, fmt.Errorf("node name not set and unable to determine name of local agent node: %s", err)
+			ms.logf(false, "node name not set and unable to determine name of local agent node: %s", err)
 		}
 	}
 

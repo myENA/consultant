@@ -1,6 +1,7 @@
 package consultant_test
 
 import (
+	"sync"
 	"testing"
 
 	"github.com/myENA/consultant/v2"
@@ -68,5 +69,98 @@ func TestNotifierBase_DetachAllNotificationRecipients(t *testing.T) {
 			t.Fail()
 		}
 	})
+}
 
+func TestNewBasicNotifier(t *testing.T) {
+	t.Run("basic", func(t *testing.T) {
+		t.Parallel()
+
+		var (
+			ti        int
+			wg        *sync.WaitGroup
+			ids       [4]string
+			respMu    sync.Mutex
+			responses map[string]interface{}
+			tests     map[string]struct {
+				fn consultant.NotificationHandler
+				ch chan consultant.Notification
+			}
+
+			bn = consultant.NewBasicNotifier()
+		)
+
+		wg = new(sync.WaitGroup)
+		wg.Add(4)
+
+		ids = [4]string{}
+		responses = make(map[string]interface{}, 4)
+
+		tests = map[string]struct {
+			fn consultant.NotificationHandler
+			ch chan consultant.Notification
+		}{
+			"ch1": {ch: make(chan consultant.Notification, 1)},
+			"ch2": {ch: make(chan consultant.Notification, 1)},
+			"fn1": {
+				fn: func(n consultant.Notification) {
+					respMu.Lock()
+					responses["fn1"] = n.Data
+					respMu.Unlock()
+					wg.Done()
+				},
+			},
+			"fn2": {
+				fn: func(n consultant.Notification) {
+					respMu.Lock()
+					responses["fn2"] = n.Data
+					respMu.Unlock()
+					wg.Done()
+				},
+			},
+		}
+
+		defer close(tests["ch1"].ch)
+		defer close(tests["ch2"].ch)
+
+		for name, setup := range tests {
+			if setup.ch != nil {
+				ids[ti], _ = bn.AttachNotificationChannel("", setup.ch)
+				go func(name string, ch chan consultant.Notification) {
+					n := <-ch
+					respMu.Lock()
+					responses[name] = n.Data
+					respMu.Unlock()
+					wg.Done()
+				}(name, setup.ch)
+			} else if setup.fn != nil {
+				ids[ti], _ = bn.AttachNotificationHandler("", setup.fn)
+			} else {
+				t.Fatalf("Test %q has no ch or fn defined", name)
+				return
+			}
+			t.Logf("%s attached with id %q", name, ids[ti])
+			ti++
+		}
+
+		bn.Push(consultant.NotificationSourceTest, consultant.NotificationEventTestPush, "hello there")
+
+		wg.Wait()
+
+		for name, resp := range responses {
+			if s, ok := resp.(string); !ok {
+				t.Logf("Response from %q expected to be string, saw %T", name, resp)
+				t.Fail()
+			} else if s != "hello there" {
+				t.Logf("Expected response from %q to be %q, saw %q", name, "hello there", s)
+				t.Fail()
+			}
+		}
+
+		for _, id := range ids {
+			if !bn.DetachNotificationRecipient(id) {
+				t.Logf("Expected return to be true when removing recipient %q but saw false", id)
+				t.FailNow()
+			}
+		}
+	})
 }

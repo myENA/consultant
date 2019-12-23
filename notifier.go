@@ -13,6 +13,8 @@ const (
 	NotificationSourceManagedSession NotificationSource = iota
 	NotificationSourceCandidate
 	NotificationSourceManagedService
+
+	NotificationSourceTest NotificationSource = 0xf
 )
 
 func (ns NotificationSource) String() string {
@@ -24,6 +26,9 @@ func (ns NotificationSource) String() string {
 	case NotificationSourceManagedService:
 		return "ManagedService"
 
+	case NotificationSourceTest:
+		return "Test"
+
 	default:
 		return "UNKNOWN"
 	}
@@ -34,6 +39,7 @@ type NotificationEvent uint64
 
 const (
 	NotificationEventManualPush NotificationEvent = 0x0 // sent whenever a manual notification is requested
+	NotificationEventTestPush   NotificationEvent = 0xf // used for testing purposes
 
 	NotificationEventManagedSessionRunning NotificationEvent = 0x80 // sent when session is running
 	NotificationEventManagedSessionStopped NotificationEvent = 0x81 // sent when session is no longer running
@@ -53,6 +59,8 @@ func (ev NotificationEvent) String() string {
 	switch ev {
 	case NotificationEventManualPush:
 		return "ManualPush"
+	case NotificationEventTestPush:
+		return "TestPush"
 
 	case NotificationEventManagedSessionStopped:
 		return "ManagedSessionStopped"
@@ -148,6 +156,11 @@ func NewBasicNotifier() *BasicNotifier {
 	return b
 }
 
+// Push will immediately send a new notification to all currently registered recipients
+func (bn *BasicNotifier) Push(s NotificationSource, ev NotificationEvent, d interface{}) {
+	bn.sendNotification(s, ev, d)
+}
+
 // AttachNotificationHandler immediately adds the provided handler to the list of handlers to be called per notification
 func (nb *notifierBase) AttachNotificationHandler(id string, fn NotificationHandler) (string, bool) {
 	if fn == nil {
@@ -169,7 +182,10 @@ func (nb *notifierBase) AttachNotificationChannel(id string, ch NotificationChan
 	if ch == nil {
 		panic(fmt.Sprintf("AttachNotificationChannel called with id %q and nil channel", id))
 	}
-	return nb.AttachNotificationHandler(id, func(n Notification) { ch <- n })
+	return nb.AttachNotificationHandler(id, func(n Notification) {
+		// TODO: handle blocking chans?
+		ch <- n
+	})
 }
 
 // DetachNotificationRecipient immediately removes the provided recipient from receiving any new notifications,

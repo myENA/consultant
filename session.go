@@ -409,7 +409,6 @@ func (ms *ManagedSession) create(ctx context.Context) error {
 		ms.id = ""
 		ms.lastErr = err
 	} else if sid != "" {
-		ms.logf(true, "create() - New upstream session %q created", sid)
 		ms.id = sid
 		ms.lastRenewed = time.Now()
 		ms.lastErr = nil
@@ -438,7 +437,6 @@ func (ms *ManagedSession) renew(ctx context.Context) error {
 		ms.id = ""
 		ms.lastErr = err
 	} else if se != nil {
-		ms.logf(true, "renew() - Upstream session %q renewed", se.ID)
 		ms.id = se.ID
 		ms.lastRenewed = time.Now()
 		ms.lastErr = nil

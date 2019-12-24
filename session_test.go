@@ -261,6 +261,43 @@ func TestManagedSession_Run(t *testing.T) {
 			t.Fail()
 		}
 	})
+
+	t.Run("persist-for-a-bit", func(t *testing.T) {
+		var (
+			renewed int32
+		)
+		se := new(api.SessionEntry)
+		se.TTL = (consultant.SessionMinimumTTL).String()
+
+		cfg := new(consultant.ManagedSessionConfig)
+		cfg.Definition = se
+
+		server, _, ms := newManagedSessionWithServerAndClient(t, nil, cfg)
+		defer stopTestServer(server)
+
+		ms.AttachNotificationHandler("", func(n consultant.Notification) {
+			if n.Event == consultant.NotificationEventManagedSessionRenew {
+				atomic.AddInt32(&renewed, 1)
+			}
+		})
+
+		ctx, cancel := context.WithTimeout(context.Background(), 3*consultant.SessionMinimumTTL)
+		defer cancel()
+
+		if err := ms.Run(ctx); err != nil {
+			t.Logf("Error running session: %s", err)
+			t.Fail()
+			return
+		}
+
+		<-ctx.Done()
+
+		// wait just a tick for all notifications to fire
+		if renewed != 5 {
+			t.Logf("Expected renewed to be 3, saw %d", renewed)
+			t.Fail()
+		}
+	})
 }
 
 func TestManagedSession_PushStateNotification(t *testing.T) {

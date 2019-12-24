@@ -11,18 +11,18 @@ import (
 	"github.com/myENA/go-helpers"
 )
 
-type SessionState uint8
+type ManagedSessionState uint8
 
 const (
-	SessionStateStopped SessionState = iota
-	SessionStateRunning
+	ManagedSessionStateStopped ManagedSessionState = iota
+	ManagedSessionStateRunning
 )
 
-func (s SessionState) String() string {
+func (s ManagedSessionState) String() string {
 	switch s {
-	case SessionStateStopped:
+	case ManagedSessionStateStopped:
 		return "stopped"
-	case SessionStateRunning:
+	case ManagedSessionStateRunning:
 		return "running"
 
 	default:
@@ -32,11 +32,11 @@ func (s SessionState) String() string {
 
 // ManagedSessionUpdate is the value of .Data in all Notification types pushed by a ManagedSession instance
 type ManagedSessionUpdate struct {
-	ID          string       `json:"id"`
-	Name        string       `json:"name"`
-	LastRenewed int64        `json:"last_renewed"`
-	Error       error        `json:"error"`
-	State       SessionState `json:"state"`
+	ID          string              `json:"id"`
+	Name        string              `json:"name"`
+	LastRenewed int64               `json:"last_renewed"`
+	Error       error               `json:"error"`
+	State       ManagedSessionState `json:"state"`
 }
 
 const (
@@ -125,7 +125,7 @@ type ManagedSession struct {
 	lastErr       error
 
 	stop  chan chan error
-	state SessionState
+	state ManagedSessionState
 
 	logger Logger
 	dbg    bool
@@ -268,7 +268,7 @@ func (ms *ManagedSession) LastRenewed() time.Time {
 func (ms *ManagedSession) SessionEntry(ctx context.Context) (*api.SessionEntry, *api.QueryMeta, error) {
 	ms.mu.RLock()
 	defer ms.mu.RUnlock()
-	if ms.state != SessionStateRunning {
+	if ms.state != ManagedSessionStateRunning {
 		return nil, nil, errors.New("session is not running")
 	}
 	if ms.id == "" {
@@ -287,7 +287,7 @@ func (ms *ManagedSession) PushStateNotification() {
 // Running returns true so long as the internal session state is active
 func (ms *ManagedSession) Running() bool {
 	ms.mu.RLock()
-	b := ms.state == SessionStateRunning
+	b := ms.state == ManagedSessionStateRunning
 	ms.mu.RUnlock()
 	return b
 }
@@ -298,7 +298,7 @@ func (ms *ManagedSession) Run(ctx context.Context) error {
 		return err
 	}
 	ms.mu.Lock()
-	if ms.state == SessionStateRunning {
+	if ms.state == ManagedSessionStateRunning {
 		// if our state is already running, just continue to do so.
 		ms.logf(true, "Run() called but I'm already running")
 		ms.mu.Unlock()
@@ -306,7 +306,7 @@ func (ms *ManagedSession) Run(ctx context.Context) error {
 	}
 
 	// modify state
-	ms.state = SessionStateRunning
+	ms.setState(ManagedSessionStateRunning)
 
 	// try to create session immediately
 	if err := ms.create(ctx); err != nil {
@@ -328,24 +328,27 @@ func (ms *ManagedSession) Run(ctx context.Context) error {
 // Stop immediately attempts to cease session management
 func (ms *ManagedSession) Stop() error {
 	ms.mu.Lock()
-	if ms.state == SessionStateStopped {
+	if ms.state == ManagedSessionStateStopped {
 		ms.logf(true, "Stop() called but I'm already stopped")
 		ms.mu.Unlock()
 		return nil
 	}
-	ms.state = SessionStateStopped
+	ms.setState(ManagedSessionStateStopped)
 	ms.mu.Unlock()
 
 	stopped := make(chan error, 1)
+	ms.logf(true, "pushing stopped chan into stop")
 	ms.stop <- stopped
+	ms.logf(true, "pushed, waiting to read...")
 	err := <-stopped
+	ms.logf(true, "stopped chan read")
 	close(stopped)
 
 	return err
 }
 
 // State returns the current running state of the managed session
-func (ms *ManagedSession) State() SessionState {
+func (ms *ManagedSession) State() ManagedSessionState {
 	ms.mu.RLock()
 	s := ms.state
 	ms.mu.RUnlock()
@@ -372,6 +375,26 @@ func (ms *ManagedSession) pushNotification(ev NotificationEvent) {
 		ms.state,
 	}
 	ms.sendNotification(NotificationSourceManagedSession, ev, n)
+}
+
+// setState updates the internal state value and pushes a notification of change
+//
+// caller must hold full lock
+func (ms *ManagedSession) setState(state ManagedSessionState) {
+	var ev NotificationEvent
+
+	switch state {
+	case ManagedSessionStateRunning:
+		ev = NotificationEventManagedSessionRunning
+	case ManagedSessionStateStopped:
+		ev = NotificationEventManagedSessionStopped
+
+	default:
+		panic(fmt.Sprintf("unknown state %d (%[1]s) seen", state))
+	}
+
+	ms.state = state
+	ms.pushNotification(ev)
 }
 
 // create will attempt to do just that.
@@ -502,17 +525,11 @@ func (ms *ManagedSession) maintainTick(ctx context.Context) {
 	}
 }
 
-func (ms *ManagedSession) shutdown(intervalTimer *time.Timer, stopped chan<- error) {
+func (ms *ManagedSession) shutdown() error {
 	var (
 		sid string
 		err error
 	)
-
-	ms.mu.Lock()
-
-	if !intervalTimer.Stop() {
-		<-intervalTimer.C
-	}
 
 	ms.logf(false, "shutdown() - Stopping session...")
 
@@ -520,8 +537,8 @@ func (ms *ManagedSession) shutdown(intervalTimer *time.Timer, stopped chan<- err
 	sid = ms.id
 
 	if ms.id != "" {
-		// if we have a reference to an upstream session id, attempt to destroy it.
-		// use background context here to ensure attempt is made
+		// if we have a reference to an upstream session id, attempt to destroy it.  use background context here to
+		// ensure attempt is made
 		if err = ms.destroy(context.Background()); err != nil {
 			ms.logf(false, "shutdown() - Error destroying upstream session %q: %s", sid, err)
 			// if there was an existing error, append this error to it to be sent along the Stop() resp chan
@@ -531,22 +548,14 @@ func (ms *ManagedSession) shutdown(intervalTimer *time.Timer, stopped chan<- err
 		}
 	}
 
-	// set our state to stopped, preventing further interaction.
-	ms.state = SessionStateStopped
-
 	ms.lastErr = err
 
-	// if this session was stopped via context, this will be nil
-	if stopped != nil {
-		// sendNotification along the last seen error, whatever it was.
-		stopped <- err
-	}
-
-	ms.mu.Unlock()
-
-	ms.pushNotification(NotificationEventManagedSessionStopped)
+	// set our state to stopped, preventing further interaction.
+	ms.setState(ManagedSessionStateStopped)
 
 	ms.logf(false, "shutdown() - ManagedSession stopped")
+
+	return err
 }
 
 // TODO: improve updates to include the action taken this loop, and whether it is the last action to be taken this loop
@@ -559,9 +568,15 @@ func (ms *ManagedSession) maintain(ctx context.Context) {
 		intervalTimer = time.NewTimer(ms.renewInterval)
 	)
 
-	defer ms.shutdown(intervalTimer, stopped)
-
-	ms.pushNotification(NotificationEventManagedSessionRunning)
+	defer func() {
+		ms.mu.Lock()
+		defer ms.mu.Unlock()
+		intervalTimer.Stop()
+		err := ms.shutdown()
+		if stopped != nil {
+			stopped <- err
+		}
+	}()
 
 	for {
 		select {
@@ -626,7 +641,7 @@ func (b *ManagedSessionEntry) SetName(f string, v ...interface{}) *ManagedSessio
 	return b
 }
 
-// Create attempts to
+// Create returns a new ManagedSession instance based upon this ManagedSessionEntry
 func (b *ManagedSessionEntry) Create(cfg *ManagedSessionConfig) (*ManagedSession, error) {
 	var act = new(ManagedSessionConfig)
 

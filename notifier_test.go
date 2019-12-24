@@ -155,12 +155,5 @@ func TestNewBasicNotifier(t *testing.T) {
 				t.Fail()
 			}
 		}
-
-		for _, id := range ids {
-			if !bn.DetachNotificationRecipient(id) {
-				t.Logf("Expected return to be true when removing recipient %q but saw false", id)
-				t.FailNow()
-			}
-		}
 	})
 }

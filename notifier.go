@@ -183,7 +183,7 @@ func (nb *notifierBase) AttachNotificationChannel(id string, ch NotificationChan
 		panic(fmt.Sprintf("AttachNotificationChannel called with id %q and nil channel", id))
 	}
 	return nb.AttachNotificationHandler(id, func(n Notification) {
-		// TODO: handle blocking chans?
+		// TODO: handle blocking?
 		ch <- n
 	})
 }

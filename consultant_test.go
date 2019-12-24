@@ -1074,6 +1074,10 @@ func makeTestServer(t *testing.T, cb cst.ServerConfigCallback) *cst.TestServer {
 	return server
 }
 
+func stopTestServer(s *cst.TestServer) {
+	_ = s.Stop()
+}
+
 func makeTestClient(t *testing.T, server *cst.TestServer) *consultant.Client {
 	apiConf := api.DefaultConfig()
 	apiConf.Address = server.HTTPAddr

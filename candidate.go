@@ -430,7 +430,7 @@ func (c *Candidate) sessionUpdate(n Notification) {
 		// if there was an update either creating or renewing our session
 		atomic.AddUint64(c.consecutiveSessionErrors, 1)
 		c.logf(false, "sessionUpdate() - Error (%d in a row): %s", atomic.LoadUint64(c.consecutiveSessionErrors), update.Error)
-		if update.State == SessionStateRunning && atomic.LoadUint64(c.consecutiveSessionErrors) > 2 {
+		if update.State == ManagedSessionStateRunning && atomic.LoadUint64(c.consecutiveSessionErrors) > 2 {
 			// if the session is still running but we've seen more than 2 errors, attempt a stop -> start cycle
 			c.logf(false, "sessionUpdate() - 2 successive errors seen, stopping session")
 			if err := c.ms.Stop(); err != nil {
@@ -440,7 +440,7 @@ func (c *Candidate) sessionUpdate(n Notification) {
 		}
 		// do not modify elected state here unless we've breached the threshold.  could just be a temporary
 		// issue
-	} else if update.State == SessionStateStopped {
+	} else if update.State == ManagedSessionStateStopped {
 		// if somehow the session state became stopped (this should basically never happen...), do not attempt
 		// to kickstart session here.  test if we need to update candidate state and notify watchers, then move
 		// on.  next acquire tick will attempt to restart session.

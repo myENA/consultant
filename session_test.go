@@ -1,16 +1,40 @@
 package consultant_test
 
 import (
+	"context"
 	"fmt"
+	"log"
+	"os"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/hashicorp/consul/api"
+	cst "github.com/hashicorp/consul/sdk/testutil"
 	"github.com/myENA/consultant/v2"
 )
 
 const (
-	sessionTestTTL = "5s"
+	sessionTestName = "managed-session"
+	sessionTestTTL  = "5s"
 )
+
+func newManagedSessionWithServerAndClient(t *testing.T, cb cst.ServerConfigCallback, cfg *consultant.ManagedSessionConfig) (*cst.TestServer, *consultant.Client, *consultant.ManagedSession) {
+	server, client := makeTestServerAndClient(t, cb)
+	server.WaitForSerfCheck(t)
+	if cfg == nil {
+		cfg = new(consultant.ManagedSessionConfig)
+	}
+	cfg.Client = client.Client
+	cfg.Logger = log.New(os.Stdout, "", log.LstdFlags)
+	cfg.Debug = true
+	ms, err := consultant.NewManagedSession(cfg)
+	if err != nil {
+		_ = server.Stop()
+		t.Fatalf("Error creating ManagedSession instance: %s", err)
+	}
+	return server, client, ms
+}
 
 func TestNewManagedSession(t *testing.T) {
 	noConfigTests := map[string]struct {
@@ -148,61 +172,136 @@ func TestNewManagedSession(t *testing.T) {
 	}
 }
 
-//func (ss *SessionTestSuite) TestNew_Populated() {
-//	var err error
-//
-//	ss.session, err = consultant.NewManagedSession(ss.config(&consultant.ManagedSessionConfig{TTL: "20s", TTLBehavior: api.SessionBehaviorDelete}))
-//	require.Nil(ss.T(), err, "Error constructing with config: %s", err)
-//
-//	ttl := ss.session.TTL()
-//	require.Equal(ss.T(), 20*time.Second, ttl, "Expected TTL of \"20s\", saw \"%s\"", ttl)
-//
-//	interval := ss.session.RenewInterval()
-//	require.Equal(ss.T(), 10*time.Second, interval, "Expected Renew Interval of \"10s\", saw \"%s\"", interval)
-//
-//	behavior := ss.session.Behavior()
-//	require.Equal(ss.T(), api.SessionBehaviorDelete, behavior, "Expected TTLBehavior \"%s\", saw \"%s\"", api.SessionBehaviorDelete, behavior)
-//}
-//
-//func (ss *SessionTestSuite) TestNew_Failures() {
-//	var err error
-//
-//	const badTTL = "thursday"
-//	const badBehavior = "cheese place"
-//
-//	_, err = consultant.NewManagedSession(ss.config(&consultant.ManagedSessionConfig{TTL: badTTL}))
-//	require.NotNil(ss.T(), err, "Expected TTL of \"%s\" to return error", badTTL)
-//
-//	_, err = consultant.NewManagedSession(ss.config(&consultant.ManagedSessionConfig{TTLBehavior: badBehavior}))
-//	require.NotNil(ss.T(), err, "Expected TTLBehavior of \"%s\" to return error", badBehavior)
-//}
-//
-//func (ss *SessionTestSuite) TestNew_TTLMinimum() {
-//	var err error
-//
-//	ss.session, err = consultant.NewManagedSession(ss.config(&consultant.ManagedSessionConfig{TTL: "1s"}))
-//	require.Nil(ss.T(), err, "Error constructing session: %s", err)
-//
-//	ttl := ss.session.TTL()
-//	require.Equal(ss.T(), 10*time.Second, ttl, "Expected minimum allowable TTL to be \"10s\", saw \"%s\"", ttl)
-//
-//	interval := ss.session.RenewInterval()
-//	require.Equal(ss.T(), 5*time.Second, interval, "Expected minimum RenewInterval to be \"5s\", saw \"%s\"", interval)
-//}
-//
-//func (ss *SessionTestSuite) TestNew_TTLMaximum() {
-//	var err error
-//
-//	ss.session, err = consultant.NewManagedSession(ss.config(&consultant.ManagedSessionConfig{TTL: "96400s"}))
-//	require.Nil(ss.T(), err, "Error constructing session: %s", err)
-//
-//	ttl := ss.session.TTL()
-//	require.Equal(ss.T(), 86400*time.Second, ttl, "Expected maximum allowable TTL to be \"86400s\", saw \"%s\"", ttl)
-//
-//	interval := ss.session.RenewInterval()
-//	require.Equal(ss.T(), 43200*time.Second, interval, "Expected maximum allowable Renew Interval to be \"432000s\", saw \"%s\"", interval)
-//}
-//
+func TestManagedSession_Run(t *testing.T) {
+
+	testRun := func(t *testing.T, ctx context.Context, ms *consultant.ManagedSession) {
+		if !ms.Running() {
+			t.Log("Expected session to be running")
+			t.Fail()
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
+		se, _, err := ms.SessionEntry(ctx)
+		if err != nil {
+			t.Logf("Error fetching session entry: %s", err)
+			t.Fail()
+			return
+		}
+
+		if se.ID != ms.ID() {
+			t.Logf("Expected session id to be %q, saw %q", se.ID, ms.ID())
+			t.Fail()
+		}
+		if lr := ms.LastRenewed(); lr.IsZero() {
+			t.Log("Expected last renewed to be non-zero")
+			t.Fail()
+		}
+	}
+
+	t.Run("manual-start", func(t *testing.T) {
+		server, _, ms := newManagedSessionWithServerAndClient(t, nil, nil)
+		defer stopTestServer(server)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		if err := ms.Run(ctx); err != nil {
+			t.Logf("Error running session: %s", err)
+			t.Fail()
+			return
+		}
+		testRun(t, ctx, ms)
+	})
+
+	t.Run("auto-start", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		cfg := new(consultant.ManagedSessionConfig)
+		cfg.StartImmediately = ctx
+
+		server, _, ms := newManagedSessionWithServerAndClient(t, nil, cfg)
+		defer stopTestServer(server)
+		testRun(t, ctx, ms)
+	})
+
+	t.Run("graceful-stop", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		cfg := new(consultant.ManagedSessionConfig)
+		cfg.StartImmediately = ctx
+
+		server, client, ms := newManagedSessionWithServerAndClient(t, nil, cfg)
+		defer stopTestServer(server)
+		testRun(t, ctx, ms)
+
+		ctx, cancel = context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
+
+		sid := ms.ID()
+
+		if err := ms.Stop(); err != nil {
+			t.Logf("Error stopping session: %s", err)
+			t.Fail()
+			return
+		}
+
+		se, _, err := client.Session().Info(sid, nil)
+		if err != nil {
+			t.Logf("Error fetching session after stop: %s", err)
+			t.Fail()
+			return
+		}
+
+		if se != nil {
+			t.Logf("Expected session to be nil, saw %v", se)
+			t.Fail()
+		}
+	})
+}
+
+func TestManagedSession_PushStateNotification(t *testing.T) {
+	var (
+		running   int32
+		created   int32
+		destroyed int32
+		stopped   int32
+	)
+
+	server, _, ms := newManagedSessionWithServerAndClient(t, nil, nil)
+	defer stopTestServer(server)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	ms.AttachNotificationHandler("", func(n consultant.Notification) {
+		t.Logf("Incoming notification: %d (%[1]s)", n.Event)
+		switch n.Event {
+		case consultant.NotificationEventManagedSessionRunning:
+			atomic.AddInt32(&running, 1)
+		case consultant.NotificationEventManagedSessionCreate:
+			atomic.AddInt32(&created, 1)
+		case consultant.NotificationEventManagedSessionDestroy:
+			atomic.AddInt32(&destroyed, 1)
+		case consultant.NotificationEventManagedSessionStopped:
+			atomic.AddInt32(&stopped, 1)
+
+		default:
+			t.Logf("Unexpected notification %d (%[1]s) seen", n.Event)
+			t.Fail()
+		}
+	})
+
+	if err := ms.Run(ctx); err != nil {
+		t.Logf("Error running managed service: %s", err)
+		t.Fail()
+		return
+	}
+}
+
 //func (ss *SessionTestSuite) TestSession_Run() {
 //	var err error
 //

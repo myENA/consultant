@@ -337,11 +337,8 @@ func (ms *ManagedSession) Stop() error {
 	ms.mu.Unlock()
 
 	stopped := make(chan error, 1)
-	ms.logf(true, "pushing stopped chan into stop")
 	ms.stop <- stopped
-	ms.logf(true, "pushed, waiting to read...")
 	err := <-stopped
-	ms.logf(true, "stopped chan read")
 	close(stopped)
 
 	return err
@@ -569,10 +566,10 @@ func (ms *ManagedSession) maintain(ctx context.Context) {
 	)
 
 	defer func() {
-		ms.mu.Lock()
-		defer ms.mu.Unlock()
 		intervalTimer.Stop()
+		ms.mu.Lock()
 		err := ms.shutdown()
+		ms.mu.Unlock()
 		if stopped != nil {
 			stopped <- err
 		}

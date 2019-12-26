@@ -263,9 +263,7 @@ func TestManagedSession_Run(t *testing.T) {
 	})
 
 	t.Run("persist-for-a-bit", func(t *testing.T) {
-		var (
-			renewed int32
-		)
+		var renewed int32
 		se := new(api.SessionEntry)
 		se.TTL = (consultant.SessionMinimumTTL).String()
 
@@ -295,6 +293,84 @@ func TestManagedSession_Run(t *testing.T) {
 		// wait just a tick for all notifications to fire
 		if renewed != 5 {
 			t.Logf("Expected renewed to be 3, saw %d", renewed)
+			t.Fail()
+		}
+	})
+
+	t.Run("recreate-after-kill", func(t *testing.T) {
+		var (
+			created   bool
+			destroyed bool
+			recreated bool
+			initialID string
+
+			updateChan = make(chan consultant.Notification, 10)
+		)
+
+		server, client, ms := newManagedSessionWithServerAndClient(t, nil, nil)
+		defer stopTestServer(server)
+
+		nid, _ := ms.AttachNotificationChannel("", updateChan)
+
+		defer func() {
+			if ms != nil && nid != "" {
+				ms.DetachNotificationRecipient(nid)
+			}
+			close(updateChan)
+			if len(updateChan) > 0 {
+				for range updateChan {
+				}
+			}
+		}()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		if err := ms.Run(ctx); err != nil {
+			t.Logf("Error running session: %s", err)
+			t.Fail()
+			return
+		}
+
+	TestLoop:
+		for {
+			select {
+			case <-ctx.Done():
+				t.Logf("Context ended: %s", ctx.Err())
+				t.Fail()
+				break TestLoop
+			case n := <-updateChan:
+				switch n.Event {
+				case consultant.NotificationEventManagedSessionCreate:
+					if ms.ID() == "" {
+						t.Log("Expected ID() to return non-empty after create notification")
+						t.Fail()
+						break TestLoop
+					}
+					if !created {
+						created = true
+						_, err := client.Session().Destroy(ms.ID(), nil)
+						if err != nil {
+							t.Logf("Error manually destroying session %q: %s", ms.ID(), err)
+							t.Fail()
+							break TestLoop
+						}
+						destroyed = true
+					} else if destroyed {
+						if ms.ID() == initialID {
+							t.Logf("Expected upstream session ID to be different after destroy -> create cycle, saw %q twice", ms.ID())
+							t.Fail()
+						} else {
+							recreated = true
+						}
+						break TestLoop
+					}
+				}
+			}
+		}
+
+		if !recreated {
+			t.Log("Expected recreated to be true")
 			t.Fail()
 		}
 	})
@@ -339,39 +415,6 @@ func TestManagedSession_PushStateNotification(t *testing.T) {
 	}
 }
 
-//func (ss *SessionTestSuite) TestSession_Run() {
-//	var err error
-//
-//	upChan := make(chan consultant.ManagedSessionUpdate)
-//	updateFunc := func(up consultant.ManagedSessionUpdate) {
-//		upChan <- up
-//	}
-//
-//	ss.session, err = consultant.NewManagedSession(ss.config(&consultant.ManagedSessionConfig{TTL: sessionTestTTL, UpdateFunc: updateFunc}))
-//	require.Nil(ss.T(), err, "Error constructing session: %s", err)
-//
-//	ss.session.Run()
-//
-//	select {
-//	case <-time.After(10 * time.Second):
-//		ss.FailNow("We should have a session by now.")
-//	case up := <-upChan:
-//		require.NotZero(ss.T(), up.ID, "Expected ID to be populated: %+v", up)
-//		require.NotZero(ss.T(), up.Name, "Expected Name to be populated: %+v", up)
-//		require.NotZero(ss.T(), up.LastRenewed, "Expected LastRenewed to be non-zero: %+v", up)
-//		require.Nil(ss.T(), up.Error, "Expected Error to be nil, saw: %s", up.Error)
-//	}
-//}
-//
-//func (ss *SessionTestSuite) TestSession_AutoRun() {
-//	var err error
-//
-//	ss.session, err = consultant.NewManagedSession(ss.config(&consultant.ManagedSessionConfig{TTL: sessionTestTTL, StartImmediately: true}))
-//	require.Nil(ss.T(), err, "Error constructing session: %s", err)
-//
-//	require.True(ss.T(), ss.session.Running(), "StartImmediately session not automatically started")
-//}
-//
 //func (ss *SessionTestSuite) TestSession_SessionKilled() {
 //	var (
 //		initialID string

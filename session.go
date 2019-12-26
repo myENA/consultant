@@ -217,7 +217,7 @@ func NewManagedSession(conf *ManagedSessionConfig) (*ManagedSession, error) {
 	}
 
 	ms.logf(true, "Lock timeout: %s", ms.def.TTL)
-	ms.logf(true, "Renew renewInterval: %s", ms.renewInterval)
+	ms.logf(true, "Renew interval: %s", ms.renewInterval)
 
 	return ms, nil
 }

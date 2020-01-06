@@ -2,6 +2,7 @@ package consultant_test
 
 import (
 	"context"
+	"encoding/json"
 	"log"
 	"os"
 	"testing"
@@ -22,12 +23,20 @@ func newCandidateWithServerAndClient(t *testing.T, cfg *consultant.CandidateConf
 	if cfg == nil {
 		cfg = new(consultant.CandidateConfig)
 	}
-	cfg.Client = client.Client
-	cfg.KVKey = candidateTestKVKey
+	if cfg.ManagedSessionConfig.Definition == nil {
+		cfg.ManagedSessionConfig.Definition = new(api.SessionEntry)
+	}
+	if cfg.ManagedSessionConfig.Definition.TTL == "" {
+		cfg.ManagedSessionConfig.Definition.TTL = consultant.SessionMinimumTTL.String()
+	}
+	if cfg.KVKey == "" {
+		cfg.KVKey = candidateTestKVKey
+	}
 	if cfg.CandidateID == "" {
 		cfg.CandidateID = candidateTestID
 	}
-	cfg.Logger = log.New(os.Stdout, "---> candidate", log.LstdFlags)
+	cfg.Client = client.Client
+	cfg.Logger = log.New(os.Stdout, "---> candidate ", log.LstdFlags)
 	cfg.Debug = true
 	cand, err := consultant.NewCandidate(cfg)
 	if err != nil {
@@ -87,11 +96,53 @@ func TestCandidate_Run(t *testing.T) {
 			return
 		}
 
-		ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		defer cancel()
+		if err := cand.WaitUntil(ctx); err != nil {
+			t.Logf("Candidate election cycle took longer than expected to complete: %s", err)
+			t.FailNow()
+			return
+		}
+
+		ctx, cancel = context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
+		kv, _, err := cand.LeaderKV(ctx)
+		if err != nil {
+			t.Logf("Error fetching leader key: %s", err)
+			t.FailNow()
+			return
+		}
+		if kv.Value == nil {
+			t.Log("kv.Value is nil")
+			t.FailNow()
+			return
+		}
+		kvValue := new(consultant.CandidateDefaultLeaderKVValue)
+		if err := json.Unmarshal(kv.Value, kvValue); err != nil {
+			t.Logf("Error unmarshalling kv.Value: %s", err)
+			t.FailNow()
+			return
+		}
+
+		if kvValue.LeaderID != cand.ID() {
+			t.Logf("Expected elected leader KV to have LeaderID of %q, saw %q", cand.ID(), kvValue.LeaderID)
+			t.FailNow()
+			return
+		}
+
+		ctx, cancel = context.WithTimeout(ctx, 2*time.Second)
 		defer cancel()
 		se, _, err := cand.LeaderSession(ctx)
 		if err != nil {
-			t.Logf("Error fetching candidate")
+			t.Logf("Error fetching candidate session: %s", err)
+			t.FailNow()
+			return
+		}
+
+		if se.ID != cand.Session().ID() {
+			t.Logf("Expected session returned from LeaderSession to be %q, saw %q", cand.Session().ID(), se.ID)
+			t.FailNow()
+			return
 		}
 	}
 
@@ -102,7 +153,7 @@ func TestCandidate_Run(t *testing.T) {
 		cand := newCandidateWithServerAndClient(t, nil, server, client)
 		defer cand.Resign()
 
-		ctx, cancel := context.WithCancel(context.Background())
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
 		if err := cand.Run(ctx); err != nil {
@@ -119,7 +170,7 @@ func TestCandidate_Run(t *testing.T) {
 		defer stopTestServer(server)
 		server.WaitForSerfCheck(t)
 
-		ctx, cancel := context.WithCancel(context.Background())
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
 		cfg := new(consultant.CandidateConfig)
@@ -173,7 +224,7 @@ func TestCandidate_Run(t *testing.T) {
 //	if conf != nil {
 //		*lc = *conf
 //	}
-//	lc.CandidateID = fmt.Sprintf("test-%d", num)
+//	lc.ID = fmt.Sprintf("test-%d", num)
 //	if lc.SessionTTL == "" {
 //		lc.SessionTTL = candidateLockTTL
 //	}

@@ -52,19 +52,19 @@ package consultant_test
 //func (cs *ClientTestSuite) TestSimpleClientInteraction() {
 //	cs.server, cs.client = makeTestServerAndClient(cs.T(), nil)
 //
-//	_, err := cs.client.KV().Put(&api.KVPair{Key: clientTestKVKey, Value: []byte(clientTestKVValue)}, nil)
+//	_, err := cs.client.LeaderKV().Put(&api.KVPair{Key: clientTestKVKey, Value: []byte(clientTestKVValue)}, nil)
 //	require.Nil(cs.T(), err, fmt.Sprintf("Unable to put key \"%s\": %s", clientTestKVKey, err))
 //
-//	kv, _, err := cs.client.KV().Get(clientTestKVKey, nil)
+//	kv, _, err := cs.client.LeaderKV().Get(clientTestKVKey, nil)
 //	require.Nil(cs.T(), err, fmt.Sprintf("Unable to get key \"%s\": %s", clientTestKVKey, err))
 //
-//	require.NotNil(cs.T(), kv, "KV was nil")
+//	require.NotNil(cs.T(), kv, "LeaderKV was nil")
 //	require.IsType(
 //		cs.T(),
 //		&api.KVPair{},
 //		kv,
 //		fmt.Sprintf(
-//			"Expected KV Get response to be type \"%s\", saw \"%s\"",
+//			"Expected LeaderKV Get response to be type \"%s\", saw \"%s\"",
 //			reflect.TypeOf(&api.KVPair{}),
 //			reflect.TypeOf(kv)))
 //}
@@ -216,7 +216,7 @@ package consultant_test
 //
 //func (cs *ClientTestSuite) TestEnsureKey() {
 //	cs.server, cs.client = makeTestServerAndClient(cs.T(), nil)
-//	_, err := cs.client.KV().Put(&api.KVPair{Key: "foo/bar", Value: []byte("hello")}, nil)
+//	_, err := cs.client.LeaderKV().Put(&api.KVPair{Key: "foo/bar", Value: []byte("hello")}, nil)
 //	require.Nil(cs.T(), err, fmt.Sprintf("Failed to write key %s : %s", "foo/bar", err))
 //
 //	kvp, _, err := cs.client.EnsureKey("foo/bar", nil)

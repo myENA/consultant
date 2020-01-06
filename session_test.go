@@ -24,7 +24,7 @@ func newManagedSessionWithServerAndClient(t *testing.T, cfg *consultant.ManagedS
 		cfg = new(consultant.ManagedSessionConfig)
 	}
 	cfg.Client = client.Client
-	cfg.Logger = log.New(os.Stdout, "---> managed-session", log.LstdFlags)
+	cfg.Logger = log.New(os.Stdout, "---> managed-session ", log.LstdFlags)
 	cfg.Debug = true
 	ms, err := consultant.NewManagedSession(cfg)
 	if err != nil {

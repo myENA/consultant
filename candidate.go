@@ -19,26 +19,32 @@ const (
 	CandidateStateRunning
 )
 
-// CandidateLeaderKVDataProvider is called whenever a running Candidate attempts to acquire the lock on the defined kv
+// CandidateLeaderKVValueProvider is called whenever a running Candidate attempts to acquire the lock on the defined kv
 // key.  The resulting []byte is used as the data payload, and may be whatever you wish.
 //
 // A call to this func does NOT mean that the provided candidate IS the leader, it means that it is ATTEMPTING TO
 // BECOME the leader.
-type CandidateLeaderKVDataProvider func(*Candidate) ([]byte, error)
+type CandidateLeaderKVValueProvider func(*Candidate) ([]byte, error)
 
-// CandidateLeaderKVValue is the body of the acquired KV
-type CandidateLeaderKVValue struct {
-	LeaderID string `json:"leader_id"`
+// CandidateDefaultLeaderKVValue is the body of the acquired LeaderKV when no CandidateLeaderKVValueProvider is provided
+// during candidate configuration
+type CandidateDefaultLeaderKVValue struct {
+	LeaderID  string `json:"leader_id"`
+	SessionID string `json:"session_id"`
 }
 
-func CandidateDefaultLeaderKVDataProvider(c *Candidate) ([]byte, error) {
-	v := new(CandidateLeaderKVValue)
-	v.LeaderID = c.CandidateID()
+// CandidateDefaultLeaderKVValueProvider is the default data provider used when none is configured for a given candidate
+func CandidateDefaultLeaderKVValueProvider(c *Candidate) ([]byte, error) {
+	v := new(CandidateDefaultLeaderKVValue)
+	v.LeaderID = c.ID()
+	v.SessionID = c.ms.ID()
 	return json.Marshal(v)
 }
 
 // CandidateUpdate is the value of .Data in all Notification pushes from a Candidate
 type CandidateUpdate struct {
+	// ID will be the ID of the Candidate pushing this update
+	ID string `json:"id"`
 	// Elected tracks whether this specific candidate has been elected
 	Elected bool `json:"elected"`
 	// State tracks the current state of this candidate
@@ -60,9 +66,9 @@ type CandidateConfig struct {
 	// Optionally provide a callback func that returns a []byte to be used as the data value when a running Candidate
 	// acquires the lock (i.e. is "elected").  Calls to this method MUST NOT be taken as a sign of the provided
 	// candidate having been elected.  It ONLY indicates that the candidate is ATTEMPTING to be elected.
-	KVDataProvider CandidateLeaderKVDataProvider
+	KVDataProvider CandidateLeaderKVValueProvider
 
-	// CandidateID [suggested]
+	// ID [suggested]
 	//
 	// Should be a unique identifier for this specific Candidate that makes sense within the scope of your
 	// implementation. If left blank it will attempt to use the local IP address, otherwise a random string will be
@@ -83,7 +89,7 @@ type CandidateConfig struct {
 }
 
 // Candidate represents an extension to the ManagedSession type that will additionally attempt to apply the session
-// to a specific KV key.  This can then be used to facilitate "leader election" by way of the "leader" being the
+// to a specific LeaderKV key.  This can then be used to facilitate "leader election" by way of the "leader" being the
 // Candidate who's session is locking the target key.
 type Candidate struct {
 	*notifierBase
@@ -91,11 +97,11 @@ type Candidate struct {
 
 	ms *ManagedSession
 
-	id             string
-	kvKey          string
-	kvDataProvider CandidateLeaderKVDataProvider
-	elected        *bool
-	state          CandidateState
+	id              string
+	kvKey           string
+	kvValueProvider CandidateLeaderKVValueProvider
+	elected         *bool
+	state           CandidateState
 
 	dbg    bool
 	logger Logger
@@ -140,11 +146,12 @@ func NewCandidate(conf *CandidateConfig) (*Candidate, error) {
 	*c.consecutiveSessionErrors = 0
 	c.elected = new(bool)
 	c.stop = make(chan chan struct{}, 1)
+	c.logger = conf.Logger
 
 	if conf.KVDataProvider == nil {
-		c.kvDataProvider = CandidateDefaultLeaderKVDataProvider
+		c.kvValueProvider = CandidateDefaultLeaderKVValueProvider
 	} else {
-		c.kvDataProvider = conf.KVDataProvider
+		c.kvValueProvider = conf.KVDataProvider
 	}
 
 	c.ms.AttachNotificationHandler(fmt.Sprintf("candidate_%s", c.id), c.sessionUpdate)
@@ -159,8 +166,8 @@ func NewCandidate(conf *CandidateConfig) (*Candidate, error) {
 	return c, nil
 }
 
-// CandidateID returns the configured identifier for this Candidate
-func (c *Candidate) CandidateID() string {
+// ID returns the configured identifier for this Candidate
+func (c *Candidate) ID() string {
 	return c.id
 }
 
@@ -175,13 +182,40 @@ func (c *Candidate) Elected() bool {
 	return el
 }
 
+// Session returns the underlying ManagedSession instance used by this Candidate
+func (c *Candidate) Session() *ManagedSession {
+	return c.ms
+}
+
+// LeaderKV attempts to return the LeaderKV being used to control leader election in the local datacenter
+func (c *Candidate) LeaderKV(ctx context.Context) (*api.KVPair, *api.QueryMeta, error) {
+	return c.ForeignLeaderKV(ctx, "")
+}
+
+// ForeignLeaderKV attempts to return the LeaderKV being used to control leader election in the specified datacenter
+func (c *Candidate) ForeignLeaderKV(ctx context.Context, datacenter string) (*api.KVPair, *api.QueryMeta, error) {
+	qo := c.ms.qo.WithContext(ctx)
+	qo.Datacenter = datacenter
+
+	kv, qm, err := c.ms.client.KV().Get(c.kvKey, qo)
+	if err != nil {
+		return nil, qm, err
+	}
+
+	if nil == kv {
+		return nil, qm, fmt.Errorf("kv \"%s\" not found in datacenter \"%s\"", c.kvKey, datacenter)
+	}
+
+	return kv, qm, nil
+}
+
 // LeaderSession will attempt to locate the leader's session entry in your local agent's datacenter
 func (c *Candidate) LeaderSession(ctx context.Context) (*api.SessionEntry, *api.QueryMeta, error) {
 	return c.ForeignLeaderSession(ctx, "")
 }
 
 //
-//// Return the leader, assuming its CandidateID can be interpreted as an IP address
+//// Return the leader, assuming its ID can be interpreted as an IP address
 //func (c *Candidate) LeaderIP(ctx context.Context) (net.IP, error) {
 //	return c.ForeignLeaderIP(ctx, "")
 //}
@@ -190,14 +224,14 @@ func (c *Candidate) LeaderSession(ctx context.Context) (*api.SessionEntry, *api.
 //func (c *Candidate) ForeignLeaderIP(ctx context.Context, dc string) (net.IP, error) {
 //	qo := c.ms.qo.WithContext(ctx)
 //	qo.Datacenter = dc
-//	kv, _, err := c.ms.client.KV().Get(c.kvKey, qo)
+//	kv, _, err := c.ms.client.LeaderKV().Get(c.kvKey, qo)
 //	if err != nil {
 //		return nil, err
 //	} else if kv == nil || len(kv.Value) == 0 {
 //		return nil, errors.New("no leader has been elected")
 //	}
 //
-//	info := new(CandidateLeaderKVValue)
+//	info := new(CandidateDefaultLeaderKVValue)
 //	if err = json.Unmarshal(kv.Value, info); err == nil && info.LeaderAddress != "" {
 //		if ip := net.ParseIP(info.LeaderAddress); ip != nil {
 //			return ip, nil
@@ -207,7 +241,7 @@ func (c *Candidate) LeaderSession(ctx context.Context) (*api.SessionEntry, *api.
 //}
 
 // ForeignLeaderSession will attempt to locate the leader's session entry in a datacenter of your choosing
-func (c *Candidate) ForeignLeaderSession(ctx context.Context, dc string) (*api.SessionEntry, *api.QueryMeta, error) {
+func (c *Candidate) ForeignLeaderSession(ctx context.Context, datacenter string) (*api.SessionEntry, *api.QueryMeta, error) {
 	var (
 		kv  *api.KVPair
 		se  *api.SessionEntry
@@ -217,16 +251,11 @@ func (c *Candidate) ForeignLeaderSession(ctx context.Context, dc string) (*api.S
 		qo = c.ms.qo.WithContext(ctx)
 	)
 
-	qo.Datacenter = dc
-
-	kv, qm, err = c.ms.client.KV().Get(c.kvKey, qo)
-	if err != nil {
+	if kv, qm, err = c.ForeignLeaderKV(ctx, datacenter); err != nil {
 		return nil, qm, err
 	}
 
-	if nil == kv {
-		return nil, qm, fmt.Errorf("kv \"%s\" not found in datacenter \"%s\"", c.kvKey, dc)
-	}
+	qo.Datacenter = datacenter
 
 	if kv.Session != "" {
 		se, qm, err = c.ms.client.Session().Info(kv.Session, qo)
@@ -235,13 +264,13 @@ func (c *Candidate) ForeignLeaderSession(ctx context.Context, dc string) (*api.S
 		}
 	}
 
-	return nil, qm, fmt.Errorf("kv \"%s\" has no session in datacenter \"%s\"", c.kvKey, dc)
+	return nil, qm, fmt.Errorf("kv \"%s\" has no session in datacenter \"%s\"", c.kvKey, datacenter)
 }
 
 // WaitUntil will wait for a candidate to be elected or until duration has passed
 func (c *Candidate) WaitUntil(ctx context.Context) error {
 	if !c.Running() {
-		return fmt.Errorf("candidate %s is not in running", c.CandidateID())
+		return fmt.Errorf("candidate %s is not in running", c.ID())
 	}
 
 	for i := 1; ; i++ {
@@ -267,9 +296,14 @@ func (c *Candidate) Wait() error {
 	return c.WaitUntil(context.Background())
 }
 
-// WaitNotify accepts a channel that will have the end result of .WaitUntil pushed onto it.
-func (c *Candidate) WaitNotify(ctx context.Context, ch chan<- error) {
+// WaitUntilNotify accepts a channel that will have the end result of .WaitUntil() pushed onto it.
+func (c *Candidate) WaitUntilNotify(ctx context.Context, ch chan<- error) {
 	ch <- c.WaitUntil(ctx)
+}
+
+// WaitNotify accepts a channel that will have the end result of .Wait() pushed onto it
+func (c *Candidate) WaitNotify(ch chan<- error) {
+	ch <- c.Wait()
 }
 
 func (c *Candidate) State() CandidateState {
@@ -286,11 +320,14 @@ func (c *Candidate) Running() bool {
 // Run will enter this candidate into the election pool.  If the candidate is already running this does nothing.
 func (c *Candidate) Run(ctx context.Context) error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 
 	if c.state == CandidateStateRunning {
+		c.mu.Unlock()
 		return nil
 	}
+
+	c.state = CandidateStateRunning
+	c.mu.Unlock()
 
 	if err := c.ms.Run(ctx); err != nil {
 		return fmt.Errorf("session for candidate could not be started: %s", err)
@@ -300,10 +337,6 @@ func (c *Candidate) Run(ctx context.Context) error {
 
 	// start up the lock maintainer
 	go c.maintainLock(ctx)
-
-	c.state = CandidateStateRunning
-
-	c.mu.Unlock()
 
 	return nil
 }
@@ -348,6 +381,7 @@ func (c *Candidate) Resign() {
 // caller must hold at least read lock.
 func (c *Candidate) pushNotification(ev NotificationEvent) {
 	n := CandidateUpdate{
+		ID:      c.ID(),
 		Elected: c.Elected(),
 		State:   c.State(),
 	}
@@ -355,7 +389,7 @@ func (c *Candidate) pushNotification(ev NotificationEvent) {
 }
 
 func (c *Candidate) logf(debug bool, f string, v ...interface{}) {
-	if c.logger != nil || debug && !c.dbg {
+	if c.logger == nil || debug && !c.dbg {
 		return
 	}
 	c.logger.Printf(f, v...)
@@ -373,9 +407,9 @@ func (c *Candidate) acquire(ctx context.Context) (bool, error) {
 		Session: c.ms.ID(),
 	}
 
-	kvp.Value, err = c.kvDataProvider(c)
+	kvp.Value, err = c.kvValueProvider(c)
 	if err != nil {
-		c.logf(false, "Unable to marshal KV body: %s", err)
+		c.logf(false, "Unable to marshal LeaderKV body: %s", err)
 	}
 
 	elected, _, err = c.ms.client.KV().Acquire(kvp, c.ms.wo.WithContext(ctx))

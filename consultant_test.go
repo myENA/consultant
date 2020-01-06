@@ -1141,6 +1141,25 @@ func (c *testConsulCluster) Shutdown() {
 	c.mu.Unlock()
 }
 
+// WaitForQuorum waits for each individual server's serf check to be healthy and for a leader to have been elected.
+func (c *testConsulCluster) WaitForQuorum(t *testing.T) {
+	c.mu.RLock()
+
+	wg := new(sync.WaitGroup)
+	l := len(c.servers)
+	wg.Add(l)
+	for _, srv := range c.servers {
+		go func(srv *cst.TestServer) {
+			srv.WaitForSerfCheck(t)
+			srv.WaitForLeader(t)
+			wg.Done()
+		}(srv)
+	}
+	wg.Wait()
+
+	c.mu.RUnlock()
+}
+
 func makeTestCluster(t *testing.T, nodeCount int) (*testConsulCluster, error) {
 	if 0 > nodeCount {
 		t.Fatalf("nodeCount must be > 0, \"%d\" provided", nodeCount)
@@ -1148,8 +1167,8 @@ func makeTestCluster(t *testing.T, nodeCount int) (*testConsulCluster, error) {
 
 	c := &testConsulCluster{
 		size:    nodeCount,
-		servers: make([]*cst.TestServer, nodeCount),
-		clients: make([]*consultant.Client, nodeCount),
+		servers: make([]*cst.TestServer, nodeCount, nodeCount),
+		clients: make([]*consultant.Client, nodeCount, nodeCount),
 	}
 
 	for i := 0; i < nodeCount; i++ {

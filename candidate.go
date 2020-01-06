@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -20,11 +19,22 @@ const (
 	CandidateStateRunning
 )
 
+// CandidateLeaderKVDataProvider is called whenever a running Candidate attempts to acquire the lock on the defined kv
+// key.  The resulting []byte is used as the data payload, and may be whatever you wish.
+//
+// A call to this func does NOT mean that the provided candidate IS the leader, it means that it is ATTEMPTING TO
+// BECOME the leader.
+type CandidateLeaderKVDataProvider func(*Candidate) ([]byte, error)
+
 // CandidateLeaderKVValue is the body of the acquired KV
 type CandidateLeaderKVValue struct {
-	LeaderID      string    `json:"leader_id"`
-	LeaderAddress string    `json:"leader_address"`
-	LeaderSince   time.Time `json:"leader_since"`
+	LeaderID string `json:"leader_id"`
+}
+
+func CandidateDefaultLeaderKVDataProvider(c *Candidate) ([]byte, error) {
+	v := new(CandidateLeaderKVValue)
+	v.LeaderID = c.CandidateID()
+	return json.Marshal(v)
 }
 
 // CandidateUpdate is the value of .Data in all Notification pushes from a Candidate
@@ -44,6 +54,13 @@ type CandidateConfig struct {
 	// Must be the key to attempt to acquire a session lock on.  This key must be considered ephemeral, and not contain
 	// anything you don't want overwritten / destroyed.
 	KVKey string
+
+	// KVDataProvider [optional]
+	//
+	// Optionally provide a callback func that returns a []byte to be used as the data value when a running Candidate
+	// acquires the lock (i.e. is "elected").  Calls to this method MUST NOT be taken as a sign of the provided
+	// candidate having been elected.  It ONLY indicates that the candidate is ATTEMPTING to be elected.
+	KVDataProvider CandidateLeaderKVDataProvider
 
 	// CandidateID [suggested]
 	//
@@ -74,10 +91,11 @@ type Candidate struct {
 
 	ms *ManagedSession
 
-	id      string
-	kvKey   string
-	elected *bool
-	state   CandidateState
+	id             string
+	kvKey          string
+	kvDataProvider CandidateLeaderKVDataProvider
+	elected        *bool
+	state          CandidateState
 
 	dbg    bool
 	logger Logger
@@ -123,6 +141,12 @@ func NewCandidate(conf *CandidateConfig) (*Candidate, error) {
 	c.elected = new(bool)
 	c.stop = make(chan chan struct{}, 1)
 
+	if conf.KVDataProvider == nil {
+		c.kvDataProvider = CandidateDefaultLeaderKVDataProvider
+	} else {
+		c.kvDataProvider = conf.KVDataProvider
+	}
+
 	c.ms.AttachNotificationHandler(fmt.Sprintf("candidate_%s", c.id), c.sessionUpdate)
 
 	if conf.StartImmediately != nil {
@@ -151,38 +175,39 @@ func (c *Candidate) Elected() bool {
 	return el
 }
 
-// LeaderService will attempt to locate the leader's session entry in your local agent's datacenter
-func (c *Candidate) LeaderService(ctx context.Context) (*api.SessionEntry, *api.QueryMeta, error) {
-	return c.ForeignLeaderService(ctx, "")
+// LeaderSession will attempt to locate the leader's session entry in your local agent's datacenter
+func (c *Candidate) LeaderSession(ctx context.Context) (*api.SessionEntry, *api.QueryMeta, error) {
+	return c.ForeignLeaderSession(ctx, "")
 }
 
-// Return the leader, assuming its CandidateID can be interpreted as an IP address
-func (c *Candidate) LeaderIP(ctx context.Context) (net.IP, error) {
-	return c.ForeignLeaderIP(ctx, "")
-}
+//
+//// Return the leader, assuming its CandidateID can be interpreted as an IP address
+//func (c *Candidate) LeaderIP(ctx context.Context) (net.IP, error) {
+//	return c.ForeignLeaderIP(ctx, "")
+//}
+//
+//// ForeignLeaderIP will attempt to parse the body of the locked kv key to locate the current leader
+//func (c *Candidate) ForeignLeaderIP(ctx context.Context, dc string) (net.IP, error) {
+//	qo := c.ms.qo.WithContext(ctx)
+//	qo.Datacenter = dc
+//	kv, _, err := c.ms.client.KV().Get(c.kvKey, qo)
+//	if err != nil {
+//		return nil, err
+//	} else if kv == nil || len(kv.Value) == 0 {
+//		return nil, errors.New("no leader has been elected")
+//	}
+//
+//	info := new(CandidateLeaderKVValue)
+//	if err = json.Unmarshal(kv.Value, info); err == nil && info.LeaderAddress != "" {
+//		if ip := net.ParseIP(info.LeaderAddress); ip != nil {
+//			return ip, nil
+//		}
+//	}
+//	return nil, fmt.Errorf("key \"%s\" had unexpected value \"%s\" for \"LeaderAddress\"", c.kvKey, string(kv.Value))
+//}
 
-// ForeignLeaderIP will attempt to parse the body of the locked kv key to locate the current leader
-func (c *Candidate) ForeignLeaderIP(ctx context.Context, dc string) (net.IP, error) {
-	qo := c.ms.qo.WithContext(ctx)
-	qo.Datacenter = dc
-	kv, _, err := c.ms.client.KV().Get(c.kvKey, qo)
-	if err != nil {
-		return nil, err
-	} else if kv == nil || len(kv.Value) == 0 {
-		return nil, errors.New("no leader has been elected")
-	}
-
-	info := new(CandidateLeaderKVValue)
-	if err = json.Unmarshal(kv.Value, info); err == nil && info.LeaderAddress != "" {
-		if ip := net.ParseIP(info.LeaderAddress); ip != nil {
-			return ip, nil
-		}
-	}
-	return nil, fmt.Errorf("key \"%s\" had unexpected value \"%s\" for \"LeaderAddress\"", c.kvKey, string(kv.Value))
-}
-
-// ForeignLeaderService will attempt to locate the leader's session entry in a datacenter of your choosing
-func (c *Candidate) ForeignLeaderService(ctx context.Context, dc string) (*api.SessionEntry, *api.QueryMeta, error) {
+// ForeignLeaderSession will attempt to locate the leader's session entry in a datacenter of your choosing
+func (c *Candidate) ForeignLeaderSession(ctx context.Context, dc string) (*api.SessionEntry, *api.QueryMeta, error) {
 	var (
 		kv  *api.KVPair
 		se  *api.SessionEntry
@@ -219,8 +244,6 @@ func (c *Candidate) WaitUntil(ctx context.Context) error {
 		return fmt.Errorf("candidate %s is not in running", c.CandidateID())
 	}
 
-	var err error
-
 	for i := 1; ; i++ {
 		select {
 		case <-ctx.Done():
@@ -228,10 +251,11 @@ func (c *Candidate) WaitUntil(ctx context.Context) error {
 			return ctx.Err()
 
 		default:
-			if _, _, err = c.LeaderService(ctx); nil == err {
+			if _, _, err := c.LeaderSession(ctx); nil == err {
 				return nil
+			} else {
+				c.logf(false, "Attempt %d at locating leader service errored: %s", i, err)
 			}
-			c.logf(false, "Attempt %d at locating leader service errored: %s", i, err)
 		}
 
 		time.Sleep(time.Second)
@@ -339,16 +363,12 @@ func (c *Candidate) acquire(ctx context.Context) (bool, error) {
 		err     error
 	)
 
-	kvpValue := &CandidateLeaderKVValue{
-		LeaderAddress: c.id,
-	}
-
 	kvp := &api.KVPair{
 		Key:     c.kvKey,
 		Session: c.ms.ID(),
 	}
 
-	kvp.Value, err = json.Marshal(kvpValue)
+	kvp.Value, err = c.kvDataProvider(c)
 	if err != nil {
 		c.logf(false, "Unable to marshal KV body: %s", err)
 	}
@@ -372,18 +392,18 @@ func (c *Candidate) refreshLock(ctx context.Context) {
 			// this should only ever happen very early on in the election process
 			elected = false
 			updated = c.elected != nil && *c.elected != elected
-			c.logf(true, "refreshLock() - ManagedSession does not exist, will try locking again in %d seconds...", int64(c.ms.RenewInterval().Seconds()))
+			c.logf(false, "refreshLock() - ManagedSession does not exist, will try locking again in %d seconds...", int64(c.ms.RenewInterval().Seconds()))
 		} else if elected, err = c.acquire(ctx); err != nil {
 			// most likely hit due to transport error.
 			updated = c.elected != nil && *c.elected != elected
-			c.logf(true, "refreshLock() - Error attempting to acquire lock: %s", err)
+			c.logf(false, "refreshLock() - Error attempting to acquire lock: %s", err)
 		} else {
 			// if c.elected is nil, indicating this is the initial election loop, or if the election state
 			// changed mark update as true
 			updated = c.elected == nil || *c.elected != elected
 		}
 	} else {
-		c.logf(true, "refreshLock() - ManagedSession is in stopped state, attempting to restart...")
+		c.logf(false, "refreshLock() - ManagedSession is in stopped state, attempting to restart...")
 		elected = false
 		updated = c.elected != nil && *c.elected != elected
 		if err := c.ms.Run(ctx); err != nil {

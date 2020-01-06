@@ -1,9 +1,13 @@
 package consultant_test
 
 import (
+	"context"
+	"log"
+	"os"
 	"testing"
 
 	"github.com/hashicorp/consul/api"
+	cst "github.com/hashicorp/consul/sdk/testutil"
 	"github.com/myENA/consultant/v2"
 )
 
@@ -12,6 +16,23 @@ const (
 	candidateTestID    = "test-candidate"
 	candidateLockTTL   = "5s"
 )
+
+func newCandidateWithServerAndClient(t *testing.T, cfg *consultant.CandidateConfig, server *cst.TestServer, client *consultant.Client) *consultant.Candidate {
+	if cfg == nil {
+		cfg = new(consultant.CandidateConfig)
+	}
+	cfg.Client = client.Client
+	cfg.KVKey = candidateTestKVKey
+	cfg.CandidateID = candidateTestID
+	cfg.Logger = log.New(os.Stdout, "---> candidate", log.LstdFlags)
+	cfg.Debug = true
+	cand, err := consultant.NewCandidate(cfg)
+	if err != nil {
+		_ = server.Stop()
+		t.Fatalf("Error creating Candidate instance: %s", err)
+	}
+	return cand
+}
 
 func TestNewCandidate(t *testing.T) {
 	tests := map[string]struct {
@@ -54,32 +75,42 @@ func TestNewCandidate(t *testing.T) {
 	}
 }
 
-//
-//
-//type CandidateTestSuite struct {
-//	suite.Suite
-//
-//	server *cst.TestServer
-//	client *api.Client
-//}
-//
-//func TestCandidate(t *testing.T) {
-//	suite.Run(t, new(CandidateTestSuite))
-//}
-//
-//func (cs *CandidateTestSuite) TearDownTest() {
-//	if cs.client != nil {
-//		cs.client = nil
-//	}
-//	if cs.server != nil {
-//		cs.server.Stop()
-//		cs.server = nil
-//	}
-//}
-//
-//func (cs *CandidateTestSuite) TearDownSuite() {
-//	cs.TearDownTest()
-//}
+func TestCandidate_Run(t *testing.T) {
+	t.Run("single-manual-start", func(t *testing.T) {
+		server, client := makeTestServerAndClient(t, nil)
+		defer stopTestServer(server)
+		server.WaitForSerfCheck(t)
+		cand := newCandidateWithServerAndClient(t, nil, server, client)
+		if err := cand.Run(context.Background()); err != nil {
+			t.Logf("Error calling candidate.Run: %s", err)
+			t.Fail()
+			return
+		}
+
+	})
+
+	//t.Run("typical", func(t *testing.T) {
+	//	var (
+	//		server                                              *cst.TestServer
+	//		client                                              *consultant.Client
+	//		candidate1, candidate2, candidate3, leaderCandidate *consultant.Candidate
+	//		leader                                              *api.SessionEntry
+	//		err                                                 error
+	//
+	//		wg = new(sync.WaitGroup)
+	//	)
+	//
+	//	server, client = makeTestServerAndClient(t, nil)
+	//	server.WaitForSerfCheck(t)
+	//
+	//	go func() {
+	//
+	//	}()
+	//
+	//	wg.Add(3)
+	//})
+}
+
 //
 //func (cs *CandidateTestSuite) config(conf *consultant.CandidateConfig) *consultant.CandidateConfig {
 //	if conf == nil {
@@ -110,31 +141,6 @@ func TestNewCandidate(t *testing.T) {
 //	}
 //
 //	return cand
-//}
-//
-//func (cs *CandidateTestSuite) TestNew_EmptyKey() {
-//	_, err := consultant.NewCandidate(cs.config(nil))
-//	require.NotNil(cs.T(), err, "Expected Empty Key error")
-//}
-//
-//func (cs *CandidateTestSuite) TestNew_EmptyID() {
-//	cand, err := consultant.NewCandidate(cs.configKeyed(nil))
-//	require.Nil(cs.T(), err, "Error creating candidate: %s", err)
-//	if myAddr, err := consultant.LocalAddress(); err != nil {
-//		require.NotZero(cs.T(), cand.ID(), "Expected Candidate CandidateID to not be empty")
-//	} else {
-//		require.Equal(cs.T(), myAddr, cand.ID(), "Expected Candidate CandidateID to be \"%s\", saw \"%s\"", myAddr, cand.ID())
-//	}
-//}
-//
-//func (cs *CandidateTestSuite) TestNew_InvalidID() {
-//	var err error
-//
-//	_, err = consultant.NewCandidate(cs.configKeyed(&consultant.CandidateConfig{CandidateID: "thursday dancing in the sun"}))
-//	require.Equal(cs.T(), consultant.CandidateInvalidIDErr, err, "Expected \"thursday dancing in the sun\" to return invalid CandidateID error, saw %+v", err)
-//
-//	_, err = consultant.NewCandidate(cs.configKeyed(&consultant.CandidateConfig{CandidateID: "Große"}))
-//	require.Equal(cs.T(), consultant.CandidateInvalidIDErr, err, "Expected \"Große\" to return invalid CandidateID error, saw %+v", err)
 //}
 //
 //func (cs *CandidateTestSuite) TestRun_SimpleElectionCycle() {
@@ -168,7 +174,7 @@ func TestNewCandidate(t *testing.T) {
 //
 //	wg.Wait()
 //
-//	leader, err = candidate1.LeaderService()
+//	leader, err = candidate1.LeaderSession()
 //	require.Nil(cs.T(), err, fmt.Sprintf("Unable to locate leader session entry: %v", err))
 //
 //	// attempt to locate elected leader
@@ -224,7 +230,7 @@ func TestNewCandidate(t *testing.T) {
 //
 //	wg.Wait()
 //
-//	leader, err = candidate1.LeaderService()
+//	leader, err = candidate1.LeaderSession()
 //	require.NotNil(cs.T(), err, "Expected empty key error, got nil")
 //	require.Nil(cs.T(), leader, fmt.Sprintf("Expected nil leader, got %v", leader))
 //
@@ -250,7 +256,7 @@ func TestNewCandidate(t *testing.T) {
 //
 //	wg.Wait()
 //
-//	leader, err = candidate1.LeaderService()
+//	leader, err = candidate1.LeaderSession()
 //	require.Nil(cs.T(), err, fmt.Sprintf("Unable to locate re-entered leader session entry: %v", err))
 //
 //	// attempt to locate elected leader

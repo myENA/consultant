@@ -19,21 +19,25 @@ const (
 	sessionTestTTL  = "5s"
 )
 
-func newManagedSessionWithServerAndClient(t *testing.T, cb cst.ServerConfigCallback, cfg *consultant.ManagedSessionConfig) (*cst.TestServer, *consultant.Client, *consultant.ManagedSession) {
-	server, client := makeTestServerAndClient(t, cb)
-	server.WaitForSerfCheck(t)
+func newManagedSessionWithServerAndClient(t *testing.T, cfg *consultant.ManagedSessionConfig, server *cst.TestServer, client *consultant.Client) *consultant.ManagedSession {
 	if cfg == nil {
 		cfg = new(consultant.ManagedSessionConfig)
 	}
 	cfg.Client = client.Client
-	cfg.Logger = log.New(os.Stdout, "", log.LstdFlags)
+	cfg.Logger = log.New(os.Stdout, "---> managed-session", log.LstdFlags)
 	cfg.Debug = true
 	ms, err := consultant.NewManagedSession(cfg)
 	if err != nil {
 		_ = server.Stop()
 		t.Fatalf("Error creating ManagedSession instance: %s", err)
 	}
-	return server, client, ms
+	return ms
+}
+
+func buildManagedSessionServerAndClient(t *testing.T, cb cst.ServerConfigCallback, cfg *consultant.ManagedSessionConfig) (*cst.TestServer, *consultant.Client, *consultant.ManagedSession) {
+	server, client := makeTestServerAndClient(t, cb)
+	server.WaitForSerfCheck(t)
+	return server, client, newManagedSessionWithServerAndClient(t, cfg, server, client)
 }
 
 func TestNewManagedSession(t *testing.T) {
@@ -201,7 +205,7 @@ func TestManagedSession_Run(t *testing.T) {
 	}
 
 	t.Run("manual-start", func(t *testing.T) {
-		server, _, ms := newManagedSessionWithServerAndClient(t, nil, nil)
+		server, _, ms := buildManagedSessionServerAndClient(t, nil, nil)
 		defer stopTestServer(server)
 
 		ctx, cancel := context.WithCancel(context.Background())
@@ -222,7 +226,7 @@ func TestManagedSession_Run(t *testing.T) {
 		cfg := new(consultant.ManagedSessionConfig)
 		cfg.StartImmediately = ctx
 
-		server, _, ms := newManagedSessionWithServerAndClient(t, nil, cfg)
+		server, _, ms := buildManagedSessionServerAndClient(t, nil, cfg)
 		defer stopTestServer(server)
 		testRun(t, ctx, ms)
 	})
@@ -234,7 +238,7 @@ func TestManagedSession_Run(t *testing.T) {
 		cfg := new(consultant.ManagedSessionConfig)
 		cfg.StartImmediately = ctx
 
-		server, client, ms := newManagedSessionWithServerAndClient(t, nil, cfg)
+		server, client, ms := buildManagedSessionServerAndClient(t, nil, cfg)
 		defer stopTestServer(server)
 		testRun(t, ctx, ms)
 
@@ -270,7 +274,7 @@ func TestManagedSession_Run(t *testing.T) {
 		cfg := new(consultant.ManagedSessionConfig)
 		cfg.Definition = se
 
-		server, _, ms := newManagedSessionWithServerAndClient(t, nil, cfg)
+		server, _, ms := buildManagedSessionServerAndClient(t, nil, cfg)
 		defer stopTestServer(server)
 
 		ms.AttachNotificationHandler("", func(n consultant.Notification) {
@@ -307,7 +311,7 @@ func TestManagedSession_Run(t *testing.T) {
 			updateChan = make(chan consultant.Notification, 10)
 		)
 
-		server, client, ms := newManagedSessionWithServerAndClient(t, nil, nil)
+		server, client, ms := buildManagedSessionServerAndClient(t, nil, nil)
 		defer stopTestServer(server)
 
 		nid, _ := ms.AttachNotificationChannel("", updateChan)
@@ -384,7 +388,7 @@ func TestManagedSession_PushStateNotification(t *testing.T) {
 		stopped   int32
 	)
 
-	server, _, ms := newManagedSessionWithServerAndClient(t, nil, nil)
+	server, _, ms := buildManagedSessionServerAndClient(t, nil, nil)
 	defer stopTestServer(server)
 
 	ctx, cancel := context.WithCancel(context.Background())

@@ -1,11 +1,60 @@
 package consultant_test
 
+import (
+	"testing"
+
+	"github.com/hashicorp/consul/api"
+	"github.com/myENA/consultant/v2"
+)
+
+const (
+	candidateTestKVKey = "consultant/test/candidate-test"
+	candidateTestID    = "test-candidate"
+	candidateLockTTL   = "5s"
+)
+
+func TestNewCandidate(t *testing.T) {
+	tests := map[string]struct {
+		shouldErr bool
+		config    *consultant.CandidateConfig
+	}{
+		"config-nil": {shouldErr: true},
+		"kv-key-empty": {
+			shouldErr: true,
+			config:    new(consultant.CandidateConfig),
+		},
+		"invalid-session-ttl": {
+			shouldErr: true,
+			config: &consultant.CandidateConfig{
+				ManagedSessionConfig: consultant.ManagedSessionConfig{
+					Definition: &api.SessionEntry{TTL: "whatever"},
+				},
+			},
+		},
+		"valid": {
+			config: &consultant.CandidateConfig{
+				KVKey: candidateTestKVKey,
+			},
+		},
+	}
+	for name, setup := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			_, err := consultant.NewCandidate(setup.config)
+			if setup.shouldErr {
+				if err == nil {
+					t.Log("Expected error, saw nil")
+					t.Fail()
+				}
+			} else if err != nil {
+				t.Logf("Unexpected error seen: %s", err)
+				t.Fail()
+			}
+		})
+	}
+}
+
 //
-//const (
-//	candidateTestKVKey = "consultant/test/candidate-test"
-//	candidateTestID    = "test-candidate"
-//	candidateLockTTL   = "5s"
-//)
 //
 //type CandidateTestSuite struct {
 //	suite.Suite

@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/hashicorp/consul/api"
 	cst "github.com/hashicorp/consul/sdk/testutil"
@@ -23,7 +24,9 @@ func newCandidateWithServerAndClient(t *testing.T, cfg *consultant.CandidateConf
 	}
 	cfg.Client = client.Client
 	cfg.KVKey = candidateTestKVKey
-	cfg.CandidateID = candidateTestID
+	if cfg.CandidateID == "" {
+		cfg.CandidateID = candidateTestID
+	}
 	cfg.Logger = log.New(os.Stdout, "---> candidate", log.LstdFlags)
 	cfg.Debug = true
 	cand, err := consultant.NewCandidate(cfg)
@@ -76,17 +79,56 @@ func TestNewCandidate(t *testing.T) {
 }
 
 func TestCandidate_Run(t *testing.T) {
+
+	testRun := func(t *testing.T, ctx context.Context, cand *consultant.Candidate) {
+		if !cand.Running() {
+			t.Log("Expected candidate to be running")
+			t.Fail()
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
+		se, _, err := cand.LeaderSession(ctx)
+		if err != nil {
+			t.Logf("Error fetching candidate")
+		}
+	}
+
 	t.Run("single-manual-start", func(t *testing.T) {
 		server, client := makeTestServerAndClient(t, nil)
 		defer stopTestServer(server)
 		server.WaitForSerfCheck(t)
 		cand := newCandidateWithServerAndClient(t, nil, server, client)
-		if err := cand.Run(context.Background()); err != nil {
+		defer cand.Resign()
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		if err := cand.Run(ctx); err != nil {
 			t.Logf("Error calling candidate.Run: %s", err)
 			t.Fail()
 			return
 		}
 
+		testRun(t, ctx, cand)
+	})
+
+	t.Run("single-auto-start", func(t *testing.T) {
+		server, client := makeTestServerAndClient(t, nil)
+		defer stopTestServer(server)
+		server.WaitForSerfCheck(t)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		cfg := new(consultant.CandidateConfig)
+		cfg.StartImmediately = ctx
+
+		cand := newCandidateWithServerAndClient(t, nil, server, client)
+		defer cand.Resign()
+
+		testRun(t, ctx, cand)
 	})
 
 	//t.Run("typical", func(t *testing.T) {

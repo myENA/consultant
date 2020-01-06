@@ -1,6 +1,6 @@
 language: go
 
-dist: trusty
+dist: xenial
 
 go:
   - 1.12.x
@@ -12,8 +12,11 @@ env:
   global:
     - CONSUL_VERSION="1.6.2"
     - GO111MODULE=on
+    - GOFLAGS="-mod=vendor"
 
 install:
+  - apt-get install unzip
+  - unzip test_vendor.zip
   - wget "https://releases.hashicorp.com/consul/${CONSUL_VERSION}/consul_${CONSUL_VERSION}_linux_amd64.zip"
   - mkdir -p $HOME/bin
   - unzip -d $HOME/bin consul_${CONSUL_VERSION}_linux_amd64.zip

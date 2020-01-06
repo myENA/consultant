@@ -267,6 +267,11 @@ func (c *Candidate) Wait() error {
 	return c.WaitUntil(context.Background())
 }
 
+// WaitNotify accepts a channel that will have the end result of .WaitUntil pushed onto it.
+func (c *Candidate) WaitNotify(ctx context.Context, ch chan<- error) {
+	ch <- c.WaitUntil(ctx)
+}
+
 func (c *Candidate) State() CandidateState {
 	c.mu.RLock()
 	s := c.state

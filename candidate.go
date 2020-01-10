@@ -107,7 +107,7 @@ type Candidate struct {
 	logger Logger
 
 	consecutiveSessionErrors *uint64
-	stop                     chan struct{}
+	stop                     chan chan struct{}
 }
 
 func NewCandidate(conf *CandidateConfig) (*Candidate, error) {
@@ -150,6 +150,7 @@ func NewCandidate(conf *CandidateConfig) (*Candidate, error) {
 	c.consecutiveSessionErrors = new(uint64)
 	*c.consecutiveSessionErrors = 0
 	c.elected = new(bool)
+	c.stop = make(chan chan struct{}, 1)
 
 	if conf.KVDataProvider == nil {
 		c.kvValueProvider = CandidateDefaultLeaderKVValueProvider
@@ -332,7 +333,6 @@ func (c *Candidate) Run(ctx context.Context) error {
 	}
 
 	c.state = CandidateStateRunning
-	c.stop = make(chan struct{}, 1)
 	c.mu.Unlock()
 
 	if err := c.ms.Run(ctx); err != nil {
@@ -358,37 +358,49 @@ func (c *Candidate) Resign() {
 	c.mu.Unlock()
 
 	c.logf(false, "Resign() - Leaving election pool...")
-	c.stop <- struct{}{}
+	drop := make(chan struct{}, 1)
+	c.stop <- drop
+	c.logf(true, "Resign() - drop pushed")
+	<-drop
+	c.logf(true, "Resign() - drop read")
+	close(drop)
 }
 
-func (c *Candidate) doResign() {
+func (c *Candidate) doResign(drop chan struct{}) {
 	c.mu.Lock()
-
-	// close and ensure stop chan is emptied
-	close(c.stop)
-	if len(c.stop) > 0 {
-		<-c.stop
-	}
 
 	// only update elected state if we were ever elected in the first place.
 	if c.elected != nil {
 		*c.elected = false
 	}
 
-	// unlock for rest of operations
+	if drop != nil {
+		drop <- struct{}{}
+	}
+	// this should only be possible when:
+	// 	1. user calls .Resign()
+	//	2. run context is cancelled
+	//	3. maintainLock() hits <-ctx.Done() rather than <-c.stop
+	//
+	// in this state, the .Resign() call would hang forever if not for the following statement.
+	// TODO: shutdown process could use cleanup.
+	if len(c.stop) > 0 {
+		<-c.stop <- struct{}{}
+	}
+
+	// unlock for remaining actions
 	c.mu.Unlock()
 
 	c.logf(true, "doResign() - Stopping managed session...")
 	if err := c.ms.Stop(); err != nil {
-		c.logf(false, "doResign() - Error stopping candidate session: %s", err)
+		c.logf(false, "doResign() - Error stopping candidate managed session (%s): %s", c.ms.ID(), err)
 	} else {
-		c.logf(true, "doResign() - Managed session stoapped")
+		c.logf(true, "doResign() - Managed session stopped")
 	}
 
 	// notify watchers of updated state
 	c.pushNotification(NotificationEventCandidateResigned)
 	c.pushNotification(NotificationEventCandidateStopped)
-
 }
 
 // pushNotification constructs and then pushes a new notification to currently registered recipients based on the
@@ -540,6 +552,7 @@ func (c *Candidate) sessionUpdate(n Notification) {
 func (c *Candidate) maintainLock(ctx context.Context) {
 	c.logf(true, "maintainLock() - Starting lock maintenance loop")
 	var (
+		drop       chan struct{}
 		renewTimer *time.Timer
 
 		renewInterval = c.ms.RenewInterval()
@@ -550,11 +563,6 @@ func (c *Candidate) maintainLock(ctx context.Context) {
 	// immediately attempt to refresh lock
 	c.refreshLock(ctx)
 	renewTimer = time.NewTimer(renewInterval)
-
-	defer func() {
-		renewTimer.Stop()
-		c.doResign()
-	}()
 
 LockLoop:
 	for {
@@ -571,9 +579,12 @@ LockLoop:
 			c.logf(false, "maintainLock() - context completed: %s", ctx.Err())
 			break LockLoop
 
-		case <-c.stop:
+		case drop = <-c.stop:
 			c.logf(false, "maintainLock() - stop hit")
 			break LockLoop
 		}
 	}
+
+	renewTimer.Stop()
+	c.doResign(drop)
 }

@@ -9,7 +9,6 @@ import (
 
 	"github.com/hashicorp/consul/api"
 	cst "github.com/hashicorp/consul/sdk/testutil"
-	"github.com/hashicorp/go-uuid"
 	"github.com/myENA/consultant/v2"
 )
 

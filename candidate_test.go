@@ -260,6 +260,7 @@ func TestCandidate_Run(t *testing.T) {
 		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
 		leaderSession, _, err = candidate1.LeaderSession(ctx)
 		if err != nil {
 			t.Logf("Error fetching leader sesesion: %s", err)
@@ -309,6 +310,17 @@ func TestCandidate_Run(t *testing.T) {
 		}
 
 		wg.Wait()
+
+		for _, cand := range cands {
+			if (*cand).Elected() {
+				t.Logf("Candidate %q still thinks its elected", (*cand).ID())
+				t.Fail()
+			}
+		}
+
+		if t.Failed() {
+			return
+		}
 
 	})
 }

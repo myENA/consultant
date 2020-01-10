@@ -315,6 +315,8 @@ func (ms *ManagedSession) Run(ctx context.Context) error {
 			"Unable to perform initial session creation, will try again in \"%d\" seconds: %s",
 			int64(ms.renewInterval.Seconds()),
 			err)
+	} else {
+		ms.logf(true, "Run() - New upstream session created: %s", ms.id)
 	}
 
 	// release lock before beginning maintenance loop
@@ -417,6 +419,7 @@ func (ms *ManagedSession) create(ctx context.Context) error {
 		err = errors.New("internal error creating session")
 		ms.lastErr = err
 	}
+
 	ms.pushNotification(NotificationEventManagedSessionCreate)
 	return err
 }
@@ -457,9 +460,6 @@ func (ms *ManagedSession) destroy(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, ms.rttl)
 	defer cancel()
 	_, err := ms.client.Session().Destroy(sid, ms.wo.WithContext(ctx))
-	if err != nil {
-		ms.logf(true, "destroy() - Upstream session %q destroyed", sid)
-	}
 	ms.id = ""
 	ms.lastRenewed = time.Time{}
 	ms.lastErr = err
@@ -520,21 +520,23 @@ func (ms *ManagedSession) maintainTick(ctx context.Context) {
 	}
 }
 
+// shutdown will clean up the state of the managed session on shutdown.
+//
+// caller MUST hold lock!
 func (ms *ManagedSession) shutdown() error {
 	var (
-		sid string
 		err error
+
+		sid = ms.id
 	)
 
 	ms.logf(false, "shutdown() - Stopping session...")
 
-	// localize most recent upstream session info
-	sid = ms.id
-
-	if ms.id != "" {
-		// if we have a reference to an upstream session id, attempt to destroy it.  use background context here to
-		// ensure attempt is made
-		if err = ms.destroy(context.Background()); err != nil {
+	if sid != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), ms.rttl)
+		defer cancel()
+		// if we have a reference to an upstream session id, attempt to destroy it
+		if err = ms.destroy(ctx); err != nil {
 			ms.logf(false, "shutdown() - Error destroying upstream session %q: %s", sid, err)
 			// if there was an existing error, append this error to it to be sent along the Stop() resp chan
 			err = fmt.Errorf("error destroying session %q during shutdown: %s", sid, err)
@@ -557,19 +559,32 @@ func (ms *ManagedSession) shutdown() error {
 // i.e., destroy / renew can happen in the same loop as create.
 func (ms *ManagedSession) maintain(ctx context.Context) {
 	var (
-		tick    time.Time
-		stopped chan error
+		tick time.Time
+		drop chan error
 
 		intervalTimer = time.NewTimer(ms.renewInterval)
 	)
 
 	defer func() {
 		intervalTimer.Stop()
+
 		ms.mu.Lock()
 		err := ms.shutdown()
 		ms.mu.Unlock()
-		if stopped != nil {
-			stopped <- err
+
+		if drop != nil {
+			drop <- err
+		}
+
+		// this should only be possible when:
+		//	1. user calls .Stop()
+		// 	2. run context is cancelled
+		//	3. maintain() hits <-ctx.Done() rather than <-ms.stop
+		//
+		// in this state, the .Stop() call would hang forever if not for the following statement
+		// TODO: cleanup shutdown process
+		if len(ms.stop) > 0 {
+			<-ms.stop <- err
 		}
 	}()
 
@@ -583,10 +598,13 @@ func (ms *ManagedSession) maintain(ctx context.Context) {
 			intervalTimer.Reset(ms.renewInterval)
 
 		case <-ctx.Done():
+			ms.mu.Lock()
+			ms.state = ManagedSessionStateStopped
+			ms.mu.Unlock()
 			ms.logf(false, "maintainLock() - running context completed with: %s", ctx.Err())
 			return
 
-		case stopped = <-ms.stop:
+		case drop = <-ms.stop:
 			ms.logf(false, "maintainLock() - explicit stop called")
 			return
 		}

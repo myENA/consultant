@@ -30,6 +30,9 @@ func newCandidateWithServerAndClient(t *testing.T, cfg *consultant.CandidateConf
 	if cfg.ManagedSessionConfig.Definition.TTL == "" {
 		cfg.ManagedSessionConfig.Definition.TTL = consultant.SessionMinimumTTL.String()
 	}
+	if cfg.ManagedSessionConfig.Logger == nil {
+		cfg.ManagedSessionConfig.Logger = log.New(os.Stdout, "------> candidate-session ", log.LstdFlags)
+	}
 	if cfg.KVKey == "" {
 		cfg.KVKey = candidateTestKVKey
 	}
@@ -39,6 +42,7 @@ func newCandidateWithServerAndClient(t *testing.T, cfg *consultant.CandidateConf
 	cfg.Client = client.Client
 	cfg.Logger = log.New(os.Stdout, "---> candidate ", log.LstdFlags)
 	cfg.Debug = true
+	cfg.ManagedSessionConfig.Debug = true
 	cand, err := consultant.NewCandidate(cfg)
 	if err != nil {
 		_ = server.Stop()
@@ -227,7 +231,7 @@ func TestCandidate_Run(t *testing.T) {
 			return newCandidateWithServerAndClient(t, cfg, server, client)
 		}
 
-		t.Run("typical-setup-candidates", func(t *testing.T) {
+		t.Run("setup-candidates", func(t *testing.T) {
 			go func() {
 				defer wg.Done()
 				candidate1 = makeCandidate(t, &consultant.CandidateConfig{ID: "test-1"})
@@ -261,7 +265,7 @@ func TestCandidate_Run(t *testing.T) {
 			return
 		}
 
-		t.Run("typical-leader-defined", func(t *testing.T) {
+		t.Run("leader-defined", func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
 
@@ -291,41 +295,72 @@ func TestCandidate_Run(t *testing.T) {
 			}
 		})
 
-		for _, cand := range cands {
-			if leaderCandidate == *cand {
-				testRun(t, runCTX, *cand, true)
-			} else {
-				testRun(t, runCTX, *cand, false)
+		t.Run("state-sane", func(t *testing.T) {
+			for _, cand := range cands {
+				if leaderCandidate == *cand {
+					testRun(t, runCTX, *cand, true)
+				} else {
+					testRun(t, runCTX, *cand, false)
+				}
 			}
-
-		}
+		})
 
 		if t.Failed() {
+			t.Log("Candidate state not sane")
 			return
 		}
 
 		wg.Add(3)
 
-		for _, cand := range cands {
-			go func(cand *consultant.Candidate) {
-				defer wg.Done()
-				cand.Resign()
-			}(*cand)
-		}
-
-		wg.Wait()
-
-		for _, cand := range cands {
-			if (*cand).Elected() {
-				t.Logf("Candidate %q still thinks its elected", (*cand).ID())
-				t.Fail()
+		t.Run("shutdown", func(t *testing.T) {
+			for _, cand := range cands {
+				go func(cand *consultant.Candidate) {
+					defer wg.Done()
+					cand.Resign()
+				}(*cand)
 			}
-		}
+
+			wg.Wait()
+
+			for _, cand := range cands {
+				if (*cand).Elected() {
+					t.Logf("Candidate %q still thinks its elected", (*cand).ID())
+					t.Fail()
+				}
+			}
+		})
 
 		if t.Failed() {
+			t.Log("Candidates did not all Resign cleanly")
 			return
 		}
 
+		wg.Add(3)
+
+		runCTX2, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+
+		t.Run("candidate-restart", func(t *testing.T) {
+			for _, cand := range cands {
+				go func(cand *consultant.Candidate) {
+					defer wg.Done()
+					if err := cand.Run(runCTX2); err != nil {
+						t.Logf("Error re-entering candidate %q into election pool: %s", cand.ID(), err)
+						t.FailNow()
+					} else if err := cand.Wait(); err != nil {
+						t.Logf("Error waiting for re-election on candidate %q: %s", cand.ID(), err)
+						t.FailNow()
+					}
+				}(*cand)
+			}
+		})
+
+		wg.Wait()
+
+		if t.Failed() {
+			t.Log("Error re-entering candidates into election pool")
+			return
+		}
 	})
 }
 

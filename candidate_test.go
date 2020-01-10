@@ -32,8 +32,8 @@ func newCandidateWithServerAndClient(t *testing.T, cfg *consultant.CandidateConf
 	if cfg.KVKey == "" {
 		cfg.KVKey = candidateTestKVKey
 	}
-	if cfg.CandidateID == "" {
-		cfg.CandidateID = candidateTestID
+	if cfg.ID == "" {
+		cfg.ID = candidateTestID
 	}
 	cfg.Client = client.Client
 	cfg.Logger = log.New(os.Stdout, "---> candidate ", log.LstdFlags)

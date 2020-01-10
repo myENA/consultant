@@ -73,7 +73,7 @@ type CandidateConfig struct {
 	// Should be a unique identifier for this specific Candidate that makes sense within the scope of your
 	// implementation. If left blank it will attempt to use the local IP address, otherwise a random string will be
 	// generated.  This is a way to identify which Candidate is holding the lock.
-	CandidateID string
+	ID string
 
 	// Debug [optional]
 	//
@@ -107,7 +107,7 @@ type Candidate struct {
 	logger Logger
 
 	consecutiveSessionErrors *uint64
-	stop                     chan chan struct{}
+	stop                     chan struct{}
 }
 
 func NewCandidate(conf *CandidateConfig) (*Candidate, error) {
@@ -129,24 +129,26 @@ func NewCandidate(conf *CandidateConfig) (*Candidate, error) {
 		return nil, fmt.Errorf("error constructing ManagedSession: %s", err)
 	}
 
-	if conf.CandidateID == "" {
-		if addr, err := LocalAddress(); err != nil {
-			id = LazyRandomString(8)
-		} else {
-			id = addr
-		}
-	} else {
-		id = conf.CandidateID
-	}
-
 	c.id = id
 	c.notifierBase = newNotifierBase()
 	c.kvKey = conf.KVKey
 	c.consecutiveSessionErrors = new(uint64)
 	*c.consecutiveSessionErrors = 0
 	c.elected = new(bool)
-	c.stop = make(chan chan struct{}, 1)
 	c.logger = conf.Logger
+	c.dbg = conf.Debug
+
+	if conf.ID == "" {
+		if addr, err := LocalAddress(); err != nil {
+			id = LazyRandomString(8)
+			c.logf(false, "No ID defined in config and error returned from LocalAddress (%s).  Setting ID to %q", err, id)
+		} else {
+			id = addr
+			c.logf(true, "No ID defined, setting ID to %q", id)
+		}
+	} else {
+		id = conf.ID
+	}
 
 	if conf.KVDataProvider == nil {
 		c.kvValueProvider = CandidateDefaultLeaderKVValueProvider
@@ -174,10 +176,7 @@ func (c *Candidate) ID() string {
 // Elected will return true if this candidate's session is "locking" the kv
 func (c *Candidate) Elected() bool {
 	c.mu.RLock()
-	var el bool
-	if c.elected != nil {
-		el = *c.elected
-	}
+	el := c.elected != nil && *c.elected
 	c.mu.RUnlock()
 	return el
 }
@@ -194,11 +193,17 @@ func (c *Candidate) LeaderKV(ctx context.Context) (*api.KVPair, *api.QueryMeta, 
 
 // ForeignLeaderKV attempts to return the LeaderKV being used to control leader election in the specified datacenter
 func (c *Candidate) ForeignLeaderKV(ctx context.Context, datacenter string) (*api.KVPair, *api.QueryMeta, error) {
-	qo := c.ms.qo.WithContext(ctx)
+	var (
+		kv  *api.KVPair
+		qm  *api.QueryMeta
+		err error
+
+		qo = c.ms.qo.WithContext(ctx)
+	)
+
 	qo.Datacenter = datacenter
 
-	kv, qm, err := c.ms.client.KV().Get(c.kvKey, qo)
-	if err != nil {
+	if kv, qm, err = c.ms.client.KV().Get(c.kvKey, qo); err != nil {
 		return nil, qm, err
 	}
 
@@ -246,18 +251,17 @@ func (c *Candidate) ForeignLeaderSession(ctx context.Context, datacenter string)
 		kv  *api.KVPair
 		se  *api.SessionEntry
 		qm  *api.QueryMeta
+		qo  *api.QueryOptions
 		err error
-
-		qo = c.ms.qo.WithContext(ctx)
 	)
 
 	if kv, qm, err = c.ForeignLeaderKV(ctx, datacenter); err != nil {
 		return nil, qm, err
 	}
 
-	qo.Datacenter = datacenter
-
 	if kv.Session != "" {
+		qo = c.ms.qo.WithContext(ctx)
+		qo.Datacenter = datacenter
 		se, qm, err = c.ms.client.Session().Info(kv.Session, qo)
 		if nil != se {
 			return se, qm, nil
@@ -327,13 +331,14 @@ func (c *Candidate) Run(ctx context.Context) error {
 	}
 
 	c.state = CandidateStateRunning
+	c.stop = make(chan struct{}, 1)
 	c.mu.Unlock()
 
 	if err := c.ms.Run(ctx); err != nil {
 		return fmt.Errorf("session for candidate could not be started: %s", err)
 	}
 
-	c.logf(false, "Entering election pool...")
+	c.logf(false, "Run() - Entering election pool...")
 
 	// start up the lock maintainer
 	go c.maintainLock(ctx)
@@ -344,33 +349,29 @@ func (c *Candidate) Run(ctx context.Context) error {
 // Resign will remove this candidate from the election pool
 func (c *Candidate) Resign() {
 	c.mu.Lock()
+	defer c.mu.Unlock()
 	if c.state == CandidateStateResigned {
-		c.mu.Unlock()
 		return
 	}
 
-	c.logf(false, "Leaving election pool...")
+	c.state = CandidateStateResigned
 
-	// wait for lock maintenance loop to stop
-	done := make(chan struct{}, 1)
-	c.stop <- done
-	<-done
-	close(done)
+	c.logf(false, "Resign() - Leaving election pool...")
+	c.stop <- struct{}{}
+}
+
+func (c *Candidate) doResign() {
+	c.state = CandidateStateResigned
 
 	// only update elected state if we were ever elected in the first place.
 	if c.elected != nil {
 		*c.elected = false
 	}
-	c.state = CandidateStateResigned
 
+	c.logf(true, "doResign() - Stopping managed session...")
 	if err := c.ms.Stop(); err != nil {
-		c.logf(false, "Error stopping candidate session: %s", err)
+		c.logf(false, "doResign() - Error stopping candidate session: %s", err)
 	}
-
-	c.mu.Unlock()
-
-	c.logf(false, "Resigned")
-
 	// notify watchers of updated state
 	c.pushNotification(NotificationEventCandidateResigned)
 }
@@ -454,21 +455,24 @@ func (c *Candidate) refreshLock(ctx context.Context) {
 	if updated {
 		// update internal state
 		*c.elected = elected
+	}
 
+	// unlock before attempting to send notifications
+	c.mu.Unlock()
+
+	// if our state changed, notify accordingly
+	if updated {
 		if elected {
-			c.logf(false, "We have won the election")
+			c.logf(false, "refreshLock() - We have won the election")
 			c.pushNotification(NotificationEventCandidateElected)
 		} else {
-			c.logf(false, "We have lost the election")
+			c.logf(false, "refreshLock() - We have lost the election")
 			c.pushNotification(NotificationEventCandidateLostElection)
 		}
-	}
-
-	if elected && !updated {
+	} else if elected {
+		// if we were already elected, push "renewed" notification
 		c.pushNotification(NotificationEventCandidateRenew)
 	}
-
-	c.mu.Unlock()
 }
 
 // sessionUpdate is the receiver for the session update callback
@@ -523,24 +527,18 @@ func (c *Candidate) sessionUpdate(n Notification) {
 func (c *Candidate) maintainLock(ctx context.Context) {
 	c.logf(true, "maintainLock() - Starting lock maintenance loop")
 	var (
-		drop chan struct{}
+		renewTimer *time.Timer
 
 		renewInterval = c.ms.RenewInterval()
-		renewTimer    = time.NewTimer(renewInterval)
 	)
-
-	defer func() {
-		c.logf(false, "maintainLock() - Exiting lock maintenance loop")
-		renewTimer.Stop()
-		c.Resign()
-		if drop != nil {
-			drop <- struct{}{}
-		}
-		c.pushNotification(NotificationEventCandidateStopped)
-	}()
 
 	c.pushNotification(NotificationEventCandidateRunning)
 
+	// immediately attempt to refresh lock
+	c.refreshLock(ctx)
+	renewTimer = time.NewTimer(renewInterval)
+
+LockLoop:
 	for {
 		select {
 		case tick := <-renewTimer.C:
@@ -549,12 +547,27 @@ func (c *Candidate) maintainLock(ctx context.Context) {
 			renewTimer.Reset(renewInterval)
 
 		case <-ctx.Done():
+			c.mu.Lock()
+			c.state = CandidateStateResigned
+			close(c.stop)
+			c.mu.Unlock()
 			c.logf(false, "maintainLock() - context completed: %s", ctx.Err())
-			return
+			break LockLoop
 
-		case drop = <-c.stop:
+		case <-c.stop:
+			c.mu.Lock()
+			close(c.stop)
+			c.mu.Unlock()
 			c.logf(false, "maintainLock() - stop hit")
-			return
+			break LockLoop
 		}
 	}
+
+	c.logf(false, "maintainLock() - Exiting lock maintenance loop")
+	renewTimer.Stop()
+	c.logf(true, "renewTimer.Stop()")
+	c.doResign()
+	c.logf(true, "c.doResign()")
+	c.pushNotification(NotificationEventCandidateStopped)
+	c.logf(true, "pushNotification")
 }

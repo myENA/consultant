@@ -129,12 +129,6 @@ func NewCandidate(conf *CandidateConfig) (*Candidate, error) {
 		return nil, fmt.Errorf("error constructing ManagedSession: %s", err)
 	}
 
-	c.id = id
-	c.notifierBase = newNotifierBase()
-	c.kvKey = conf.KVKey
-	c.consecutiveSessionErrors = new(uint64)
-	*c.consecutiveSessionErrors = 0
-	c.elected = new(bool)
 	c.logger = conf.Logger
 	c.dbg = conf.Debug
 
@@ -149,6 +143,13 @@ func NewCandidate(conf *CandidateConfig) (*Candidate, error) {
 	} else {
 		id = conf.ID
 	}
+
+	c.id = id
+	c.notifierBase = newNotifierBase()
+	c.kvKey = conf.KVKey
+	c.consecutiveSessionErrors = new(uint64)
+	*c.consecutiveSessionErrors = 0
+	c.elected = new(bool)
 
 	if conf.KVDataProvider == nil {
 		c.kvValueProvider = CandidateDefaultLeaderKVValueProvider

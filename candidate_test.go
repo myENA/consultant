@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -88,7 +89,7 @@ func TestNewCandidate(t *testing.T) {
 }
 
 func TestCandidate_Run(t *testing.T) {
-	testRun := func(t *testing.T, ctx context.Context, cand *consultant.Candidate) {
+	testRun := func(t *testing.T, ctx context.Context, cand *consultant.Candidate, testAsLeader bool) {
 		if !cand.Running() {
 			t.Log("Expected candidate to be running")
 			t.Fail()
@@ -123,10 +124,18 @@ func TestCandidate_Run(t *testing.T) {
 			return
 		}
 
-		if kvValue.LeaderID != cand.ID() {
-			t.Logf("Expected elected leader KV to have LeaderID of %q, saw %q", cand.ID(), kvValue.LeaderID)
-			t.FailNow()
-			return
+		if testAsLeader {
+			if kvValue.LeaderID != cand.ID() {
+				t.Logf("Expected elected leader KV to have LeaderID of %q, saw %v", cand.ID(), kvValue)
+				t.FailNow()
+				return
+			}
+		} else {
+			if kvValue.LeaderID == cand.ID() {
+				t.Logf("Expected leader KV to NOT have LeaderID of %q, saw (%v)", cand.ID(), kvValue)
+				t.FailNow()
+				return
+			}
 		}
 
 		ctx, cancel = context.WithTimeout(ctx, 2*time.Second)
@@ -138,10 +147,18 @@ func TestCandidate_Run(t *testing.T) {
 			return
 		}
 
-		if se.ID != cand.Session().ID() {
-			t.Logf("Expected session returned from LeaderSession to be %q, saw %q", cand.Session().ID(), se.ID)
-			t.FailNow()
-			return
+		if testAsLeader {
+			if se.ID != cand.Session().ID() {
+				t.Logf("Expected session returned from LeaderSession to be %q, saw %q", cand.Session().ID(), se.ID)
+				t.FailNow()
+				return
+			}
+		} else {
+			if se.ID == cand.Session().ID() {
+				t.Logf("Expected sesesion returned from LeaderSession to NOT be %q", cand.Session().ID())
+				t.FailNow()
+				return
+			}
 		}
 	}
 
@@ -163,7 +180,7 @@ func TestCandidate_Run(t *testing.T) {
 			return
 		}
 
-		testRun(t, ctx, cand)
+		testRun(t, ctx, cand, true)
 	})
 
 	t.Run("single-auto-start", func(t *testing.T) {
@@ -181,29 +198,119 @@ func TestCandidate_Run(t *testing.T) {
 		cand := newCandidateWithServerAndClient(t, cfg, server, client)
 		defer cand.Resign()
 
-		testRun(t, ctx, cand)
+		testRun(t, ctx, cand, true)
 	})
 
-	//t.Run("typical", func(t *testing.T) {
-	//	var (
-	//		server                                              *cst.TestServer
-	//		client                                              *consultant.Client
-	//		candidate1, candidate2, candidate3, leaderCandidate *consultant.Candidate
-	//		leader                                              *api.SessionEntry
-	//		err                                                 error
-	//
-	//		wg = new(sync.WaitGroup)
-	//	)
-	//
-	//	server, client = makeTestServerAndClient(t, nil)
-	//	server.WaitForSerfCheck(t)
-	//
-	//	go func() {
-	//
-	//	}()
-	//
-	//	wg.Add(3)
-	//})
+	t.Run("typical", func(t *testing.T) {
+		var (
+			server                                              *cst.TestServer
+			client                                              *consultant.Client
+			candidate1, candidate2, candidate3, leaderCandidate *consultant.Candidate
+			leaderSession                                       *api.SessionEntry
+			err                                                 error
+
+			cands = []**consultant.Candidate{&candidate1, &candidate2, &candidate3}
+			wg    = new(sync.WaitGroup)
+		)
+
+		wg.Add(3)
+
+		server, client = makeTestServerAndClient(t, nil)
+		server.WaitForSerfCheck(t)
+		server.WaitForLeader(t)
+
+		runCTX, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+
+		makeCandidate := func(t *testing.T, cfg *consultant.CandidateConfig) *consultant.Candidate {
+			cfg.StartImmediately = runCTX
+			return newCandidateWithServerAndClient(t, cfg, server, client)
+		}
+
+		go func() {
+			defer wg.Done()
+			candidate1 = makeCandidate(t, &consultant.CandidateConfig{ID: "test-1"})
+			if err := candidate1.Wait(); err != nil {
+				t.Logf("error waiting on candidate 1: %s", err)
+				t.Fail()
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			candidate2 = makeCandidate(t, &consultant.CandidateConfig{ID: "test-2"})
+			if err := candidate2.Wait(); err != nil {
+				t.Logf("error waiting on candidate 2: %s", err)
+				t.Fail()
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			candidate3 = makeCandidate(t, &consultant.CandidateConfig{ID: "test-3"})
+			if err := candidate3.Wait(); err != nil {
+				t.Logf("error waiting on candidate 3: %s", err)
+				t.Fail()
+			}
+		}()
+
+		wg.Wait()
+
+		if t.Failed() {
+			t.Logf("candidate setup failed")
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		leaderSession, _, err = candidate1.LeaderSession(ctx)
+		if err != nil {
+			t.Logf("Error fetching leader sesesion: %s", err)
+			t.Fail()
+			return
+		}
+
+		switch leaderSession.ID {
+		case candidate1.Session().ID():
+			leaderCandidate = candidate1
+		case candidate2.Session().ID():
+			leaderCandidate = candidate2
+		case candidate3.Session().ID():
+			leaderCandidate = candidate3
+		}
+
+		if leaderCandidate == nil {
+			t.Logf(
+				"None of the constructed candidates (%v) is the leader: %v",
+				[]string{candidate1.Session().ID(), candidate2.Session().ID(), candidate3.Session().ID()},
+				leaderSession,
+			)
+			t.Fail()
+			return
+		}
+
+		for _, cand := range cands {
+			if leaderCandidate == *cand {
+				testRun(t, runCTX, *cand, true)
+			} else {
+				testRun(t, runCTX, *cand, false)
+			}
+
+		}
+
+		if t.Failed() {
+			return
+		}
+
+		wg.Add(3)
+
+		for _, cand := range cands {
+			go func(cand *consultant.Candidate) {
+				defer wg.Done()
+				cand.Resign()
+			}(*cand)
+		}
+
+		wg.Wait()
+
+	})
 }
 
 //

@@ -350,37 +350,49 @@ func (c *Candidate) Run(ctx context.Context) error {
 // Resign will remove this candidate from the election pool
 func (c *Candidate) Resign() {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	if c.state == CandidateStateResigned {
+		c.mu.Unlock()
 		return
 	}
-
 	c.state = CandidateStateResigned
+	c.mu.Unlock()
 
 	c.logf(false, "Resign() - Leaving election pool...")
 	c.stop <- struct{}{}
 }
 
 func (c *Candidate) doResign() {
-	c.state = CandidateStateResigned
+	c.mu.Lock()
+
+	// close and ensure stop chan is emptied
+	close(c.stop)
+	if len(c.stop) > 0 {
+		<-c.stop
+	}
 
 	// only update elected state if we were ever elected in the first place.
 	if c.elected != nil {
 		*c.elected = false
 	}
 
+	// unlock for rest of operations
+	c.mu.Unlock()
+
 	c.logf(true, "doResign() - Stopping managed session...")
 	if err := c.ms.Stop(); err != nil {
 		c.logf(false, "doResign() - Error stopping candidate session: %s", err)
+	} else {
+		c.logf(true, "doResign() - Managed session stoapped")
 	}
+
 	// notify watchers of updated state
 	c.pushNotification(NotificationEventCandidateResigned)
+	c.pushNotification(NotificationEventCandidateStopped)
+
 }
 
 // pushNotification constructs and then pushes a new notification to currently registered recipients based on the
 // current state of the session.
-//
-// caller must hold at least read lock.
 func (c *Candidate) pushNotification(ev NotificationEvent) {
 	n := CandidateUpdate{
 		ID:      c.ID(),
@@ -539,6 +551,11 @@ func (c *Candidate) maintainLock(ctx context.Context) {
 	c.refreshLock(ctx)
 	renewTimer = time.NewTimer(renewInterval)
 
+	defer func() {
+		renewTimer.Stop()
+		c.doResign()
+	}()
+
 LockLoop:
 	for {
 		select {
@@ -559,11 +576,4 @@ LockLoop:
 			break LockLoop
 		}
 	}
-
-	c.mu.Lock()
-	renewTimer.Stop()
-	close(c.stop)
-	c.doResign()
-	c.pushNotification(NotificationEventCandidateStopped)
-	c.mu.Unlock()
 }

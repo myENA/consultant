@@ -88,7 +88,6 @@ func TestNewCandidate(t *testing.T) {
 }
 
 func TestCandidate_Run(t *testing.T) {
-
 	testRun := func(t *testing.T, ctx context.Context, cand *consultant.Candidate) {
 		if !cand.Running() {
 			t.Log("Expected candidate to be running")
@@ -150,11 +149,13 @@ func TestCandidate_Run(t *testing.T) {
 		server, client := makeTestServerAndClient(t, nil)
 		defer stopTestServer(server)
 		server.WaitForSerfCheck(t)
-		cand := newCandidateWithServerAndClient(t, nil, server, client)
-		defer cand.Resign()
+		server.WaitForLeader(t)
 
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
+
+		cand := newCandidateWithServerAndClient(t, nil, server, client)
+		defer cand.Resign()
 
 		if err := cand.Run(ctx); err != nil {
 			t.Logf("Error calling candidate.Run: %s", err)
@@ -169,6 +170,7 @@ func TestCandidate_Run(t *testing.T) {
 		server, client := makeTestServerAndClient(t, nil)
 		defer stopTestServer(server)
 		server.WaitForSerfCheck(t)
+		server.WaitForLeader(t)
 
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
@@ -176,7 +178,7 @@ func TestCandidate_Run(t *testing.T) {
 		cfg := new(consultant.CandidateConfig)
 		cfg.StartImmediately = ctx
 
-		cand := newCandidateWithServerAndClient(t, nil, server, client)
+		cand := newCandidateWithServerAndClient(t, cfg, server, client)
 		defer cand.Resign()
 
 		testRun(t, ctx, cand)

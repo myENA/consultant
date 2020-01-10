@@ -549,25 +549,20 @@ LockLoop:
 		case <-ctx.Done():
 			c.mu.Lock()
 			c.state = CandidateStateResigned
-			close(c.stop)
 			c.mu.Unlock()
 			c.logf(false, "maintainLock() - context completed: %s", ctx.Err())
 			break LockLoop
 
 		case <-c.stop:
-			c.mu.Lock()
-			close(c.stop)
-			c.mu.Unlock()
 			c.logf(false, "maintainLock() - stop hit")
 			break LockLoop
 		}
 	}
 
-	c.logf(false, "maintainLock() - Exiting lock maintenance loop")
+	c.mu.Lock()
 	renewTimer.Stop()
-	c.logf(true, "renewTimer.Stop()")
+	close(c.stop)
 	c.doResign()
-	c.logf(true, "c.doResign()")
 	c.pushNotification(NotificationEventCandidateStopped)
-	c.logf(true, "pushNotification")
+	c.mu.Unlock()
 }

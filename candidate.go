@@ -494,6 +494,38 @@ func (c *Candidate) sessionUpdate(n Notification) {
 	}
 }
 
+func (c *Candidate) shutdown() error {
+	var err error
+
+	c.mu.Lock()
+	// only update elected state if we were ever elected in the first place.
+	if c.elected != nil {
+		*c.elected = false
+	}
+
+	c.logf(true, "shutdown() - Deleting key %q", c.kvKey)
+	ctx, cancel := context.WithTimeout(context.Background(), c.ms.rttl)
+	defer cancel()
+	if _, err := c.ms.client.KV().Delete(c.kvKey, c.ms.wo.WithContext(ctx)); err != nil {
+		c.logf(false, "shutdown() - Error deleting key %q: %s", c.kvKey, err)
+	}
+	// unlock for remaining actions
+	c.mu.Unlock()
+
+	c.logf(true, "shutdown() - Stopping managed session...")
+	if err = c.ms.Stop(); err != nil {
+		c.logf(false, "shutdown() - Error stopping candidate managed session (%s): %s", c.ms.ID(), err)
+	} else {
+		c.logf(true, "shutdown() - Managed session stopped")
+	}
+
+	// notify watchers of updated state
+	c.pushNotification(NotificationEventCandidateResigned)
+	c.pushNotification(NotificationEventCandidateStopped)
+
+	return err
+}
+
 // maintainLock is responsible for triggering the routine that attempts to create / re-acquire the session kv lock
 func (c *Candidate) maintainLock(ctx context.Context) {
 	c.logf(true, "maintainLock() - Starting lock maintenance loop")
@@ -504,43 +536,20 @@ func (c *Candidate) maintainLock(ctx context.Context) {
 		renewInterval = c.ms.RenewInterval()
 	)
 
+	go func() {
+		<-ctx.Done()
+		c.logf(false, "maintainLock() - Run context completed with: %s", ctx.Err())
+		if err := c.Resign(); err != nil {
+			c.logf(false, "maintainLock() - Error during shutdown: %s", err)
+		}
+	}()
+
 	defer func() {
-		var err error
-		c.mu.Lock()
-
+		c.logf(false, "maintainLock() - Shutting down")
 		renewTimer.Stop()
-
-		// only update elected state if we were ever elected in the first place.
-		if c.elected != nil {
-			*c.elected = false
-		}
-
-		// unlock for remaining actions
-		c.mu.Unlock()
-
-		c.logf(true, "doResign() - Stopping managed session...")
-		if err = c.ms.Stop(); err != nil {
-			c.logf(false, "doResign() - Error stopping candidate managed session (%s): %s", c.ms.ID(), err)
-		} else {
-			c.logf(true, "doResign() - Managed session stopped")
-		}
-
-		// notify watchers of updated state
-		c.pushNotification(NotificationEventCandidateResigned)
-		c.pushNotification(NotificationEventCandidateStopped)
-
+		err := c.shutdown()
 		if drop != nil {
 			drop <- err
-		}
-		// this should only be possible when:
-		// 	1. user calls .Resign()
-		//	2. run context is cancelled
-		//	3. maintainLock() hits <-ctx.Done() rather than <-c.stop
-		//
-		// in this state, the .Resign() call would hang forever if not for the following statement.
-		// TODO: shutdown process could use cleanup.
-		if len(c.stop) > 0 {
-			<-c.stop <- err
 		}
 	}()
 
@@ -550,7 +559,6 @@ func (c *Candidate) maintainLock(ctx context.Context) {
 	c.refreshLock(ctx)
 	renewTimer = time.NewTimer(renewInterval)
 
-LockLoop:
 	for {
 		select {
 		case tick := <-renewTimer.C:
@@ -558,16 +566,9 @@ LockLoop:
 			c.refreshLock(ctx)
 			renewTimer.Reset(renewInterval)
 
-		case <-ctx.Done():
-			c.mu.Lock()
-			c.state = CandidateStateResigned
-			c.mu.Unlock()
-			c.logf(false, "maintainLock() - running context completed with: %s", ctx.Err())
-			break LockLoop
-
 		case drop = <-c.stop:
-			c.logf(false, "maintainLock() - explicit stop called")
-			break LockLoop
+			c.logf(false, "maintainLock() - stop called")
+			return
 		}
 	}
 }

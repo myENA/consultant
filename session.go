@@ -565,26 +565,21 @@ func (ms *ManagedSession) maintain(ctx context.Context) {
 		intervalTimer = time.NewTimer(ms.renewInterval)
 	)
 
+	go func() {
+		<-ctx.Done()
+		ms.logf(false, "maintainLock() - running context completed with: %s", ctx.Err())
+		if err := ms.Stop(); err != nil {
+			ms.logf(false, "maintainLock() - Error stopping session: %s", err)
+		}
+	}()
+
 	defer func() {
 		intervalTimer.Stop()
-
 		ms.mu.Lock()
 		err := ms.shutdown()
 		ms.mu.Unlock()
-
 		if drop != nil {
 			drop <- err
-		}
-
-		// this should only be possible when:
-		//	1. user calls .Stop()
-		// 	2. run context is cancelled
-		//	3. maintain() hits <-ctx.Done() rather than <-ms.stop
-		//
-		// in this state, the .Stop() call would hang forever if not for the following statement
-		// TODO: cleanup shutdown process
-		if len(ms.stop) > 0 {
-			<-ms.stop <- err
 		}
 	}()
 
@@ -596,13 +591,6 @@ func (ms *ManagedSession) maintain(ctx context.Context) {
 			ms.maintainTick(ctx)
 			ms.mu.Unlock()
 			intervalTimer.Reset(ms.renewInterval)
-
-		case <-ctx.Done():
-			ms.mu.Lock()
-			ms.state = ManagedSessionStateStopped
-			ms.mu.Unlock()
-			ms.logf(false, "maintainLock() - running context completed with: %s", ctx.Err())
-			return
 
 		case drop = <-ms.stop:
 			ms.logf(false, "maintainLock() - explicit stop called")

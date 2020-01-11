@@ -249,11 +249,10 @@ func (c *Candidate) ForeignLeaderSession(ctx context.Context, datacenter string)
 
 // WaitUntil will wait for a candidate to be elected or until duration has passed
 func (c *Candidate) WaitUntil(ctx context.Context) error {
-	if !c.Running() {
-		return fmt.Errorf("candidate %s is not in running", c.ID())
-	}
-
 	for i := 1; ; i++ {
+		if !c.Running() {
+			return fmt.Errorf("candidate %s is not in running", c.ID())
+		}
 		select {
 		case <-ctx.Done():
 			c.logf(false, "Context finished before locating leader: %s", ctx.Err())
@@ -488,7 +487,7 @@ func (c *Candidate) sessionUpdate(n Notification) {
 	}
 
 	if refresh {
-		ctx, cancel := context.WithTimeout(context.Background(), c.ms.rttl)
+		ctx, cancel := context.WithTimeout(context.Background(), c.ms.requestTTL)
 		defer cancel()
 		c.refreshLock(ctx)
 	}
@@ -504,7 +503,7 @@ func (c *Candidate) shutdown() error {
 	}
 
 	c.logf(true, "shutdown() - Deleting key %q", c.kvKey)
-	ctx, cancel := context.WithTimeout(context.Background(), c.ms.rttl)
+	ctx, cancel := context.WithTimeout(context.Background(), c.ms.requestTTL)
 	defer cancel()
 	if _, err := c.ms.client.KV().Delete(c.kvKey, c.ms.wo.WithContext(ctx)); err != nil {
 		c.logf(false, "shutdown() - Error deleting key %q: %s", c.kvKey, err)

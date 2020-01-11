@@ -12,11 +12,7 @@ Our Consultant <a href="https://godoc.org/github.com/myENA/consultant#Client" ta
 - Simplified Service Registration (<a href="https://godoc.org/github.com/myENA/consultant#Client.SimpleServiceRegister" target="_blank">docs</a>)
 - Simplified Key Retrieval (<a href="https://godoc.org/github.com/myENA/consultant#Client.EnsureKey" target="_blank">docs</a>)
 
-## <a href="https://godoc.org/github.com/myENA/consultant#SiblingLocator" target="_blank">Sibling Services Locator</a>
-If you run in an environment where you are running several instances of the same service, it can be useful sometimes
-to have a way for each service too find it's sibling services.
-
-## <a href="https://godoc.org/github.com/myENA/consultant/candidate#Candidate" target="_blank">Service Candidate Election</a>
+## <a href="https://godoc.org/github.com/myENA/consultant#Candidate" target="_blank">Service Candidate Election</a>
 With a multi-service setup, there are times where might want one service to be responsible for a specific task.
 This task can range from being considered the leader of the entire cluster of services OR simply a single sub-task
 that must run atomically.

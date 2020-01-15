@@ -348,15 +348,21 @@ func (c *Candidate) Resign() error {
 	return err
 }
 
+// buildUpdate constructs a notification update type
+//
+// Caller must hold lock
+func (c *Candidate) buildUpdate() CandidateUpdate {
+	return CandidateUpdate{
+		ID:      c.id,
+		Elected: c.elected != nil && *c.elected,
+		State:   c.state,
+	}
+}
+
 // pushNotification constructs and then pushes a new notification to currently registered recipients based on the
 // current state of the session.
-func (c *Candidate) pushNotification(ev NotificationEvent) {
-	n := CandidateUpdate{
-		ID:      c.ID(),
-		Elected: c.Elected(),
-		State:   c.State(),
-	}
-	c.sendNotification(NotificationSourceCandidate, ev, n)
+func (c *Candidate) pushNotification(ev NotificationEvent, up CandidateUpdate) {
+	c.sendNotification(NotificationSourceCandidate, ev, up)
 }
 
 func (c *Candidate) logf(debug bool, f string, v ...interface{}) {
@@ -427,6 +433,8 @@ func (c *Candidate) refreshLock(ctx context.Context) {
 		*c.elected = elected
 	}
 
+	up := c.buildUpdate()
+
 	// unlock before attempting to send notifications
 	c.mu.Unlock()
 
@@ -434,14 +442,14 @@ func (c *Candidate) refreshLock(ctx context.Context) {
 	if updated {
 		if elected {
 			c.logf(false, "refreshLock() - We have won the election")
-			c.pushNotification(NotificationEventCandidateElected)
+			c.pushNotification(NotificationEventCandidateElected, up)
 		} else {
 			c.logf(false, "refreshLock() - We have lost the election")
-			c.pushNotification(NotificationEventCandidateLostElection)
+			c.pushNotification(NotificationEventCandidateLostElection, up)
 		}
 	} else if elected {
 		// if we were already elected, push "renewed" notification
-		c.pushNotification(NotificationEventCandidateRenew)
+		c.pushNotification(NotificationEventCandidateRenew, up)
 	}
 }
 
@@ -508,6 +516,7 @@ func (c *Candidate) shutdown() error {
 	if _, err := c.ms.client.KV().Delete(c.kvKey, c.ms.wo.WithContext(ctx)); err != nil {
 		c.logf(false, "shutdown() - Error deleting key %q: %s", c.kvKey, err)
 	}
+
 	// unlock for remaining actions
 	c.mu.Unlock()
 
@@ -518,9 +527,13 @@ func (c *Candidate) shutdown() error {
 		c.logf(true, "shutdown() - Managed session stopped")
 	}
 
+	c.mu.RLock()
+	up := c.buildUpdate()
+	c.mu.RUnlock()
+
 	// notify watchers of updated state
-	c.pushNotification(NotificationEventCandidateResigned)
-	c.pushNotification(NotificationEventCandidateStopped)
+	c.pushNotification(NotificationEventCandidateResigned, up)
+	c.pushNotification(NotificationEventCandidateStopped, up)
 
 	return err
 }
@@ -552,7 +565,11 @@ func (c *Candidate) maintainLock(ctx context.Context) {
 		}
 	}()
 
-	c.pushNotification(NotificationEventCandidateRunning)
+	c.mu.RLock()
+	up := c.buildUpdate()
+	c.mu.RUnlock()
+
+	c.pushNotification(NotificationEventCandidateRunning, up)
 
 	// immediately attempt to refresh lock
 	c.refreshLock(ctx)

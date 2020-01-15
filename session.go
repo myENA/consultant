@@ -280,7 +280,7 @@ func (ms *ManagedSession) SessionEntry(ctx context.Context) (*api.SessionEntry, 
 // PushStateNotification will immediate push the current managed session state to all attached notification recipients
 func (ms *ManagedSession) PushStateNotification() {
 	ms.mu.RLock()
-	ms.pushNotification(NotificationEventManualPush)
+	ms.pushNotification(NotificationEventManualPush, ms.buildUpdate())
 	ms.mu.RUnlock()
 }
 
@@ -371,17 +371,23 @@ func (ms *ManagedSession) logf(debug bool, f string, v ...interface{}) {
 	ms.logger.Printf(f, v...)
 }
 
+// buildUpdate constructs an update obj to be provided to pushNotification
+//
+// Caller must hold lock
+func (ms *ManagedSession) buildUpdate() ManagedSessionUpdate {
+	return ManagedSessionUpdate{
+		ID:          ms.id,
+		Name:        ms.def.Name,
+		LastRenewed: ms.lastRenewed.UnixNano(),
+		Error:       ms.lastErr,
+		State:       ms.state,
+	}
+}
+
 // pushNotification constructs and then pushes a new notification to currently registered recipients based on the
 // current state of the session.
-func (ms *ManagedSession) pushNotification(ev NotificationEvent) {
-	n := ManagedSessionUpdate{
-		ms.ID(),
-		ms.def.Name,
-		ms.LastRenewed().UnixNano(),
-		ms.LastError(),
-		ms.State(),
-	}
-	ms.sendNotification(NotificationSourceManagedSession, ev, n)
+func (ms *ManagedSession) pushNotification(ev NotificationEvent, up ManagedSessionUpdate) {
+	ms.sendNotification(NotificationSourceManagedSession, ev, up)
 }
 
 // setState updates the internal state value and pushes a notification of change
@@ -404,9 +410,11 @@ func (ms *ManagedSession) setState(state ManagedSessionState) {
 
 	ms.state = state
 
+	up := ms.buildUpdate()
+
 	ms.mu.Unlock()
 
-	ms.pushNotification(ev)
+	ms.pushNotification(ev, up)
 }
 
 // create will attempt to do just that.
@@ -430,9 +438,11 @@ func (ms *ManagedSession) create(ctx context.Context) {
 		ms.logf(false, "create() - Error creating upstream session: %s", ms.lastErr)
 	}
 
+	up := ms.buildUpdate()
+
 	ms.mu.Unlock()
 
-	ms.pushNotification(NotificationEventManagedSessionCreate)
+	ms.pushNotification(NotificationEventManagedSessionCreate, up)
 }
 
 // renew will attempt to do just that.
@@ -464,9 +474,11 @@ func (ms *ManagedSession) renew(ctx context.Context) {
 		ms.lastErr = err
 	}
 
+	up := ms.buildUpdate()
+
 	ms.mu.Unlock()
 
-	ms.pushNotification(NotificationEventManagedSessionRenew)
+	ms.pushNotification(NotificationEventManagedSessionRenew, up)
 }
 
 // destroy will attempt to destroy the upstream session and removes internal references to it.
@@ -492,9 +504,11 @@ func (ms *ManagedSession) destroy(ctx context.Context) {
 		ms.logf(true, "destroy() - Upstream session destroyed")
 	}
 
+	up := ms.buildUpdate()
+
 	ms.mu.Unlock()
 
-	ms.pushNotification(NotificationEventManagedSessionDestroy)
+	ms.pushNotification(NotificationEventManagedSessionDestroy, up)
 }
 
 // maintainTick is responsible for ensuring our session is kept alive in Consul

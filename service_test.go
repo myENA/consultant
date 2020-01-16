@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/hashicorp/consul/api"
+	cst "github.com/hashicorp/consul/sdk/testutil"
 	"github.com/myENA/consultant/v2"
 )
 
@@ -19,7 +20,45 @@ const (
 	managedServiceAddedTag = "sandwiches!"
 )
 
-func TestNewManagedServiceBuilder(t *testing.T) {
+func newManagedServiceWithServerAndClient(
+	t *testing.T,
+	ctx context.Context,
+	svcReg *consultant.ManagedAgentServiceRegistration,
+	cfg *consultant.ManagedServiceConfig,
+	server *cst.TestServer,
+	client *consultant.Client) *consultant.ManagedService {
+
+	var (
+		ms  *consultant.ManagedService
+		err error
+	)
+
+	if cfg == nil {
+		cfg = new(consultant.ManagedServiceConfig)
+	}
+
+	cfg.Client = client.Client
+	cfg.Logger = log.New(os.Stdout, "---> managed service ", log.LstdFlags)
+	cfg.Debug = true
+
+	if svcReg == nil {
+		svcReg = consultant.NewBareManagedAgentServiceRegistration(managedServiceName, managedServicePort)
+	}
+	if svcReg.Address == "" {
+		svcReg.Address = getTestLocalAddr(t)
+	}
+
+	svcReg.EnableTagOverride = true
+
+	if ms, err = svcReg.Create(ctx, cfg); err != nil {
+		_ = server.Stop()
+		t.Fatalf("Error creating service: %s", err)
+	}
+
+	return ms
+}
+
+func TestNewManagedAgentServiceRegistration(t *testing.T) {
 	localAddr := getTestLocalAddr(t)
 
 	tests := map[string]struct {
@@ -82,7 +121,7 @@ func TestNewManagedServiceBuilder(t *testing.T) {
 	}
 }
 
-func TestNewBareManagedServiceBuilder(t *testing.T) {
+func TestNewBareManagedAgentServiceRegistration(t *testing.T) {
 	localAddr := getTestLocalAddr(t)
 
 	tests := map[string]struct {
@@ -138,7 +177,7 @@ func TestNewBareManagedServiceBuilder(t *testing.T) {
 	}
 }
 
-func TestManagedServiceBuilder_SetID(t *testing.T) {
+func TestManagedAgentServiceRegistration_SetID(t *testing.T) {
 	localAddr := getTestLocalAddr(t)
 
 	tests := map[string]struct {
@@ -185,17 +224,13 @@ func TestManagedServiceBuilder_SetID(t *testing.T) {
 	}
 }
 
-func TestManagedServiceBuilder_Build(t *testing.T) {
+func TestManagedAgentServiceRegistration_Create(t *testing.T) {
 	var (
 		localAddr = getTestLocalAddr(t)
 	)
 
 	server, client := makeTestServerAndClient(t, nil)
-	defer func() {
-		// TODO: may not be sufficient...
-		_ = server.Stop()
-	}()
-
+	defer stopTestServer(server)
 	server.WaitForSerfCheck(t)
 
 	cfg := new(consultant.ManagedServiceConfig)
@@ -244,4 +279,40 @@ func TestManagedServiceBuilder_Build(t *testing.T) {
 		t.Logf("Expected address %q, saw %q", b.Address, svc.Address)
 		t.Fail()
 	}
+}
+
+func TestManagedService(t *testing.T) {
+	server, client := makeTestServerAndClient(t, nil)
+	defer stopTestServer(server)
+	server.WaitForSerfCheck(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	ms := newManagedServiceWithServerAndClient(t, ctx, nil, nil, server, client)
+	defer ms.Deregister()
+
+	t.Run("add-tags", func(t *testing.T) {
+		if added, err := ms.AddTags("new1", "new2"); err != nil {
+			t.Logf("Error adding 2 tags: %s", err)
+			t.Fail()
+		} else if added != 2 {
+			t.Logf("Expected added to be 2, saw %d", added)
+			t.Fail()
+		}
+	})
+
+	if t.Failed() {
+		return
+	}
+
+	t.Run("remove-tags", func(t *testing.T) {
+		if removed, err := ms.RemoveTags("new1", "new2"); err != nil {
+			t.Logf("Error removing 2 tags: %s", err)
+			t.Fail()
+		} else if removed != 2 {
+			t.Logf("Expected removed to be 2, saw %d", removed)
+			t.Fail()
+		}
+	})
 }

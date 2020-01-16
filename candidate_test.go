@@ -316,7 +316,9 @@ func TestCandidate_Run(t *testing.T) {
 			for _, cand := range cands {
 				go func(cand *consultant.Candidate) {
 					defer wg.Done()
-					cand.Resign()
+					if err := cand.Resign(); err != nil {
+						t.Logf("Candidate %q - error during resignation: %s", cand.ID(), err)
+					}
 				}(*cand)
 			}
 

@@ -360,7 +360,7 @@ func (c *Candidate) buildUpdate() CandidateUpdate {
 }
 
 // pushNotification constructs and then pushes a new notification to currently registered recipients based on the
-// current state of the session.
+// current state of the candidate.
 func (c *Candidate) pushNotification(ev NotificationEvent, up CandidateUpdate) {
 	c.sendNotification(NotificationSourceCandidate, ev, up)
 }

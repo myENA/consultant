@@ -53,6 +53,12 @@ const (
 	NotificationEventCandidateLostElection NotificationEvent = 0x103 // sent when candidate lost election
 	NotificationEventCandidateResigned     NotificationEvent = 0x104 // sent when candidate explicitly "resigns"
 	NotificationEventCandidateRenew        NotificationEvent = 0x105 // sent when candidate was previously elected and attempts to stay elected
+
+	NotificationEventManagedServiceRunning          NotificationEvent = 0x180 // sent when the service has reached its "running" state
+	NotificationEventManagedServiceStopped          NotificationEvent = 0x181 // sent when the service is considered defunct
+	NotificationEventManagedServiceWatchPlanStarted NotificationEvent = 0x182 // sent when the internal watch plan for the service is running
+	NotificationEventManagedServiceWatchPlanStopped NotificationEvent = 0x182 // sent when the internal watch plan for the service has stopped
+	NotificationEventManagedServiceRefreshed        NotificationEvent = 0x183 // sent when the internal watch plan receives an update
 )
 
 func (ev NotificationEvent) String() string {
@@ -183,7 +189,6 @@ func (nb *notifierBase) AttachNotificationChannel(id string, ch NotificationChan
 		panic(fmt.Sprintf("AttachNotificationChannel called with id %q and nil channel", id))
 	}
 	return nb.AttachNotificationHandler(id, func(n Notification) {
-		// TODO: handle blocking?
 		ch <- n
 	})
 }

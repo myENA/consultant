@@ -299,14 +299,15 @@ func (ms *ManagedService) AddTags(tags ...string) (int, error) {
 	}
 
 	ms.mu.RLock()
-	defer ms.mu.RUnlock()
 
 	if !ms.svc.EnableTagOverride {
+		ms.mu.RUnlock()
 		return 0, errors.New("cannot add tags: EnableTagOverride was false at service registration")
 	}
 
 	ms.logf(true, "AddTags() - Adding tags %v to service %q...", tags, ms.serviceID)
 	if len(tags) == 0 {
+		ms.mu.RUnlock()
 		ms.logf(true, "AddTags() - Empty tag set provided")
 		return 0, nil
 	}
@@ -322,7 +323,9 @@ func (ms *ManagedService) AddTags(tags ...string) (int, error) {
 		added = 0
 	}
 
-	return added, err
+	ms.mu.RUnlock()
+
+	return added, ms.ForceRefresh()
 }
 
 // RemoveTags attempts to remove one or more tags from the service registration in consul, if and only if
@@ -339,15 +342,16 @@ func (ms *ManagedService) RemoveTags(tags ...string) (int, error) {
 	}
 
 	ms.mu.RLock()
-	defer ms.mu.RUnlock()
 
 	if !ms.svc.EnableTagOverride {
+		ms.mu.RUnlock()
 		return 0, errors.New("cannot remove tags: EnableTagOverride was false at service registration")
 	}
 	ms.logf(true, "RemoveTags() - Removing tags %v from service %q...", tags, ms.serviceID)
 
 	if len(tags) == 0 {
 		ms.logf(true, "RemoveTags() - Empty tag set provided")
+		ms.mu.RUnlock()
 		return 0, nil
 	}
 
@@ -363,7 +367,9 @@ func (ms *ManagedService) RemoveTags(tags ...string) (int, error) {
 		removed = 0
 	}
 
-	return removed, nil
+	ms.mu.RUnlock()
+
+	return removed, ms.ForceRefresh()
 }
 
 // ForceRefresh attempts an immediate internal state refresh, blocking until attempt has been completed.

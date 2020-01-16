@@ -6,7 +6,7 @@ Helpful wrappers around Consul API client
 
 ## Client
 Our Consultant <a href="https://godoc.org/github.com/myENA/consultant#Client" target="_blank">Client</a> is a thin wrapper around the
-<a href="https://github.com/hashicorp/consul/blob/v1.0.3/api/api.go" target ="_blank">Consul API Client</a>.  It provides
+<a href="https://github.com/hashicorp/consul/blob/v1.6.2/api/api.go" target ="_blank">Consul API Client</a>.  It provides
 
 - Simplified Service Retrieval (<a href="https://godoc.org/github.com/myENA/consultant#Client.PickService" target="_blank">docs</a>)
 - Simplified Service Registration (<a href="https://godoc.org/github.com/myENA/consultant#Client.SimpleServiceRegister" target="_blank">docs</a>)

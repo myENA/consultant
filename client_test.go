@@ -2,7 +2,7 @@ package consultant_test
 
 //const (
 //	clientTestKVKey   = "consultant/tests/junkey"
-//	clientTestKVValue = "i don't know what i'm doing"
+//	clientTestKVValue = "i don't know what i'handlers doing"
 //
 //	clientSimpleServiceRegistrationName = "test-service"
 //	clientSimpleServiceRegistrationPort = 1234

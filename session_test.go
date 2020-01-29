@@ -178,14 +178,14 @@ func TestNewManagedSession(t *testing.T) {
 
 func TestManagedSession_Run(t *testing.T) {
 
-	testRun := func(t *testing.T, ctx context.Context, ms *consultant.ManagedSession) {
+	testRun := func(t *testing.T, ms *consultant.ManagedSession) {
 		if !ms.Running() {
 			t.Log("Expected session to be running")
 			t.Fail()
 			return
 		}
 
-		ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		se, _, err := ms.SessionEntry(ctx)
 		if err != nil {
@@ -208,42 +208,30 @@ func TestManagedSession_Run(t *testing.T) {
 		server, _, ms := buildManagedSessionServerAndClient(t, nil, nil)
 		defer stopTestServer(server)
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
-		if err := ms.Run(ctx); err != nil {
+		if err := ms.Run(); err != nil {
 			t.Logf("Error running session: %s", err)
 			t.Fail()
 			return
 		}
-		testRun(t, ctx, ms)
+		testRun(t, ms)
 	})
 
 	t.Run("auto-start", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
 		cfg := new(consultant.ManagedSessionConfig)
-		cfg.StartImmediately = ctx
+		cfg.StartImmediately = true
 
 		server, _, ms := buildManagedSessionServerAndClient(t, nil, cfg)
 		defer stopTestServer(server)
-		testRun(t, ctx, ms)
+		testRun(t, ms)
 	})
 
 	t.Run("graceful-stop", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
 		cfg := new(consultant.ManagedSessionConfig)
-		cfg.StartImmediately = ctx
+		cfg.StartImmediately = true
 
 		server, client, ms := buildManagedSessionServerAndClient(t, nil, cfg)
 		defer stopTestServer(server)
-		testRun(t, ctx, ms)
-
-		ctx, cancel = context.WithTimeout(ctx, 2*time.Second)
-		defer cancel()
+		testRun(t, ms)
 
 		sid := ms.ID()
 
@@ -283,20 +271,20 @@ func TestManagedSession_Run(t *testing.T) {
 			}
 		})
 
-		ctx, cancel := context.WithTimeout(context.Background(), 3*consultant.SessionMinimumTTL)
-		defer cancel()
-
-		if err := ms.Run(ctx); err != nil {
+		if err := ms.Run(); err != nil {
 			t.Logf("Error running session: %s", err)
 			t.Fail()
 			return
 		}
 
-		<-ctx.Done()
+		<-time.After(3 * consultant.SessionMinimumTTL)
+		if err := ms.Stop(); err != nil {
+
+		}
 
 		// wait just a tick for all notifications to fire
 		if renewed != 5 {
-			t.Logf("Expected renewed to be 3, saw %d", renewed)
+			t.Logf("Expected renewed to be 5, saw %d", renewed)
 			t.Fail()
 		}
 	})
@@ -330,7 +318,7 @@ func TestManagedSession_Run(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
-		if err := ms.Run(ctx); err != nil {
+		if err := ms.Run(); err != nil {
 			t.Logf("Error running session: %s", err)
 			t.Fail()
 			return
@@ -391,9 +379,6 @@ func TestManagedSession_PushStateNotification(t *testing.T) {
 	server, _, ms := buildManagedSessionServerAndClient(t, nil, nil)
 	defer stopTestServer(server)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
 	ms.AttachNotificationHandler("", func(n consultant.Notification) {
 		t.Logf("Incoming notification: %d (%[1]s)", n.Event)
 		switch n.Event {
@@ -412,7 +397,7 @@ func TestManagedSession_PushStateNotification(t *testing.T) {
 		}
 	})
 
-	if err := ms.Run(ctx); err != nil {
+	if err := ms.Run(); err != nil {
 		t.Logf("Error running managed service: %s", err)
 		t.Fail()
 		return

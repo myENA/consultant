@@ -17,7 +17,22 @@ type CandidateState uint8
 const (
 	CandidateStateResigned CandidateState = iota
 	CandidateStateRunning
+	CandidateStateClosed
 )
+
+func (s CandidateState) String() string {
+	switch s {
+	case CandidateStateResigned:
+		return "resigned"
+	case CandidateStateRunning:
+		return "running"
+	case CandidateStateClosed:
+		return "closed"
+
+	default:
+		return "UNKNOWN"
+	}
+}
 
 // CandidateLeaderKVValueProvider is called whenever a running Candidate attempts to acquire the lock on the defined kv
 // key.  The resulting []byte is used as the data payload, and may be whatever you wish.
@@ -49,6 +64,8 @@ type CandidateUpdate struct {
 	Elected bool `json:"elected"`
 	// State tracks the current state of this candidate
 	State CandidateState `json:"state"`
+	// Error will be defined if there an error associated with the notification
+	Error error `json:"error"`
 }
 
 // CandidateConfig describes a Candidate
@@ -103,8 +120,8 @@ type Candidate struct {
 	elected         *bool
 	state           CandidateState
 
-	dbg    bool
-	logger Logger
+	dbg bool
+	log Logger
 
 	consecutiveSessionErrors *uint64
 	stop                     chan chan error
@@ -129,7 +146,7 @@ func NewCandidate(conf *CandidateConfig) (*Candidate, error) {
 		return nil, fmt.Errorf("error constructing ManagedSession: %s", err)
 	}
 
-	c.logger = conf.Logger
+	c.log = conf.Logger
 	c.dbg = conf.Debug
 
 	if conf.ID == "" {
@@ -145,7 +162,7 @@ func NewCandidate(conf *CandidateConfig) (*Candidate, error) {
 	}
 
 	c.id = id
-	c.notifierBase = newNotifierBase()
+	c.notifierBase = newNotifierBase(c.log, c.dbg)
 	c.kvKey = conf.KVKey
 	c.consecutiveSessionErrors = new(uint64)
 	*c.consecutiveSessionErrors = 0
@@ -160,9 +177,9 @@ func NewCandidate(conf *CandidateConfig) (*Candidate, error) {
 
 	c.ms.AttachNotificationHandler(fmt.Sprintf("candidate_%s", c.id), c.sessionUpdate)
 
-	if conf.StartImmediately != nil {
+	if conf.StartImmediately {
 		c.logf(true, "StartImmediately enabled")
-		if err := c.Run(conf.StartImmediately); err != nil {
+		if err := c.Run(); err != nil {
 			return nil, fmt.Errorf("error occurred during auto run: %s", err)
 		}
 	}
@@ -285,6 +302,7 @@ func (c *Candidate) WaitNotify(ch chan<- error) {
 	ch <- c.Wait()
 }
 
+// State returns the current state of this Candidate
 func (c *Candidate) State() CandidateState {
 	c.mu.RLock()
 	s := c.state
@@ -292,40 +310,49 @@ func (c *Candidate) State() CandidateState {
 	return s
 }
 
+// Running returns true if the current state of the Candidate is Running
 func (c *Candidate) Running() bool {
 	return c.State() == CandidateStateRunning
 }
 
-// Run will enter this candidate into the election pool.  If the candidate is already running this does nothing.
-func (c *Candidate) Run(ctx context.Context) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
+// Resigned returns true if the current state of the Candidate is Resigned
+func (c *Candidate) Resigned() bool {
+	return c.State() == CandidateStateResigned
+}
 
+// Closed returns true if the current state of the candidate is Closed
+func (c *Candidate) Closed() bool {
+	return c.State() == CandidateStateClosed
+}
+
+// Run will enter this candidate into the election pool.  If the candidate is already running this does nothing.
+func (c *Candidate) Run() error {
 	c.mu.Lock()
+	defer c.mu.Unlock()
 
 	if c.state == CandidateStateRunning {
-		c.mu.Unlock()
 		return nil
 	}
 
-	c.state = CandidateStateRunning
-	c.mu.Unlock()
+	if c.state == CandidateStateClosed {
+		return errors.New("candidate is closed")
+	}
+
+	c.setState(CandidateStateRunning)
 
 	c.logf(false, "Run() - Entering election pool...")
+	c.logf(true, "Run() - Starting up managed session...")
 
-	c.logf(true, "Run() - starting up managed session...")
-
-	if err := c.ms.Run(ctx); err != nil {
+	if err := c.ms.Run(); err != nil {
 		return fmt.Errorf("session for candidate could not be started: %s", err)
 	}
 
 	c.logf(true, "Run() - Managed session started with ID %q", c.ms.ID())
 
 	// start up the lock maintainer
-	go c.maintainLock(ctx)
+	go c.maintainLock()
 
-	return nil
+	return c.refreshLock()
 }
 
 // Resign will remove this candidate from the election pool
@@ -333,29 +360,56 @@ func (c *Candidate) Resign() error {
 	c.mu.Lock()
 	if c.state == CandidateStateResigned {
 		c.mu.Unlock()
+		c.logf(true, "Resign() called but we're already resigned")
 		return nil
 	}
-	c.state = CandidateStateResigned
+	if c.state == CandidateStateClosed {
+		c.mu.Unlock()
+		c.logf(false, "Resign() called but we're closed")
+		return nil
+	}
+
+	c.setState(CandidateStateResigned)
+
 	c.mu.Unlock()
 
-	c.logf(false, "Resign() - Leaving election pool...")
-	drop := make(chan error, 1)
-	c.stop <- drop
-	c.logf(true, "Resign() - drop pushed")
-	err := <-drop
-	c.logf(true, "Resign() - drop read")
-	close(drop)
+	return c.waitForResign()
+}
+
+// Close will remove this candidate from the election pool and render it defunct
+func (c *Candidate) Close() error {
+	c.mu.Lock()
+	if c.state == CandidateStateClosed {
+		c.mu.Unlock()
+		c.logf(true, "Closed() called but we're already closed")
+		return nil
+	}
+
+	// set state to closed
+	c.setState(CandidateStateClosed)
+
+	// unlock
+	c.mu.Unlock()
+
+	// wait for resignation
+	err := c.waitForResign()
+
+	// detach all notifiers
+	c.DetachAllNotificationRecipients(false)
+
+	// return any error seen during resignation
 	return err
 }
 
 // buildUpdate constructs a notification update type
 //
-// Caller must hold lock
-func (c *Candidate) buildUpdate() CandidateUpdate {
+// caller must hold lock
+func (c *Candidate) buildUpdate(err error) CandidateUpdate {
 	return CandidateUpdate{
 		ID:      c.id,
 		Elected: c.elected != nil && *c.elected,
 		State:   c.state,
+		Error:   err,
 	}
 }
 
@@ -366,14 +420,51 @@ func (c *Candidate) pushNotification(ev NotificationEvent, up CandidateUpdate) {
 }
 
 func (c *Candidate) logf(debug bool, f string, v ...interface{}) {
-	if c.logger == nil || debug && !c.dbg {
+	if c.log == nil || (debug && !c.dbg) {
 		return
 	}
-	c.logger.Printf(f, v...)
+	c.log.Printf(f, v...)
+}
+
+func (c *Candidate) waitForResign() error {
+	drop := make(chan error, 1)
+	c.stop <- drop
+	err := <-drop
+	close(drop)
+	return err
+}
+
+// setState updates the internal state value and pushes a notification of change
+//
+// caller must hold full lock
+func (c *Candidate) setState(state CandidateState) {
+	var ev NotificationEvent
+
+	if c.state == state {
+		return
+	}
+
+	switch state {
+	case CandidateStateRunning:
+		ev = NotificationEventCandidateRunning
+	case CandidateStateResigned:
+		ev = NotificationEventCandidateResigned
+	case CandidateStateClosed:
+		ev = NotificationEventCandidateClosed
+
+	default:
+		panic(fmt.Sprintf("unkonwn state %d (%[1]s) seen", state))
+	}
+
+	c.state = state
+
+	up := c.buildUpdate(nil)
+
+	c.pushNotification(ev, up)
 }
 
 // acquire will attempt to do just that.  Caller must hold lock!
-func (c *Candidate) acquire(ctx context.Context) (bool, error) {
+func (c *Candidate) acquire() (bool, error) {
 	var (
 		elected bool
 		err     error
@@ -389,18 +480,18 @@ func (c *Candidate) acquire(ctx context.Context) (bool, error) {
 		c.logf(false, "Unable to marshal LeaderKV body: %s", err)
 	}
 
+	ctx, cancel := context.WithTimeout(context.Background(), c.ms.requestTTL)
+	defer cancel()
 	elected, _, err = c.ms.client.KV().Acquire(kvp, c.ms.wo.WithContext(ctx))
 	return elected, err
 }
 
 // refreshLock is responsible for attempting to create / refresh the session lock on the kv
-func (c *Candidate) refreshLock(ctx context.Context) {
+func (c *Candidate) refreshLock() error {
 	var (
 		elected, updated bool
 		err              error
 	)
-
-	c.mu.Lock()
 
 	if c.ms.Running() {
 		// if our session manager is still running
@@ -409,7 +500,7 @@ func (c *Candidate) refreshLock(ctx context.Context) {
 			elected = false
 			updated = c.elected != nil && *c.elected != elected
 			c.logf(false, "refreshLock() - ManagedSession does not exist, will try locking again in %d seconds...", int64(c.ms.RenewInterval().Seconds()))
-		} else if elected, err = c.acquire(ctx); err != nil {
+		} else if elected, err = c.acquire(); err != nil {
 			// most likely hit due to transport error.
 			updated = c.elected != nil && *c.elected != elected
 			c.logf(false, "refreshLock() - Error attempting to acquire lock: %s", err)
@@ -422,7 +513,7 @@ func (c *Candidate) refreshLock(ctx context.Context) {
 		c.logf(false, "refreshLock() - ManagedSession is in stopped state, attempting to restart...")
 		elected = false
 		updated = c.elected != nil && *c.elected != elected
-		if err := c.ms.Run(ctx); err != nil {
+		if err := c.ms.Run(); err != nil {
 			c.logf(false, "refreshLock() - Error restarting ManagedSession: %s", err)
 		}
 	}
@@ -433,10 +524,7 @@ func (c *Candidate) refreshLock(ctx context.Context) {
 		*c.elected = elected
 	}
 
-	up := c.buildUpdate()
-
-	// unlock before attempting to send notifications
-	c.mu.Unlock()
+	up := c.buildUpdate(err)
 
 	// if our state changed, notify accordingly
 	if updated {
@@ -451,6 +539,8 @@ func (c *Candidate) refreshLock(ctx context.Context) {
 		// if we were already elected, push "renewed" notification
 		c.pushNotification(NotificationEventCandidateRenew, up)
 	}
+
+	return err
 }
 
 // sessionUpdate is the receiver for the session update callback
@@ -459,6 +549,9 @@ func (c *Candidate) sessionUpdate(n Notification) {
 	if !c.Running() {
 		return
 	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
 	update, ok := n.Data.(ManagedSessionUpdate)
 	if !ok {
@@ -495,16 +588,14 @@ func (c *Candidate) sessionUpdate(n Notification) {
 	}
 
 	if refresh {
-		ctx, cancel := context.WithTimeout(context.Background(), c.ms.requestTTL)
-		defer cancel()
-		c.refreshLock(ctx)
+		c.logf(false, "sessionUpdate() - refreshing lock")
+		_ = c.refreshLock()
 	}
 }
 
 func (c *Candidate) shutdown() error {
 	var err error
 
-	c.mu.Lock()
 	// only update elected state if we were ever elected in the first place.
 	if c.elected != nil {
 		*c.elected = false
@@ -517,9 +608,6 @@ func (c *Candidate) shutdown() error {
 		c.logf(false, "shutdown() - Error deleting key %q: %s", c.kvKey, err)
 	}
 
-	// unlock for remaining actions
-	c.mu.Unlock()
-
 	c.logf(true, "shutdown() - Stopping managed session...")
 	if err = c.ms.Stop(); err != nil {
 		c.logf(false, "shutdown() - Error stopping candidate managed session (%s): %s", c.ms.ID(), err)
@@ -527,63 +615,35 @@ func (c *Candidate) shutdown() error {
 		c.logf(true, "shutdown() - Managed session stopped")
 	}
 
-	c.mu.RLock()
-	up := c.buildUpdate()
-	c.mu.RUnlock()
-
-	// notify watchers of updated state
-	c.pushNotification(NotificationEventCandidateResigned, up)
-	c.pushNotification(NotificationEventCandidateStopped, up)
-
 	return err
 }
 
 // maintainLock is responsible for triggering the routine that attempts to create / re-acquire the session kv lock
-func (c *Candidate) maintainLock(ctx context.Context) {
+func (c *Candidate) maintainLock() {
 	c.logf(true, "maintainLock() - Starting lock maintenance loop")
 	var (
-		drop       chan error
-		renewTimer *time.Timer
-
 		renewInterval = c.ms.RenewInterval()
+		renewTimer    = time.NewTimer(renewInterval)
 	)
-
-	go func() {
-		<-ctx.Done()
-		c.logf(false, "maintainLock() - Run context completed with: %s", ctx.Err())
-		if err := c.Resign(); err != nil {
-			c.logf(false, "maintainLock() - Error during shutdown: %s", err)
-		}
-	}()
-
-	defer func() {
-		c.logf(false, "maintainLock() - Shutting down")
-		renewTimer.Stop()
-		err := c.shutdown()
-		if drop != nil {
-			drop <- err
-		}
-	}()
-
-	c.mu.RLock()
-	up := c.buildUpdate()
-	c.mu.RUnlock()
-
-	c.pushNotification(NotificationEventCandidateRunning, up)
-
-	// immediately attempt to refresh lock
-	c.refreshLock(ctx)
-	renewTimer = time.NewTimer(renewInterval)
 
 	for {
 		select {
 		case tick := <-renewTimer.C:
 			c.logf(true, "maintainLock() - renewTimer tick (%s)", tick)
-			c.refreshLock(ctx)
+			c.mu.Lock()
+			_ = c.refreshLock()
+			c.mu.Unlock()
 			renewTimer.Reset(renewInterval)
 
-		case drop = <-c.stop:
+		case drop := <-c.stop:
 			c.logf(false, "maintainLock() - stop called")
+			c.mu.Lock()
+			err := c.shutdown()
+			c.mu.Unlock()
+			drop <- err
+			if !renewTimer.Stop() {
+				<-renewTimer.C
+			}
 			return
 		}
 	}

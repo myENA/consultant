@@ -6,7 +6,9 @@ import (
 	"log"
 	"os"
 	"regexp"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/hashicorp/consul/api"
 	cst "github.com/hashicorp/consul/sdk/testutil"
@@ -313,6 +315,95 @@ func TestManagedService(t *testing.T) {
 		} else if removed != 2 {
 			t.Logf("Expected removed to be 2, saw %d", removed)
 			t.Fail()
+		}
+	})
+
+	if t.Failed() {
+		return
+	}
+
+	t.Run("re-register", func(t *testing.T) {
+		var (
+			notesID string
+			err     error
+
+			done  = make(chan struct{})
+			notes = make(consultant.NotificationChannel, 100)
+		)
+
+		notesID, _ = ms.AttachNotificationChannel("", notes)
+		defer func() {
+			ms.DetachNotificationRecipient(notesID)
+			close(notes)
+			if len(notes) > 0 {
+				for range notes {
+				}
+			}
+		}()
+
+		go func() {
+			var missing uint64
+
+			timer := time.NewTimer(30 * time.Second)
+
+			defer close(done)
+
+			for {
+				select {
+				case note := <-notes:
+					t.Logf("notification received: %v", note)
+					switch note.Event {
+					case consultant.NotificationEventManagedServiceMissing:
+						atomic.AddUint64(&missing, 1)
+
+					case consultant.NotificationEventManagedServiceRefreshed:
+						if 0 < atomic.LoadUint64(&missing) {
+							d := note.Data.(consultant.ManagedServiceUpdate)
+							if d.Error != nil {
+								t.Logf("Received error in refresh update after missing: %s", err)
+								t.Fail()
+							} else {
+								ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+								defer cancel()
+								if svc, _, err := ms.AgentService(ctx); err != nil {
+									t.Logf("Error retreiving after missing -> re-register loop: %s", err)
+									t.Fail()
+								} else if svc == nil {
+									t.Log("Service not found after missing -> re-register loop")
+									t.Fail()
+								}
+							}
+							return
+						}
+					}
+				case <-timer.C:
+					t.Log("Service did not refresh within expected interval")
+					t.Fail()
+					return
+				}
+			}
+		}()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		svc, _, err := ms.AgentService(ctx)
+		if err != nil {
+			t.Logf("Error calling .AgentService(): %s", err)
+			t.Fail()
+			return
+		}
+
+		if err := client.Agent().ServiceDeregister(svc.ID); err != nil {
+			t.Logf("Error deregistering service: %s", err)
+			t.Fail()
+			return
+		}
+
+		// wait around for done to happen...
+		<-done
+
+		if t.Failed() {
+			return
 		}
 	})
 }

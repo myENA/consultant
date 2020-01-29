@@ -38,14 +38,21 @@ func (ns NotificationSource) String() string {
 type NotificationEvent uint64
 
 const (
+	// 0 - 127
+
 	NotificationEventManualPush NotificationEvent = 0x0 // sent whenever a manual notification is requested
 	NotificationEventTestPush   NotificationEvent = 0xf // used for testing purposes
+
+	// 128 - 255
 
 	NotificationEventManagedSessionRunning NotificationEvent = 0x80 // sent when session is running
 	NotificationEventManagedSessionStopped NotificationEvent = 0x81 // sent when session is no longer running
 	NotificationEventManagedSessionCreate  NotificationEvent = 0x82 // sent after an attempt to create an upstream consul session
 	NotificationEventManagedSessionRenew   NotificationEvent = 0x83 // sent after a renew attempt on a previously created upstream consul session
 	NotificationEventManagedSessionDestroy NotificationEvent = 0x84 // sent after a destroy attempt on a previously created upstream consul session
+	NotificationEventManagedSessionClosed  NotificationEvent = 0x85 // sent after the managed session has been closed and must be considered defunct
+
+	// 256 - 383
 
 	NotificationEventCandidateRunning      NotificationEvent = 0x100 // sent when candidate enters running
 	NotificationEventCandidateStopped      NotificationEvent = 0x101 // sent when candidate leaves running
@@ -53,12 +60,18 @@ const (
 	NotificationEventCandidateLostElection NotificationEvent = 0x103 // sent when candidate lost election
 	NotificationEventCandidateResigned     NotificationEvent = 0x104 // sent when candidate explicitly "resigns"
 	NotificationEventCandidateRenew        NotificationEvent = 0x105 // sent when candidate was previously elected and attempts to stay elected
+	NotificationEventCandidateClosed       NotificationEvent = 0x106 // sent when candidate has been closed and must be considered defunct
+
+	// 384 - 511
 
 	NotificationEventManagedServiceRunning          NotificationEvent = 0x180 // sent when the service has reached its "running" state
 	NotificationEventManagedServiceStopped          NotificationEvent = 0x181 // sent when the service is considered defunct
 	NotificationEventManagedServiceWatchPlanStarted NotificationEvent = 0x182 // sent when the internal watch plan for the service is running
-	NotificationEventManagedServiceWatchPlanStopped NotificationEvent = 0x182 // sent when the internal watch plan for the service has stopped
-	NotificationEventManagedServiceRefreshed        NotificationEvent = 0x183 // sent when the internal watch plan receives an update
+	NotificationEventManagedServiceWatchPlanStopped NotificationEvent = 0x183 // sent when the internal watch plan for the service has stopped
+	NotificationEventManagedServiceRefreshed        NotificationEvent = 0x184 // sent whenever an attempt is made to refresh the local cache of the service.  only successful if Error is nil.
+	NotificationEventManagedServiceMissing          NotificationEvent = 0x185 // sent when the upstream service is no longer found
+	NotificationEventManagedServiceTagsAdded        NotificationEvent = 0x186 // sent when an add tags attempt is made
+	NotificationEventManagedServiceTagsRemoved      NotificationEvent = 0x187 // sent when a remove tags attempt is made
 )
 
 func (ev NotificationEvent) String() string {
@@ -78,6 +91,8 @@ func (ev NotificationEvent) String() string {
 		return "ManagedSessionRenew"
 	case NotificationEventManagedSessionDestroy:
 		return "ManagedSessionDestroy"
+	case NotificationEventManagedSessionClosed:
+		return "ManagedSessionClosed"
 
 	case NotificationEventCandidateStopped:
 		return "CandidateStopped"
@@ -89,6 +104,25 @@ func (ev NotificationEvent) String() string {
 		return "CandidateResigned"
 	case NotificationEventCandidateRenew:
 		return "CandidateRenew"
+	case NotificationEventCandidateClosed:
+		return "CandidateClosed"
+
+	case NotificationEventManagedServiceRunning:
+		return "ManagedServiceRunning"
+	case NotificationEventManagedServiceStopped:
+		return "ManagedServiceStopped"
+	case NotificationEventManagedServiceWatchPlanStarted:
+		return "ManagedServiceWatchPlanStarted"
+	case NotificationEventManagedServiceWatchPlanStopped:
+		return "ManagedServiceWatchPlanStopped"
+	case NotificationEventManagedServiceRefreshed:
+		return "ManagedServiceRefreshed"
+	case NotificationEventManagedServiceMissing:
+		return "ManagedServiceMissing"
+	case NotificationEventManagedServiceTagsAdded:
+		return "ManagedServiceTagsAdded"
+	case NotificationEventManagedServiceTagsRemoved:
+		return "ManagedServiceTagsRemoved"
 
 	default:
 		return "UNKNOWN_EVENT"
@@ -109,7 +143,7 @@ type Notification struct {
 type NotificationHandler func(Notification)
 
 // NotificationChannel can be provided to a Notifier to have new Notifications pushed to it
-type NotificationChannel chan<- Notification
+type NotificationChannel chan Notification
 
 // Notifier represents a type within Consultant that can push in-process notifications to things.
 type Notifier interface {
@@ -136,17 +170,139 @@ type Notifier interface {
 
 	// DetachAllNotificationRecipients must immediately expunge all registered recipients, returning the count of those
 	// detached
-	DetachAllNotificationRecipients() int
+	//
+	// if wait is true, this method will block until all handlers have been closed
+	DetachAllNotificationRecipients(wait bool) int
+}
+
+type NotifierAttachResult struct {
+	ID        string
+	Overwrote bool
+}
+
+type notifierWorker struct {
+	mu     sync.RWMutex
+	closed bool
+	wg     *sync.WaitGroup
+	id     string
+	in     chan Notification
+	out    chan Notification
+	fn     NotificationHandler
+}
+
+func newNotifierWorker(id string, wg *sync.WaitGroup, fn NotificationHandler) *notifierWorker {
+	nw := new(notifierWorker)
+	nw.in = make(chan Notification, 100)
+	nw.out = make(chan Notification)
+	nw.id = id
+	nw.wg = wg
+	nw.fn = fn
+	go nw.publish()
+	go nw.process()
+	return nw
+}
+
+func (nw *notifierWorker) close() {
+	nw.mu.Lock()
+	nw.closed = true
+	nw.mu.Unlock()
+}
+
+func (nw *notifierWorker) publish() {
+	timer := time.NewTimer(5 * time.Second)
+
+	// queue up func to close then drain ingest channel
+	defer func() {
+		close(nw.in)
+		close(nw.out)
+		if len(nw.in) > 0 {
+			for range nw.in {
+			}
+		}
+		nw.wg.Done()
+	}()
+
+	for {
+		select {
+		case <-timer.C:
+			// test state, if closed exit and do not process any more messages
+			nw.mu.RLock()
+			if nw.closed {
+				nw.mu.RUnlock()
+				return
+			}
+			nw.mu.RUnlock()
+
+			timer.Reset(5 * time.Second)
+
+		case n := <-nw.in:
+			if !timer.Stop() {
+				<-timer.C
+			}
+
+			// todo: it is probably not necessary to test here as if the worker is closed between this notification
+			// being processed and the next notification in, it is removed from the map of available workers to push
+			// to before close == true, meaning it cannot have new messages pushed to it.
+			nw.mu.RLock()
+			if nw.closed {
+				nw.mu.RUnlock()
+				return
+			}
+
+			// attempt to push message to consumer, allowing for up to 5 seconds of blocking
+			// if block window passes, drop on floor
+			waitForConsumer := time.NewTimer(5 * time.Second)
+			select {
+			case nw.out <- n:
+				if !waitForConsumer.Stop() {
+					<-waitForConsumer.C
+				}
+			case <-waitForConsumer.C:
+			}
+
+			timer.Reset(5 * time.Second)
+
+			nw.mu.RUnlock()
+		}
+	}
+}
+
+func (nw *notifierWorker) process() {
+	// nw.out is an unbuffered channel.  it blocks until any preceding notification has been handled by the registered
+	// handler.  it is closed once the publish() loop breaks.
+	for n := range nw.out {
+		nw.fn(n)
+	}
+}
+
+func (nw *notifierWorker) push(n Notification) {
+	// hold an rlock for the duration of the push attempt to ensure that, at a minimum, the message is added to the
+	// channel before it can be closed.
+	nw.mu.RLock()
+	defer nw.mu.RUnlock()
+
+	if nw.closed {
+		return
+	}
+
+	// attempt to push message to ingest chan.  if chan is full, drop on floor
+	select {
+	case nw.in <- n:
+	default:
+	}
 }
 
 type notifierBase struct {
-	mu sync.RWMutex
-	m  map[string]NotificationHandler
+	mu      sync.RWMutex
+	workers map[string]*notifierWorker
+	hr      chan *notifierWorker
+	wg      *sync.WaitGroup
 }
 
-func newNotifierBase() *notifierBase {
+func newNotifierBase(log Logger, debug bool) *notifierBase {
 	nb := new(notifierBase)
-	nb.m = make(map[string]NotificationHandler)
+	nb.workers = make(map[string]*notifierWorker)
+	nb.wg = new(sync.WaitGroup)
 	return nb
 }
 
@@ -155,10 +311,10 @@ type BasicNotifier struct {
 	*notifierBase
 }
 
-// NewBasicNotifier returns a new Notifier bereft of any recipients
-func NewBasicNotifier() *BasicNotifier {
+// NewBasicNotifier returns the default Notifier implementation
+func NewBasicNotifier(log Logger, debug bool) *BasicNotifier {
 	b := new(BasicNotifier)
-	b.notifierBase = newNotifierBase()
+	b.notifierBase = newNotifierBase(log, debug)
 	return b
 }
 
@@ -172,18 +328,46 @@ func (nb *notifierBase) AttachNotificationHandler(id string, fn NotificationHand
 	if fn == nil {
 		panic(fmt.Sprintf("AttachNotificationHandler called with id %q and nil handler", id))
 	}
+	var (
+		w        *notifierWorker
+		replaced bool
+	)
+
 	nb.mu.Lock()
+	defer nb.mu.Unlock()
+
+	nb.wg.Add(1)
+
 	if id == "" {
 		id = LazyRandomString(12)
 	}
-	_, replaced := nb.m[id]
-	nb.m[id] = fn
-	nb.mu.Unlock()
+	w, replaced = nb.workers[id]
+
+	nb.workers[id] = newNotifierWorker(id, nb.wg, fn)
+	if replaced {
+		w.close()
+	}
 	return id, replaced
 }
 
-// AttachNotificationChannel is a convenience method that will push new notifications onto the provided channel as they
-// come in
+// AttachNotificationHandlers allows you to attach 1 or more notification handlers at a time
+func (nb *notifierBase) AttachNotificationHandlers(fns ...NotificationHandler) []NotifierAttachResult {
+	l := len(fns)
+	if l == 0 {
+		return nil
+	}
+
+	results := make([]NotifierAttachResult, l, l)
+	for i, fn := range fns {
+		res := new(NotifierAttachResult)
+		res.ID, res.Overwrote = nb.AttachNotificationHandler("", fn)
+		results[i] = *res
+	}
+
+	return results
+}
+
+// AttachNotificationChannel will register a new channel for notifications to be pushed to
 func (nb *notifierBase) AttachNotificationChannel(id string, ch NotificationChannel) (string, bool) {
 	if ch == nil {
 		panic(fmt.Sprintf("AttachNotificationChannel called with id %q and nil channel", id))
@@ -193,30 +377,67 @@ func (nb *notifierBase) AttachNotificationChannel(id string, ch NotificationChan
 	})
 }
 
+// AttachNotificationChannels will attempt to attach multiple channels at once
+func (nb *notifierBase) AttachNotificationChannels(chs ...NotificationChannel) []NotifierAttachResult {
+	l := len(chs)
+	if l == 0 {
+		return nil
+	}
+
+	results := make([]NotifierAttachResult, l, l)
+	for i, ch := range chs {
+		res := new(NotifierAttachResult)
+		res.ID, res.Overwrote = nb.AttachNotificationChannel("", ch)
+		results[i] = *res
+	}
+
+	return results
+}
+
 // DetachNotificationRecipient immediately removes the provided recipient from receiving any new notifications,
 // returning true if a recipient was found with the provided id
 func (nb *notifierBase) DetachNotificationRecipient(id string) bool {
-	var ok bool
+	var (
+		w  *notifierWorker
+		ok bool
+	)
+
 	nb.mu.Lock()
-	if _, ok = nb.m[id]; ok {
-		delete(nb.m, id)
+	defer nb.mu.Unlock()
+
+	if w, ok = nb.workers[id]; ok {
+		w.close()
 	}
-	nb.mu.Unlock()
+	delete(nb.workers, id)
+
 	return ok
 }
 
 // DetachAllNotificationRecipients immediately clears all attached recipients, returning the count of those previously
 // attached.
-func (nb *notifierBase) DetachAllNotificationRecipients() int {
+func (nb *notifierBase) DetachAllNotificationRecipients(wait bool) int {
 	nb.mu.Lock()
-	cnt := len(nb.m)
-	nb.m = make(map[string]NotificationHandler)
+
+	cnt := len(nb.workers)
+	current := nb.workers
+	nb.workers = make(map[string]*notifierWorker)
+
 	nb.mu.Unlock()
+
+	go func() {
+		for _, w := range current {
+			w.close()
+		}
+	}()
+
+	if wait {
+		nb.wg.Wait()
+	}
+
 	return cnt
 }
 
 // sendNotification immediately calls each handler with the new notification
-// TODO: handle cases were fn blocks forever?
 func (nb *notifierBase) sendNotification(s NotificationSource, ev NotificationEvent, d interface{}) {
 	n := Notification{
 		ID:         LazyRandomString(64),
@@ -226,8 +447,8 @@ func (nb *notifierBase) sendNotification(s NotificationSource, ev NotificationEv
 		Data:       d,
 	}
 	nb.mu.RLock()
-	for _, fn := range nb.m {
-		fn(n)
+	for _, w := range nb.workers {
+		w.push(n)
 	}
 	nb.mu.RUnlock()
 }

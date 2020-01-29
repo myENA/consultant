@@ -126,7 +126,11 @@ func NewManagedService(ctx context.Context, cfg *ManagedServiceConfig) (*Managed
 		ms = new(ManagedService)
 	)
 
-	ms.notifierBase = newNotifierBase()
+	// maybe logger
+	ms.dbg = cfg.Debug
+	ms.logger = cfg.Logger
+
+	ms.notifierBase = newNotifierBase(ms.logger, ms.dbg)
 
 	if cfg == nil {
 		return nil, errors.New("cfg cannot be nil")
@@ -176,10 +180,6 @@ func NewManagedService(ctx context.Context, cfg *ManagedServiceConfig) (*Managed
 	} else {
 		ms.refreshInterval = time.Duration(ServiceDefaultRefreshInterval)
 	}
-
-	// maybe log
-	ms.dbg = cfg.Debug
-	ms.logger = cfg.Logger
 
 	// misc
 	ms.ctx, ms.cancel = context.WithCancel(ctx)
@@ -307,8 +307,8 @@ func (ms *ManagedService) AddTags(tags ...string) (int, error) {
 
 	ms.logf(true, "AddTags() - Adding tags %v to service %q...", tags, ms.serviceID)
 	if len(tags) == 0 {
-		ms.mu.RUnlock()
 		ms.logf(true, "AddTags() - Empty tag set provided")
+		ms.mu.RUnlock()
 		return 0, nil
 	}
 
@@ -323,9 +323,17 @@ func (ms *ManagedService) AddTags(tags ...string) (int, error) {
 		added = 0
 	}
 
+	up := ms.buildUpdate(err)
+
 	ms.mu.RUnlock()
 
-	return added, ms.ForceRefresh()
+	ms.pushNotification(NotificationEventManagedServiceTagsAdded, up)
+
+	if err == nil {
+		err = ms.ForceRefresh()
+	}
+
+	return added, err
 }
 
 // RemoveTags attempts to remove one or more tags from the service registration in consul, if and only if
@@ -367,9 +375,17 @@ func (ms *ManagedService) RemoveTags(tags ...string) (int, error) {
 		removed = 0
 	}
 
+	up := ms.buildUpdate(err)
+
 	ms.mu.RUnlock()
 
-	return removed, ms.ForceRefresh()
+	ms.pushNotification(NotificationEventManagedServiceTagsRemoved, up)
+
+	if err == nil {
+		err = ms.ForceRefresh()
+	}
+
+	return removed, err
 }
 
 // ForceRefresh attempts an immediate internal state refresh, blocking until attempt has been completed.
@@ -469,19 +485,26 @@ func (ms *ManagedService) refreshService(ctx context.Context) (*api.QueryMeta, e
 	if svc, qm, err = ms.AgentService(ctx); err != nil {
 		if IsNotFoundError(err) {
 			ms.logf(false, "refreshService() - Received 404 not found, attempting to re-register...")
+
+			ms.mu.RLock()
+			up = ms.buildUpdate(err)
+			ms.mu.RUnlock()
+			ms.pushNotification(NotificationEventManagedServiceMissing, up)
+
 			if err = ms.registerService(true, ms.svc.Tags); err != nil {
 				ms.logf(false, "refreshService() - Failed to re-register service: %s")
-				ms.mu.RLock()
-				up = ms.buildUpdate(err)
-				ms.mu.RUnlock()
 			} else {
 				ms.logf(false, "refreshService() - Service successfully re-registered")
+				svc, _, err = ms.AgentService(ctx)
 			}
+
 		} else {
 			ms.logf(false, "refreshService() - Error fetching service from node: %s", err)
 			ms.mu.RLock()
 			up = ms.buildUpdate(err)
 			ms.mu.RUnlock()
+
+			ms.pushNotification(NotificationEventManagedServiceRefreshed, up)
 		}
 	}
 
@@ -495,9 +518,9 @@ func (ms *ManagedService) refreshService(ctx context.Context) (*api.QueryMeta, e
 		up = ms.buildUpdate(nil)
 
 		ms.mu.Unlock()
-	}
 
-	ms.pushNotification(NotificationEventManagedServiceRefreshed, up)
+		ms.pushNotification(NotificationEventManagedServiceRefreshed, up)
+	}
 
 	return qm, err
 }

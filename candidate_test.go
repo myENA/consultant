@@ -93,14 +93,14 @@ func TestNewCandidate(t *testing.T) {
 }
 
 func TestCandidate_Run(t *testing.T) {
-	testRun := func(t *testing.T, ctx context.Context, cand *consultant.Candidate, testAsLeader bool) {
+	testRun := func(t *testing.T, cand *consultant.Candidate, testAsLeader bool) {
 		if !cand.Running() {
 			t.Log("Expected candidate to be running")
 			t.Fail()
 			return
 		}
 
-		ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		if err := cand.WaitUntil(ctx); err != nil {
 			t.Logf("Candidate election cycle took longer than expected to complete: %s", err)
@@ -172,19 +172,16 @@ func TestCandidate_Run(t *testing.T) {
 		server.WaitForSerfCheck(t)
 		server.WaitForLeader(t)
 
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-
 		cand := newCandidateWithServerAndClient(t, nil, server, client)
 		defer cand.Resign()
 
-		if err := cand.Run(ctx); err != nil {
+		if err := cand.Run(); err != nil {
 			t.Logf("Error calling candidate.Run: %s", err)
 			t.Fail()
 			return
 		}
 
-		testRun(t, ctx, cand, true)
+		testRun(t, cand, true)
 	})
 
 	t.Run("single-auto-start", func(t *testing.T) {
@@ -193,16 +190,13 @@ func TestCandidate_Run(t *testing.T) {
 		server.WaitForSerfCheck(t)
 		server.WaitForLeader(t)
 
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-
 		cfg := new(consultant.CandidateConfig)
-		cfg.StartImmediately = ctx
+		cfg.StartImmediately = true
 
 		cand := newCandidateWithServerAndClient(t, cfg, server, client)
 		defer cand.Resign()
 
-		testRun(t, ctx, cand, true)
+		testRun(t, cand, true)
 	})
 
 	t.Run("typical", func(t *testing.T) {
@@ -223,11 +217,8 @@ func TestCandidate_Run(t *testing.T) {
 		server.WaitForSerfCheck(t)
 		server.WaitForLeader(t)
 
-		runCTX, cancel := context.WithTimeout(context.Background(), time.Minute)
-		defer cancel()
-
 		makeCandidate := func(t *testing.T, cfg *consultant.CandidateConfig) *consultant.Candidate {
-			cfg.StartImmediately = runCTX
+			cfg.StartImmediately = true
 			return newCandidateWithServerAndClient(t, cfg, server, client)
 		}
 
@@ -298,9 +289,9 @@ func TestCandidate_Run(t *testing.T) {
 		t.Run("state-sane", func(t *testing.T) {
 			for _, cand := range cands {
 				if leaderCandidate == *cand {
-					testRun(t, runCTX, *cand, true)
+					testRun(t, *cand, true)
 				} else {
-					testRun(t, runCTX, *cand, false)
+					testRun(t, *cand, false)
 				}
 			}
 		})
@@ -339,14 +330,11 @@ func TestCandidate_Run(t *testing.T) {
 
 		wg.Add(3)
 
-		runCTX2, cancel := context.WithTimeout(context.Background(), time.Minute)
-		defer cancel()
-
 		t.Run("candidate-restart", func(t *testing.T) {
 			for _, cand := range cands {
 				go func(cand *consultant.Candidate) {
 					defer wg.Done()
-					if err := cand.Run(runCTX2); err != nil {
+					if err := cand.Run(); err != nil {
 						t.Logf("Error re-entering candidate %q into election pool: %s", cand.ID(), err)
 						t.FailNow()
 					} else if err := cand.Wait(); err != nil {
@@ -371,16 +359,13 @@ func TestCandidate_Run(t *testing.T) {
 		server.WaitForSerfCheck(t)
 		server.WaitForLeader(t)
 
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-
 		cfg := new(consultant.CandidateConfig)
-		cfg.StartImmediately = ctx
+		cfg.StartImmediately = true
 
 		cand := newCandidateWithServerAndClient(t, cfg, server, client)
 		defer cand.Resign()
 
-		testRun(t, ctx, cand, true)
+		testRun(t, cand, true)
 
 		sid := cand.Session().ID()
 
@@ -396,6 +381,6 @@ func TestCandidate_Run(t *testing.T) {
 			return
 		}
 
-		testRun(t, ctx, cand, true)
+		testRun(t, cand, true)
 	})
 }

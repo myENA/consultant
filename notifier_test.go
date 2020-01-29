@@ -1,8 +1,12 @@
 package consultant_test
 
 import (
+	"log"
+	"os"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/myENA/consultant/v2"
 )
@@ -31,7 +35,7 @@ func TestNotifierBase_AttachNotificationHandler(t *testing.T) {
 					t.Fail()
 				}
 			}()
-			ms := consultant.NewBasicNotifier()
+			ms := consultant.NewBasicNotifier(log.New(os.Stdout, "==> Notifier ", log.LstdFlags), true)
 			id, replaced := ms.AttachNotificationHandler(setup.id, setup.fn)
 			if setup.id == "" {
 				if id == "" {
@@ -52,7 +56,7 @@ func TestNotifierBase_AttachNotificationHandler(t *testing.T) {
 func TestNotifierBase_DetachNotificationRecipient(t *testing.T) {
 	t.Run("empty", func(t *testing.T) {
 		t.Parallel()
-		nt := consultant.NewBasicNotifier()
+		nt := consultant.NewBasicNotifier(log.New(os.Stdout, "==> Notifier ", log.LstdFlags), true)
 		if ok := nt.DetachNotificationRecipient("whatever"); ok {
 			t.Log("Expected false, saw true")
 			t.Fail()
@@ -63,22 +67,21 @@ func TestNotifierBase_DetachNotificationRecipient(t *testing.T) {
 func TestNotifierBase_DetachAllNotificationRecipients(t *testing.T) {
 	t.Run("empty", func(t *testing.T) {
 		t.Parallel()
-		nt := consultant.NewBasicNotifier()
-		if cnt := nt.DetachAllNotificationRecipients(); cnt != 0 {
+		nt := consultant.NewBasicNotifier(log.New(os.Stdout, "==> Notifier ", log.LstdFlags), true)
+		if cnt := nt.DetachAllNotificationRecipients(true); cnt != 0 {
 			t.Logf("Expected 0, saw %d", cnt)
 			t.Fail()
 		}
 	})
 }
 
-func TestNewBasicNotifier(t *testing.T) {
+func TestBasicNotifier(t *testing.T) {
 	t.Run("basic", func(t *testing.T) {
 		t.Parallel()
 
 		var (
 			ti        int
 			wg        *sync.WaitGroup
-			ids       [4]string
 			respMu    sync.Mutex
 			responses map[string]interface{}
 			tests     map[string]struct {
@@ -86,13 +89,14 @@ func TestNewBasicNotifier(t *testing.T) {
 				ch chan consultant.Notification
 			}
 
-			bn = consultant.NewBasicNotifier()
+			bn = consultant.NewBasicNotifier(log.New(os.Stdout, "==> Notifier ", log.LstdFlags), true)
 		)
+
+		defer bn.DetachAllNotificationRecipients(false)
 
 		wg = new(sync.WaitGroup)
 		wg.Add(4)
 
-		ids = [4]string{}
 		responses = make(map[string]interface{}, 4)
 
 		tests = map[string]struct {
@@ -123,22 +127,24 @@ func TestNewBasicNotifier(t *testing.T) {
 		defer close(tests["ch2"].ch)
 
 		for name, setup := range tests {
+			var id string
 			if setup.ch != nil {
-				ids[ti], _ = bn.AttachNotificationChannel("", setup.ch)
-				go func(name string, ch chan consultant.Notification) {
+				id, _ = bn.AttachNotificationChannel("", setup.ch)
+				go func(name string, ch chan consultant.Notification, id string) {
 					n := <-ch
 					respMu.Lock()
 					responses[name] = n.Data
 					respMu.Unlock()
 					wg.Done()
-				}(name, setup.ch)
+					bn.DetachNotificationRecipient(id)
+				}(name, setup.ch, id)
 			} else if setup.fn != nil {
-				ids[ti], _ = bn.AttachNotificationHandler("", setup.fn)
+				id, _ = bn.AttachNotificationHandler("", setup.fn)
 			} else {
 				t.Fatalf("Test %q has no ch or fn defined", name)
 				return
 			}
-			t.Logf("%s attached with id %q", name, ids[ti])
+			t.Logf("%s attached with id %q", name, id)
 			ti++
 		}
 
@@ -155,5 +161,61 @@ func TestNewBasicNotifier(t *testing.T) {
 				t.Fail()
 			}
 		}
+	})
+
+	t.Run("blocking", func(t *testing.T) {
+		t.Parallel()
+
+		var (
+			fn1cnt uint64
+			fn2cnt uint64
+			fn3cnt uint64
+
+			fn1 consultant.NotificationHandler
+			fn2 consultant.NotificationHandler
+			fn3 consultant.NotificationHandler
+
+			wg = new(sync.WaitGroup)
+			bn = consultant.NewBasicNotifier(log.New(os.Stdout, "==> Notifier ", log.LstdFlags), true)
+		)
+
+		wg.Add(3)
+
+		fn1 = func(n consultant.Notification) {
+			atomic.AddUint64(&fn1cnt, 1)
+			wg.Done()
+		}
+		fn2 = func(n consultant.Notification) {
+			atomic.AddUint64(&fn2cnt, 1)
+			time.Sleep(time.Second)
+		}
+		fn3 = func(n consultant.Notification) {
+			atomic.AddUint64(&fn3cnt, 1)
+			time.Sleep(5 * time.Second)
+		}
+
+		bn.AttachNotificationHandlers(fn1, fn2, fn3)
+
+		go func() {
+			for i := 0; i < 3; i++ {
+				bn.Push(consultant.NotificationSourceTest, consultant.NotificationEventTestPush, i)
+			}
+		}()
+
+		wg.Wait()
+
+		final1, final2, final3 := atomic.LoadUint64(&fn1cnt), atomic.LoadUint64(&fn2cnt), atomic.LoadUint64(&fn3cnt)
+
+		if final1 != 3 {
+			t.Logf("Expected first handler to be called 3 times, saw %d", final1)
+			t.Fail()
+		}
+
+		if final1 <= final2 || final1 <= final3 {
+			t.Logf("Expected first handler to be called more times than 2nd or 3rd, saw: %d %d %d", final1, final2, final3)
+			t.Fail()
+		}
+
+		bn.DetachAllNotificationRecipients(true)
 	})
 }

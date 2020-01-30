@@ -45,12 +45,12 @@ const (
 
 	// 128 - 255
 
-	NotificationEventManagedSessionRunning NotificationEvent = 0x80 // sent when session is running
-	NotificationEventManagedSessionStopped NotificationEvent = 0x81 // sent when session is no longer running
-	NotificationEventManagedSessionCreate  NotificationEvent = 0x82 // sent after an attempt to create an upstream consul session
-	NotificationEventManagedSessionRenew   NotificationEvent = 0x83 // sent after a renew attempt on a previously created upstream consul session
-	NotificationEventManagedSessionDestroy NotificationEvent = 0x84 // sent after a destroy attempt on a previously created upstream consul session
-	NotificationEventManagedSessionClosed  NotificationEvent = 0x85 // sent after the managed session has been closed and must be considered defunct
+	NotificationEventManagedSessionRunning    NotificationEvent = 0x80 // sent when session is running
+	NotificationEventManagedSessionStopped    NotificationEvent = 0x81 // sent when session is no longer running
+	NotificationEventManagedSessionCreate     NotificationEvent = 0x82 // sent after an attempt to create an upstream consul session
+	NotificationEventManagedSessionRenew      NotificationEvent = 0x83 // sent after a renew attempt on a previously created upstream consul session
+	NotificationEventManagedSessionDestroy    NotificationEvent = 0x84 // sent after a destroy attempt on a previously created upstream consul session
+	NotificationEventManagedSessionShutdowned NotificationEvent = 0x85 // sent after the managed session has been closed and must be considered defunct
 
 	// 256 - 383
 
@@ -60,7 +60,7 @@ const (
 	NotificationEventCandidateLostElection NotificationEvent = 0x103 // sent when candidate lost election
 	NotificationEventCandidateResigned     NotificationEvent = 0x104 // sent when candidate explicitly "resigns"
 	NotificationEventCandidateRenew        NotificationEvent = 0x105 // sent when candidate was previously elected and attempts to stay elected
-	NotificationEventCandidateClosed       NotificationEvent = 0x106 // sent when candidate has been closed and must be considered defunct
+	NotificationEventCandidateShutdowned   NotificationEvent = 0x106 // sent when candidate has been closed and must be considered defunct
 
 	// 384 - 511
 
@@ -72,6 +72,7 @@ const (
 	NotificationEventManagedServiceMissing          NotificationEvent = 0x185 // sent when the upstream service is no longer found
 	NotificationEventManagedServiceTagsAdded        NotificationEvent = 0x186 // sent when an add tags attempt is made
 	NotificationEventManagedServiceTagsRemoved      NotificationEvent = 0x187 // sent when a remove tags attempt is made
+	NotificationEventManagedServiceShutdowned       NotificationEvent = 0x188 // sent when managed service has been closed and must be considered defunct
 )
 
 func (ev NotificationEvent) String() string {
@@ -91,8 +92,8 @@ func (ev NotificationEvent) String() string {
 		return "ManagedSessionRenew"
 	case NotificationEventManagedSessionDestroy:
 		return "ManagedSessionDestroy"
-	case NotificationEventManagedSessionClosed:
-		return "ManagedSessionClosed"
+	case NotificationEventManagedSessionShutdowned:
+		return "ManagedSessionShutdowned"
 
 	case NotificationEventCandidateStopped:
 		return "CandidateStopped"
@@ -104,8 +105,8 @@ func (ev NotificationEvent) String() string {
 		return "CandidateResigned"
 	case NotificationEventCandidateRenew:
 		return "CandidateRenew"
-	case NotificationEventCandidateClosed:
-		return "CandidateClosed"
+	case NotificationEventCandidateShutdowned:
+		return "CandidateShutdowned"
 
 	case NotificationEventManagedServiceRunning:
 		return "ManagedServiceRunning"
@@ -123,9 +124,11 @@ func (ev NotificationEvent) String() string {
 		return "ManagedServiceTagsAdded"
 	case NotificationEventManagedServiceTagsRemoved:
 		return "ManagedServiceTagsRemoved"
+	case NotificationEventManagedServiceShutdowned:
+		return "ManagedServiceShutdowned"
 
 	default:
-		return "UNKNOWN_EVENT"
+		return "UNKNOWN"
 	}
 }
 
@@ -219,10 +222,16 @@ func (nw *notifierWorker) publish() {
 			for range nw.in {
 			}
 		}
-		nw.wg.Done()
 	}()
 
 	for {
+		nw.mu.RLock()
+		if nw.closed {
+			nw.mu.RUnlock()
+			return
+		}
+		nw.mu.RUnlock()
+
 		select {
 		case <-timer.C:
 			// test state, if closed exit and do not process any more messages
@@ -273,6 +282,9 @@ func (nw *notifierWorker) process() {
 	for n := range nw.out {
 		nw.fn(n)
 	}
+
+	// mark done only after nw.out loop has exited
+	nw.wg.Done()
 }
 
 func (nw *notifierWorker) push(n Notification) {

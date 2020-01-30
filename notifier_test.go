@@ -35,8 +35,9 @@ func TestNotifierBase_AttachNotificationHandler(t *testing.T) {
 					t.Fail()
 				}
 			}()
-			ms := consultant.NewBasicNotifier(log.New(os.Stdout, "==> Notifier ", log.LstdFlags), true)
-			id, replaced := ms.AttachNotificationHandler(setup.id, setup.fn)
+			bn := consultant.NewBasicNotifier(log.New(os.Stdout, "==> Notifier ", log.LstdFlags), true)
+			defer bn.DetachAllNotificationRecipients(false)
+			id, replaced := bn.AttachNotificationHandler(setup.id, setup.fn)
 			if setup.id == "" {
 				if id == "" {
 					t.Log("Expected random ID to be created, saw empty string")
@@ -56,8 +57,8 @@ func TestNotifierBase_AttachNotificationHandler(t *testing.T) {
 func TestNotifierBase_DetachNotificationRecipient(t *testing.T) {
 	t.Run("empty", func(t *testing.T) {
 		t.Parallel()
-		nt := consultant.NewBasicNotifier(log.New(os.Stdout, "==> Notifier ", log.LstdFlags), true)
-		if ok := nt.DetachNotificationRecipient("whatever"); ok {
+		bn := consultant.NewBasicNotifier(log.New(os.Stdout, "==> Notifier ", log.LstdFlags), true)
+		if ok := bn.DetachNotificationRecipient("whatever"); ok {
 			t.Log("Expected false, saw true")
 			t.Fail()
 		}
@@ -67,8 +68,8 @@ func TestNotifierBase_DetachNotificationRecipient(t *testing.T) {
 func TestNotifierBase_DetachAllNotificationRecipients(t *testing.T) {
 	t.Run("empty", func(t *testing.T) {
 		t.Parallel()
-		nt := consultant.NewBasicNotifier(log.New(os.Stdout, "==> Notifier ", log.LstdFlags), true)
-		if cnt := nt.DetachAllNotificationRecipients(true); cnt != 0 {
+		bn := consultant.NewBasicNotifier(log.New(os.Stdout, "==> Notifier ", log.LstdFlags), true)
+		if cnt := bn.DetachAllNotificationRecipients(true); cnt != 0 {
 			t.Logf("Expected 0, saw %d", cnt)
 			t.Fail()
 		}

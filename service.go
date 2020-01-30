@@ -15,6 +15,28 @@ import (
 	"github.com/myENA/go-helpers"
 )
 
+type ManagedServiceState uint8
+
+const (
+	ManagedServiceStateStopped    ManagedServiceState = 0x20
+	ManagedServiceStateRunning    ManagedServiceState = 0x21
+	ManagedServiceStateShutdowned ManagedServiceState = 0x22
+)
+
+func (s ManagedServiceState) String() string {
+	switch s {
+	case ManagedServiceStateRunning:
+		return "running"
+	case ManagedServiceStateStopped:
+		return "stopped"
+	case ManagedServiceStateShutdowned:
+		return "shutdowned"
+
+	default:
+		return "UNKNOWN"
+	}
+}
+
 const (
 	ServiceDefaultIDFormat        = SlugName + "-" + SlugAddr + "-" + SlugRand
 	ServiceDefaultRefreshInterval = api.ReadableDuration(30 * time.Second)
@@ -90,8 +112,7 @@ type ManagedService struct {
 	*notifierBase
 	mu sync.RWMutex
 
-	ctx    context.Context
-	cancel context.CancelFunc
+	state ManagedServiceState
 
 	serviceID  string
 	baseChecks api.AgentServiceChecks
@@ -112,14 +133,14 @@ type ManagedService struct {
 	wo     *api.WriteOptions
 	rttl   time.Duration
 
-	done chan struct{}
+	stop chan chan error
 
 	dbg    bool
 	logger Logger
 }
 
 // NewManagedService creates a new ManagedService instance.
-func NewManagedService(ctx context.Context, cfg *ManagedServiceConfig) (*ManagedService, error) {
+func NewManagedService(cfg *ManagedServiceConfig) (*ManagedService, error) {
 	var (
 		err error
 
@@ -145,11 +166,6 @@ func NewManagedService(ctx context.Context, cfg *ManagedServiceConfig) (*Managed
 		copy(ms.baseChecks, cfg.BaseChecks)
 	} else {
 		ms.baseChecks = make(api.AgentServiceChecks, 0, 0)
-	}
-
-	// ensure we have a context of some kind
-	if ctx == nil {
-		ctx = context.Background()
 	}
 
 	// store service id
@@ -182,25 +198,45 @@ func NewManagedService(ctx context.Context, cfg *ManagedServiceConfig) (*Managed
 	}
 
 	// misc
-	ms.ctx, ms.cancel = context.WithCancel(ctx)
 	if cfg.RequestTTL > 0 {
 		ms.rttl = cfg.RequestTTL
 	} else {
 		ms.rttl = defaultInternalRequestTTL
 	}
 	ms.forceRefresh = make(chan chan error)
-	ms.done = make(chan struct{})
+	ms.stop = make(chan chan error)
 
 	// fetch initial service state from node
-	ctx, cancel := context.WithTimeout(ms.ctx, ms.rttl)
+	ctx, cancel := context.WithTimeout(context.Background(), ms.rttl)
 	defer cancel()
 	if _, err = ms.refreshService(ctx); err != nil {
 		return nil, fmt.Errorf("error fetching current state of service: %s", err)
 	}
 
-	go ms.maintain()
+	return ms, ms.Register()
+}
 
-	return ms, nil
+// State returns the current state of this managed service
+func (ms *ManagedService) State() ManagedServiceState {
+	ms.mu.RLock()
+	s := ms.state
+	ms.mu.RUnlock()
+	return s
+}
+
+// Running returns true if state is "running"
+func (ms *ManagedService) Running() bool {
+	return ms.State() == ManagedServiceStateRunning
+}
+
+// Stopped returns true if state is "stopped"
+func (ms *ManagedService) Stopped() bool {
+	return ms.State() == ManagedServiceStateStopped
+}
+
+// Shutdowned returns true if state is "stopped"
+func (ms *ManagedService) Shutdowned() bool {
+	return ms.State() == ManagedServiceStateShutdowned
 }
 
 // LastRefreshed is the last time the internal state of the managed service was last updated
@@ -211,18 +247,11 @@ func (ms *ManagedService) LastRefreshed() time.Time {
 	return lr
 }
 
-// Done returns the internal context .Done chan
-func (ms *ManagedService) Done() <-chan struct{} {
-	return ms.ctx.Done()
-}
-
-// Err returns the current error of the internal context
-func (ms *ManagedService) Err() error {
-	return ms.ctx.Err()
-}
-
 // ServiceID returns the ID of the service being managed
 func (ms *ManagedService) ServiceID() string {
+	if !ms.Running() {
+		return ""
+	}
 	ms.mu.RLock()
 	id := ms.svc.ID
 	ms.mu.RUnlock()
@@ -231,34 +260,111 @@ func (ms *ManagedService) ServiceID() string {
 
 // ServiceName returns the name of the service being managed
 func (ms *ManagedService) ServiceName() string {
+	if !ms.Running() {
+		return ""
+	}
 	ms.mu.RLock()
 	name := ms.svc.Service
 	ms.mu.RUnlock()
 	return name
 }
 
-// Deregister stops the internal context, ceasing all operations chained from it and blocking until the service has been
-// deregistered from the connected agent.
-func (ms *ManagedService) Deregister() {
-	if err := ms.Err(); err == nil {
-		ms.cancel()
-		<-ms.done
-		return
+// Register can be used to re-start this managed service instance if it was previously deregistered
+func (ms *ManagedService) Register() error {
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
+
+	if ms.state == ManagedServiceStateRunning {
+		ms.logf(true, "Register() called but we're already running")
+		return nil
 	}
+
+	if ms.state == ManagedServiceStateShutdowned {
+		ms.logf(false, "Register() called but we're shutdowned")
+		return errors.New("managed service is shutdowned")
+	}
+
+	ms.setState(ManagedServiceStateRunning)
+
+	go ms.maintain()
+
+	return nil
+}
+
+// Deregister stops internal maintenance routines and removes the managed service from the connected consul agent
+func (ms *ManagedService) Deregister() error {
+	ms.mu.Lock()
+
+	if ms.state == ManagedServiceStateStopped {
+		ms.mu.Unlock()
+		ms.logf(true, "Deregister() called but we're already deregistered")
+		return nil
+	}
+
+	if ms.state == ManagedServiceStateShutdowned {
+		ms.mu.Unlock()
+		ms.logf(false, "Deregister() called but we're shutdown")
+		return errors.New("managed service is shutdowned")
+	}
+
+	ms.setState(ManagedServiceStateStopped)
+
+	ms.mu.Unlock()
+
+	return ms.waitForStop()
+}
+
+// Shutdown stops internal maintenance routines and removes the managed service from the connected consul agent.  Once
+// shutdown, the managed service is considered defunct.
+func (ms *ManagedService) Shutdown() error {
+	ms.mu.Lock()
+	if ms.state == ManagedServiceStateShutdowned {
+		ms.mu.Unlock()
+		ms.logf(true, "Shutdown() called but we're already shutdown")
+		return nil
+	}
+
+	var (
+		err error
+
+		// do we need to perform stop action(s)?
+		requiresStop = ms.state == ManagedServiceStateRunning
+	)
+
+	// set state and notify recipients
+	ms.setState(ManagedServiceStateShutdowned)
+
+	ms.mu.Unlock()
+
+	// if stopping is required, do so.
+	if requiresStop {
+		err = ms.waitForStop()
+	}
+
+	// remove all notification recipients
+	ms.DetachAllNotificationRecipients(true)
+
+	// close chans
+	ms.mu.Lock()
+	close(ms.forceRefresh)
+	close(ms.stop)
+	ms.mu.Unlock()
+
+	return err
 }
 
 // AgentService attempts to fetch the current AgentService entry for this ManagedService using Agent().Service()
 func (ms *ManagedService) AgentService(ctx context.Context) (*api.AgentService, *api.QueryMeta, error) {
-	if err := ms.Err(); err != nil {
-		return nil, nil, err
+	if !ms.Running() {
+		return nil, nil, errors.New("managed service is not running")
 	}
-	return ms.client.Agent().Service(ms.serviceID, ms.qo.WithContext(ctx))
+	return ms.findAgentService(ctx)
 }
 
 // ServiceEntry attempts to fetch the current ServiceEntry entry for this ManagedService using Health().Service()
 func (ms *ManagedService) ServiceEntry(ctx context.Context) (*api.ServiceEntry, *api.QueryMeta, error) {
-	if err := ms.Err(); err != nil {
-		return nil, nil, err
+	if !ms.Running() {
+		return nil, nil, errors.New("managed service is not running")
 	}
 	ms.mu.RLock()
 	defer ms.mu.RUnlock()
@@ -267,8 +373,8 @@ func (ms *ManagedService) ServiceEntry(ctx context.Context) (*api.ServiceEntry, 
 
 // CatalogService attempts to fetch the current CatalogService entry for this ManagedService using Catalog().Service()
 func (ms *ManagedService) CatalogService(ctx context.Context) (*api.CatalogService, *api.QueryMeta, error) {
-	if err := ms.Err(); err != nil {
-		return nil, nil, err
+	if !ms.Running() {
+		return nil, nil, errors.New("managed service is not running")
 	}
 	ms.mu.RLock()
 	defer ms.mu.RUnlock()
@@ -277,8 +383,8 @@ func (ms *ManagedService) CatalogService(ctx context.Context) (*api.CatalogServi
 
 // Checks returns a list of all the checks registered to this specific service
 func (ms *ManagedService) Checks(ctx context.Context) (api.HealthChecks, *api.QueryMeta, error) {
-	if err := ms.Err(); err != nil {
-		return nil, nil, err
+	if !ms.Running() {
+		return nil, nil, errors.New("managed service is not running")
 	}
 	ms.mu.RLock()
 	defer ms.mu.RUnlock()
@@ -294,8 +400,8 @@ func (ms *ManagedService) Checks(ctx context.Context) (api.HealthChecks, *api.Qu
 //
 // If no tags were provided or the provided list of tags are already present on the service a 0, nil will be returned.
 func (ms *ManagedService) AddTags(tags ...string) (int, error) {
-	if err := ms.Err(); err != nil {
-		return 0, err
+	if !ms.Running() {
+		return 0, errors.New("managed service is not running")
 	}
 
 	ms.mu.RLock()
@@ -323,11 +429,9 @@ func (ms *ManagedService) AddTags(tags ...string) (int, error) {
 		added = 0
 	}
 
-	up := ms.buildUpdate(err)
+	ms.pushNotification(NotificationEventManagedServiceTagsAdded, ms.buildUpdate(err))
 
 	ms.mu.RUnlock()
-
-	ms.pushNotification(NotificationEventManagedServiceTagsAdded, up)
 
 	if err == nil {
 		err = ms.ForceRefresh()
@@ -345,8 +449,8 @@ func (ms *ManagedService) AddTags(tags ...string) (int, error) {
 //
 // If no tags were provided or none of the tags in the list were present on the service, a 0, nil will be returned.
 func (ms *ManagedService) RemoveTags(tags ...string) (int, error) {
-	if err := ms.Err(); err != nil {
-		return 0, err
+	if !ms.Running() {
+		return 0, errors.New("managed service is not running")
 	}
 
 	ms.mu.RLock()
@@ -375,11 +479,9 @@ func (ms *ManagedService) RemoveTags(tags ...string) (int, error) {
 		removed = 0
 	}
 
-	up := ms.buildUpdate(err)
+	ms.pushNotification(NotificationEventManagedServiceTagsRemoved, ms.buildUpdate(err))
 
 	ms.mu.RUnlock()
-
-	ms.pushNotification(NotificationEventManagedServiceTagsRemoved, up)
 
 	if err == nil {
 		err = ms.ForceRefresh()
@@ -390,8 +492,8 @@ func (ms *ManagedService) RemoveTags(tags ...string) (int, error) {
 
 // ForceRefresh attempts an immediate internal state refresh, blocking until attempt has been completed.
 func (ms *ManagedService) ForceRefresh() error {
-	if err := ms.Err(); err != nil {
-		return err
+	if !ms.Running() {
+		return errors.New("managed service is not running")
 	}
 	ms.logf(true, "ForceRefresh() - request received...")
 	ch := make(chan error, 1)
@@ -402,7 +504,7 @@ func (ms *ManagedService) ForceRefresh() error {
 
 // buildUpdate constructs a notification update type
 //
-// Caller must hold lock
+// caller must hold lock
 func (ms *ManagedService) buildUpdate(err error) ManagedServiceUpdate {
 	return ManagedServiceUpdate{
 		ServiceID:     ms.svc.ID,
@@ -418,11 +520,50 @@ func (ms *ManagedService) pushNotification(ev NotificationEvent, up ManagedServi
 	ms.sendNotification(NotificationSourceManagedService, ev, up)
 }
 
+// setState updates the internal state value and pushes a notification of change
+//
+// caller must hold full lock
+func (ms *ManagedService) setState(state ManagedServiceState) {
+	var ev NotificationEvent
+
+	if ms.state == state {
+		return
+	}
+
+	switch state {
+	case ManagedServiceStateRunning:
+		ev = NotificationEventManagedServiceRunning
+	case ManagedServiceStateStopped:
+		ev = NotificationEventManagedServiceStopped
+	case ManagedServiceStateShutdowned:
+		ev = NotificationEventManagedServiceShutdowned
+
+	default:
+		panic(fmt.Sprintf("unkonwn state %d (%[1]s) seen", state))
+	}
+
+	ms.state = state
+
+	ms.pushNotification(ev, ms.buildUpdate(nil))
+}
+
 func (ms *ManagedService) logf(debug bool, f string, v ...interface{}) {
 	if ms.logger == nil || debug && !ms.dbg {
 		return
 	}
 	ms.logger.Printf(f, v...)
+}
+
+func (ms *ManagedService) waitForStop() error {
+	drop := make(chan error, 1)
+	ms.stop <- drop
+	err := <-drop
+	close(drop)
+	return err
+}
+
+func (ms *ManagedService) findAgentService(ctx context.Context) (*api.AgentService, *api.QueryMeta, error) {
+	return ms.client.Agent().Service(ms.serviceID, ms.qo.WithContext(ctx))
 }
 
 // findHealth must be used behind a lock
@@ -472,55 +613,48 @@ func (ms *ManagedService) fetchChecks(ctx context.Context) (api.HealthChecks, *a
 
 // refreshService will refresh the internal representation of the service.  If fetch fails it will attempt to
 // re-register the service based on the last-known definition, returning an error if that itself fails.
+//
+// caller must hold full lock
 func (ms *ManagedService) refreshService(ctx context.Context) (*api.QueryMeta, error) {
 	var (
 		svc *api.AgentService
 		qm  *api.QueryMeta
-		up  ManagedServiceUpdate
 		err error
 	)
 
 	ms.logf(true, "refreshService() - Refreshing local service...")
 
-	if svc, qm, err = ms.AgentService(ctx); err != nil {
+	if svc, qm, err = ms.findAgentService(ctx); err != nil {
 		if IsNotFoundError(err) {
 			ms.logf(false, "refreshService() - Received 404 not found, attempting to re-register...")
 
-			ms.mu.RLock()
-			up = ms.buildUpdate(err)
-			ms.mu.RUnlock()
-			ms.pushNotification(NotificationEventManagedServiceMissing, up)
+			ms.pushNotification(NotificationEventManagedServiceMissing, ms.buildUpdate(err))
 
 			if err = ms.registerService(true, ms.svc.Tags); err != nil {
 				ms.logf(false, "refreshService() - Failed to re-register service: %s")
+			} else if svc, qm, err = ms.findAgentService(ctx); err != nil {
+				ms.logf(false, "refreshService() - Failed to locate re-registered service: %s", err)
 			} else {
 				ms.logf(false, "refreshService() - Service successfully re-registered")
-				svc, _, err = ms.AgentService(ctx)
 			}
 
 		} else {
 			ms.logf(false, "refreshService() - Error fetching service from node: %s", err)
-			ms.mu.RLock()
-			up = ms.buildUpdate(err)
-			ms.mu.RUnlock()
-
-			ms.pushNotification(NotificationEventManagedServiceRefreshed, up)
 		}
 	}
 
+	if svc == nil && err == nil {
+		err = errors.New("unable to locate service after re-register")
+	}
+
 	if err == nil {
-		ms.mu.Lock()
 		ms.svc = svc
 		ms.localRefreshed = time.Now()
 
 		ms.logf(true, "refreshService() - Service refreshed: %v", svc)
-
-		up = ms.buildUpdate(nil)
-
-		ms.mu.Unlock()
-
-		ms.pushNotification(NotificationEventManagedServiceRefreshed, up)
 	}
+
+	ms.pushNotification(NotificationEventManagedServiceRefreshed, ms.buildUpdate(err))
 
 	return qm, err
 }
@@ -542,7 +676,7 @@ func (ms *ManagedService) registerService(missing bool, tags []string) error {
 	reg.EnableTagOverride = true
 
 	if missing {
-		ms.logf(true, "registerService() - Upstream service is gone, redefining full service...")
+		ms.logf(false, "registerService() - Upstream service is gone, redefining full service...")
 		reg.Kind = ms.svc.Kind
 		reg.TaggedAddresses = ms.svc.TaggedAddresses
 		reg.Meta = ms.svc.Meta
@@ -568,30 +702,59 @@ func (ms *ManagedService) buildWatchPlan(up chan<- watch.WaitIndexVal) (*watch.P
 		mu                sync.Mutex
 		last              watch.WaitIndexVal
 	)
+
+	// if a query options instance was passed in at construction, extract token and dc values for use in watch plan
 	if ms.qo != nil {
 		token = ms.qo.Token
 		datacenter = ms.qo.Datacenter
 	}
+
+	// build plan
 	wp, err := WatchServiceMultipleTags(ms.svc.Service, ms.svc.Tags, false, true, token, datacenter)
 	if err != nil {
 		return nil, err
 	}
-	wp.HybridHandler = func(val watch.BlockingParamVal, svcs interface{}) {
-		bp, ok := val.(watch.WaitIndexVal)
-		if !ok {
+
+	// this handler does not directly update the internal state, rather it watches for diffs in the provided "val"
+	// variable.  if different from last the new index is pushed onto the "up" chan, which in turn is being read from
+	// by the primary maintenance loop below.
+	//
+	// the primary maintenance loop then executes a refresh of the internal service state using the typical mechanism.
+	//
+	// this is to reduce the number of places we are performing the same work, and it also resets the maintenance timer
+	// to help prevent noise.
+	wp.HybridHandler = func(val watch.BlockingParamVal, _ interface{}) {
+		var (
+			bp watch.WaitIndexVal
+			ok bool
+		)
+
+		// ensure we got expected type of param
+		if bp, ok = val.(watch.WaitIndexVal); !ok {
 			ms.logf(false, "Watcher expected val to be of type watch.WaitIndexVal, saw %T", val)
 			return
 		}
-		if ms.ctx.Err() != nil {
+
+		// it is entirely possible we'll get an update after the service has been stopped or shutdowned.  there is
+		// nothing to do with these messages.
+		if !ms.Running() {
+			ms.logf(true, "Watcher hit but managed service is %s", ms.State())
 			return
 		}
+
+		// lock LOCAL mutex
 		mu.Lock()
 		defer mu.Unlock()
+
+		// test for change
 		if bp.Equal(last) {
-			bp = last
 			return
 		}
+
+		// record updated index
 		last = bp
+
+		// attempt to push to update chan.  this _should_ never block, if it does complain about it.
 		select {
 		case up <- bp:
 		default:
@@ -603,20 +766,18 @@ func (ms *ManagedService) buildWatchPlan(up chan<- watch.WaitIndexVal) (*watch.P
 	return wp, nil
 }
 
+// runWatchPlan runs the current watch plan, pushing its on-stop error to the provided channel
 func (ms *ManagedService) runWatchPlan(wp *watch.Plan, stopped chan<- error) {
 	var (
-		up     ManagedServiceUpdate
 		logger *log.Logger
 		err    error
 	)
 
-	// test for context being available
-	err = ms.ctx.Err()
-
+	// acquire lock for notification push
 	ms.mu.RLock()
-	up = ms.buildUpdate(err)
+	ms.pushNotification(NotificationEventManagedServiceWatchPlanStarted, ms.buildUpdate(nil))
+	// must unlock here, as the next statement is blocking
 	ms.mu.RUnlock()
-	ms.pushNotification(NotificationEventManagedServiceWatchPlanStarted, up)
 
 	// build logger and run watch plan.
 	if ms.logger == nil {
@@ -625,17 +786,13 @@ func (ms *ManagedService) runWatchPlan(wp *watch.Plan, stopped chan<- error) {
 		logger = log.New(&loggerWriter{ms.logger}, "", log.LstdFlags)
 	}
 
-	if err != nil {
-		return
-	}
-
 	// blocks until watch plan stops
 	err = wp.RunWithClientAndLogger(ms.client, logger)
 
+	// once again acquire rlock for notification push
 	ms.mu.RLock()
-	up = ms.buildUpdate(err)
+	ms.pushNotification(NotificationEventManagedServiceWatchPlanStopped, ms.buildUpdate(err))
 	ms.mu.RUnlock()
-	ms.pushNotification(NotificationEventManagedServiceWatchPlanStopped, up)
 
 	select {
 	case stopped <- err:
@@ -658,7 +815,7 @@ func (ms *ManagedService) buildAndRunWatchPlan(up chan<- watch.WaitIndexVal, sto
 }
 
 func (ms *ManagedService) maintainForceRefresh(ch chan error) {
-	ctx, cancel := context.WithTimeout(ms.ctx, ms.rttl)
+	ctx, cancel := context.WithTimeout(context.Background(), ms.rttl)
 	defer cancel()
 	qm, err := ms.refreshService(ctx)
 	if err != nil {
@@ -668,7 +825,7 @@ func (ms *ManagedService) maintainForceRefresh(ch chan error) {
 }
 
 func (ms *ManagedService) maintainWatchPlanUpdate(idx watch.WaitIndexVal) {
-	ctx, cancel := context.WithTimeout(ms.ctx, ms.rttl)
+	ctx, cancel := context.WithTimeout(context.Background(), ms.rttl)
 	defer cancel()
 	if qm, err := ms.refreshService(ctx); err != nil {
 		ms.logf(false, "maintainLock() - Error refreshing service after watch plan update (%d). err %s; QueryMeta %v", idx, err, qm)
@@ -678,72 +835,22 @@ func (ms *ManagedService) maintainWatchPlanUpdate(idx watch.WaitIndexVal) {
 }
 
 func (ms *ManagedService) maintainRefreshTimerTick() {
-	ctx, cancel := context.WithTimeout(ms.ctx, ms.rttl)
+	ctx, cancel := context.WithTimeout(context.Background(), ms.rttl)
 	defer cancel()
 	if qm, err := ms.refreshService(ctx); err != nil {
 		ms.logf(false, "maintainLock() - refresh failed. err: %s; QueryMeta: %v", err, qm)
 	}
 }
 
-func (ms *ManagedService) maintainShutdown(refreshTimer *time.Timer, wp *watch.Plan, wpUpdate chan watch.WaitIndexVal, wpStopped chan error) {
-	ms.logf(false, "maintainShutdown() - loop exited")
-
-	// always cancel...
-	ms.cancel()
-
-	// stop watcher
-	wp.Stop()
-
-	// wait for goroutine to end
-	<-wpStopped
-	close(wpStopped)
-
-	// close update chan, and drain if necessary.
-	close(wpUpdate)
-	if l := len(wpUpdate); l > 0 {
-		ms.logf(true, "maintainShutdown() - Draining wpUpdate (%d items)", l)
-		for range wpUpdate {
-		}
-	}
-
-	// stop timer
-	refreshTimer.Stop()
-
-	// deregister service
-	if err := ms.client.Agent().ServiceDeregister(ms.serviceID); err != nil {
-		ms.logf(false, "maintainShutdown() - Error deregistering service: %s", err)
-	} else {
-		ms.logf(false, "maintainShutdown() - Service successfully deregistered")
-	}
-
-	// channel cleanup
-	close(ms.forceRefresh)
-	close(ms.done)
-
-	ms.mu.RLock()
-	up := ms.buildUpdate(nil)
-	ms.mu.RUnlock()
-	ms.pushNotification(NotificationEventManagedServiceStopped, up)
-}
-
 func (ms *ManagedService) maintain() {
 	var (
-		tick time.Time
-		idx  watch.WaitIndexVal
-		frch chan error
-		wp   *watch.Plan
-		err  error
+		wp  *watch.Plan
+		err error
 
 		wpUpdate     = make(chan watch.WaitIndexVal, 5) // TODO: do more fun stuff...
 		wpStopped    = make(chan error, 1)
 		refreshTimer = time.NewTimer(ms.refreshInterval)
 	)
-
-	ms.mu.RLock()
-	up := ms.buildUpdate(nil)
-	ms.mu.RUnlock()
-
-	ms.pushNotification(NotificationEventManagedServiceRunning, up)
 
 	ms.logf(true, "maintainLock() - building initial watch plan...")
 
@@ -753,17 +860,18 @@ func (ms *ManagedService) maintain() {
 
 	ms.logf(true, "maintainLock() - entering loop")
 
-	// queue up shutdown op
-	defer ms.maintainShutdown(refreshTimer, wp, wpUpdate, wpStopped)
-
 	for {
 		select {
-		case frch = <-ms.forceRefresh:
+		case frch := <-ms.forceRefresh:
 			ms.logf(true, "maintainLock() - forceRefresh hit")
+
+			ms.mu.Lock()
+			ms.maintainForceRefresh(frch)
+			ms.mu.Unlock()
+
 			if !refreshTimer.Stop() && len(refreshTimer.C) > 0 {
 				<-refreshTimer.C
 			}
-			ms.maintainForceRefresh(frch)
 			refreshTimer.Reset(ms.refreshInterval)
 
 		case err := <-wpStopped:
@@ -774,16 +882,23 @@ func (ms *ManagedService) maintain() {
 				ms.logf(false, "maintainLock() - Watch plan successfully rebuilt, running...")
 			}
 
-		case idx = <-wpUpdate:
+		case idx := <-wpUpdate:
 			ms.logf(true, "maintainLock() - Watch plan has received update (idx: %v)", idx)
+
+			ms.mu.Lock()
+			ms.maintainWatchPlanUpdate(idx)
+			ms.mu.Unlock()
+
 			if !refreshTimer.Stop() && len(refreshTimer.C) > 0 {
 				<-refreshTimer.C
 			}
-			ms.maintainWatchPlanUpdate(idx)
 			refreshTimer.Reset(ms.refreshInterval)
 
-		case tick = <-refreshTimer.C:
+		case tick := <-refreshTimer.C:
 			ms.logf(true, "maintainLock() - refreshTimer hit (%s)", tick)
+
+			ms.mu.Lock()
+
 			ms.maintainRefreshTimerTick()
 
 			// check for the watch plan being nil here, and attempt to start if so
@@ -798,10 +913,56 @@ func (ms *ManagedService) maintain() {
 				ms.logf(true, "maintainLock() - Watch plan is still running, hooray.")
 			}
 
+			ms.mu.Unlock()
+
 			refreshTimer.Reset(ms.refreshInterval)
 
-		case <-ms.ctx.Done():
-			ms.logf(true, "maintainLock() - Internal context closed: %s", ms.ctx.Err())
+		case drop := <-ms.stop:
+
+			// locking is not necessary here as we only directly interact with function-local variables and further
+			// instruction is prevented by the state setting methods that must be called in order for this case to be
+			// hit
+
+			var err error
+
+			ms.logf(false, "maintainLock() - Stop hit")
+
+			// stop watcher
+			wp.Stop()
+
+			// wait for goroutine to end
+			<-wpStopped
+			close(wpStopped)
+
+			// close update chan, and drain if necessary.
+			close(wpUpdate)
+			if l := len(wpUpdate); l > 0 {
+				ms.logf(true, "maintainShutdown() - Draining wpUpdate (%d items)", l)
+				for range wpUpdate {
+				}
+			}
+
+			// stop timer
+			refreshTimer.Stop()
+
+			// deregister service
+			if err = ms.client.Agent().ServiceDeregister(ms.serviceID); err != nil {
+				ms.logf(false, "maintainShutdown() - Error deregistering service: %s", err)
+			} else {
+				ms.logf(false, "maintainShutdown() - Service successfully deregistered")
+			}
+
+			// acquire read lock for notification push
+			ms.mu.RLock()
+			ms.pushNotification(NotificationEventManagedServiceStopped, ms.buildUpdate(err))
+			ms.mu.RUnlock()
+
+			drop <- err
+
+			if !refreshTimer.Stop() || len(refreshTimer.C) > 0 {
+				<-refreshTimer.C
+			}
+
 			return
 		}
 	}
@@ -941,12 +1102,8 @@ func (b *ManagedAgentServiceRegistration) AddAliasCheck(service, node string, in
 // Create attempts to first register the configured service with the desired consul agent, then constructs a
 // ManagedService instance for you to use.
 //
-// The context parameter in this instance will be used to maintainLock the state of the created ManagedService instance.
-// Cancelling the context will terminate the ManagedService, making it defunct and removing the service from the consul
-// agent.
-//
 // If no ID was specified before this method is called, one will be randomly generated for you.
-func (b *ManagedAgentServiceRegistration) Create(serviceCtx context.Context, cfg *ManagedServiceConfig) (*ManagedService, error) {
+func (b *ManagedAgentServiceRegistration) Create(cfg *ManagedServiceConfig) (*ManagedService, error) {
 	var (
 		err error
 
@@ -997,5 +1154,5 @@ func (b *ManagedAgentServiceRegistration) Create(serviceCtx context.Context, cfg
 		return nil, fmt.Errorf("error registering service: %s", err)
 	}
 
-	return NewManagedService(serviceCtx, act)
+	return NewManagedService(act)
 }

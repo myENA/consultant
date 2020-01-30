@@ -58,9 +58,10 @@ func TestNewManagedSession(t *testing.T) {
 			ms, err := consultant.NewManagedSession(setup.config)
 			if err != nil {
 				t.Logf("expected no error, saw: %s", err)
-				t.FailNow()
+				t.Fail()
 			}
 			if t.Failed() {
+				_ = ms.Shutdown()
 				return
 			}
 
@@ -79,6 +80,8 @@ func TestNewManagedSession(t *testing.T) {
 				t.Logf("Expected LastRenewed to be zero, saw %s", lr)
 				t.Fail()
 			}
+
+			_ = ms.Shutdown()
 		})
 	}
 
@@ -107,10 +110,14 @@ func TestNewManagedSession(t *testing.T) {
 	for name, setup := range invalidFieldTests {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			_, err := consultant.NewManagedSession(setup.config)
+			ms, err := consultant.NewManagedSession(setup.config)
 			if err == nil {
 				t.Logf("Expected error with invalid %q", setup.field)
 				t.Fail()
+			}
+
+			if ms != nil {
+				_ = ms.Shutdown()
 			}
 		})
 	}
@@ -140,6 +147,10 @@ func TestNewManagedSession(t *testing.T) {
 			} else if mttl < consultant.SessionMinimumTTL || mttl > consultant.SessionMaximumTTL {
 				t.Logf("Expected ttl to be normalized to %s <= x >= %s, saw %s", consultant.SessionMinimumTTL, consultant.SessionMaximumTTL, mttl)
 				t.Fail()
+			}
+
+			if ms != nil {
+				_ = ms.Shutdown()
 			}
 		})
 	}
@@ -172,6 +183,10 @@ func TestNewManagedSession(t *testing.T) {
 				t.Logf("Expected behavior to be %q, saw %q", b, mb)
 				t.Fail()
 			}
+
+			if ms != nil {
+				_ = ms.Shutdown()
+			}
 		})
 	}
 }
@@ -191,16 +206,15 @@ func TestManagedSession_Run(t *testing.T) {
 		if err != nil {
 			t.Logf("Error fetching session entry: %s", err)
 			t.Fail()
-			return
-		}
-
-		if se.ID != ms.ID() {
-			t.Logf("Expected session id to be %q, saw %q", se.ID, ms.ID())
-			t.Fail()
-		}
-		if lr := ms.LastRenewed(); lr.IsZero() {
-			t.Log("Expected last renewed to be non-zero")
-			t.Fail()
+		} else {
+			if se.ID != ms.ID() {
+				t.Logf("Expected session id to be %q, saw %q", se.ID, ms.ID())
+				t.Fail()
+			}
+			if lr := ms.LastRenewed(); lr.IsZero() {
+				t.Log("Expected last renewed to be non-zero")
+				t.Fail()
+			}
 		}
 	}
 
@@ -211,9 +225,11 @@ func TestManagedSession_Run(t *testing.T) {
 		if err := ms.Run(); err != nil {
 			t.Logf("Error running session: %s", err)
 			t.Fail()
-			return
+		} else {
+			testRun(t, ms)
 		}
-		testRun(t, ms)
+
+		_ = ms.Shutdown()
 	})
 
 	t.Run("auto-start", func(t *testing.T) {
@@ -223,6 +239,8 @@ func TestManagedSession_Run(t *testing.T) {
 		server, _, ms := buildManagedSessionServerAndClient(t, nil, cfg)
 		defer stopTestServer(server)
 		testRun(t, ms)
+
+		_ = ms.Shutdown()
 	})
 
 	t.Run("graceful-stop", func(t *testing.T) {
@@ -238,20 +256,15 @@ func TestManagedSession_Run(t *testing.T) {
 		if err := ms.Stop(); err != nil {
 			t.Logf("Error stopping session: %s", err)
 			t.Fail()
-			return
-		}
-
-		se, _, err := client.Session().Info(sid, nil)
-		if err != nil {
+		} else if se, _, err := client.Session().Info(sid, nil); err != nil {
 			t.Logf("Error fetching session after stop: %s", err)
 			t.Fail()
-			return
-		}
-
-		if se != nil {
+		} else if se != nil {
 			t.Logf("Expected session to be nil, saw %v", se)
 			t.Fail()
 		}
+
+		_ = ms.Shutdown()
 	})
 
 	t.Run("persist-for-a-bit", func(t *testing.T) {
@@ -274,19 +287,20 @@ func TestManagedSession_Run(t *testing.T) {
 		if err := ms.Run(); err != nil {
 			t.Logf("Error running session: %s", err)
 			t.Fail()
-			return
+		} else {
+
+			<-time.After(3 * consultant.SessionMinimumTTL)
+
+			if err := ms.Stop(); err != nil {
+				t.Logf("Error during stop: %s", err)
+				t.Fail()
+			} else if renewed != 5 {
+				t.Logf("Expected renewed to be 5, saw %d", renewed)
+				t.Fail()
+			}
 		}
 
-		<-time.After(3 * consultant.SessionMinimumTTL)
-		if err := ms.Stop(); err != nil {
-
-		}
-
-		// wait just a tick for all notifications to fire
-		if renewed != 5 {
-			t.Logf("Expected renewed to be 5, saw %d", renewed)
-			t.Fail()
-		}
+		_ = ms.Shutdown()
 	})
 
 	t.Run("recreate-after-kill", func(t *testing.T) {
@@ -302,12 +316,9 @@ func TestManagedSession_Run(t *testing.T) {
 		server, client, ms := buildManagedSessionServerAndClient(t, nil, nil)
 		defer stopTestServer(server)
 
-		nid, _ := ms.AttachNotificationChannel("", updateChan)
+		ms.AttachNotificationChannel("", updateChan)
 
 		defer func() {
-			if ms != nil && nid != "" {
-				ms.DetachNotificationRecipient(nid)
-			}
 			close(updateChan)
 			if len(updateChan) > 0 {
 				for range updateChan {
@@ -321,6 +332,9 @@ func TestManagedSession_Run(t *testing.T) {
 		if err := ms.Run(); err != nil {
 			t.Logf("Error running session: %s", err)
 			t.Fail()
+
+			_ = ms.Shutdown()
+
 			return
 		}
 
@@ -365,6 +379,8 @@ func TestManagedSession_Run(t *testing.T) {
 			t.Log("Expected recreated to be true")
 			t.Fail()
 		}
+
+		_ = ms.Shutdown()
 	})
 }
 
@@ -400,6 +416,7 @@ func TestManagedSession_PushStateNotification(t *testing.T) {
 	if err := ms.Run(); err != nil {
 		t.Logf("Error running managed service: %s", err)
 		t.Fail()
-		return
 	}
+
+	_ = ms.Shutdown()
 }

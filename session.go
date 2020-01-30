@@ -14,9 +14,10 @@ import (
 type ManagedSessionState uint8
 
 const (
-	ManagedSessionStateStopped ManagedSessionState = iota
-	ManagedSessionStateRunning
-	ManagedSessionStateClosed
+	// 0x0 - 0xf
+	ManagedSessionStateStopped    ManagedSessionState = 0x0
+	ManagedSessionStateRunning    ManagedSessionState = 0x1
+	ManagedSessionStateShutdowned ManagedSessionState = 0x2
 )
 
 func (s ManagedSessionState) String() string {
@@ -25,8 +26,8 @@ func (s ManagedSessionState) String() string {
 		return "stopped"
 	case ManagedSessionStateRunning:
 		return "running"
-	case ManagedSessionStateClosed:
-		return "closed"
+	case ManagedSessionStateShutdowned:
+		return "shutdowned"
 
 	default:
 		return "UNKNOWN"
@@ -119,16 +120,13 @@ type ManagedSession struct {
 	def        *api.SessionEntry
 	requestTTL time.Duration
 
-	nf string
-
 	id            string
 	ttl           time.Duration
 	renewInterval time.Duration
 	lastRenewed   time.Time
 
-	stop    chan chan error
-	state   ManagedSessionState
-	closing bool
+	stop  chan chan error
+	state ManagedSessionState
 
 	logger Logger
 	dbg    bool
@@ -297,9 +295,9 @@ func (ms *ManagedSession) Stopped() bool {
 	return ms.State() == ManagedSessionStateStopped
 }
 
-// Closed returns true if the current state of the session is "closed"
-func (ms *ManagedSession) Closed() bool {
-	return ms.State() == ManagedSessionStateClosed
+// Shutdowned returns true if the current state of the session is "shutdowned"
+func (ms *ManagedSession) Shutdowned() bool {
+	return ms.State() == ManagedSessionStateShutdowned
 }
 
 // Run immediately starts attempting to acquire a session lock on the configured kv key
@@ -307,10 +305,10 @@ func (ms *ManagedSession) Run() error {
 	ms.mu.Lock()
 	defer ms.mu.Unlock()
 
-	if ms.state == ManagedSessionStateClosed {
-		// if local state is closed, do not allow further run attempts
-		ms.logf(false, "Run() called but I am closed")
-		return errors.New("managed session is closed")
+	if ms.state == ManagedSessionStateShutdowned {
+		// if local state is shutdowned, do not allow further run attempts
+		ms.logf(false, "Run() called but I am shutdowned")
+		return errors.New("managed session is shutdowned")
 	}
 
 	if ms.state == ManagedSessionStateRunning {
@@ -342,10 +340,10 @@ func (ms *ManagedSession) Run() error {
 func (ms *ManagedSession) Stop() error {
 	ms.mu.Lock()
 
-	if ms.state == ManagedSessionStateClosed {
-		ms.logf(false, "Stop() called but i am closed")
+	if ms.state == ManagedSessionStateShutdowned {
+		ms.logf(false, "Stop() called but i am shutdowned")
 		ms.mu.Unlock()
-		return errors.New("managed session is closed")
+		return errors.New("managed session is shutdowned")
 	}
 
 	if ms.state == ManagedSessionStateStopped {
@@ -361,25 +359,37 @@ func (ms *ManagedSession) Stop() error {
 	return ms.waitForStop()
 }
 
-// Close will immediately render this managed session defunct
-func (ms *ManagedSession) Close() error {
+// Shutdown will immediately render this managed session defunct
+func (ms *ManagedSession) Shutdown() error {
 	ms.mu.Lock()
-	if ms.state == ManagedSessionStateClosed {
+	if ms.state == ManagedSessionStateShutdowned {
 		ms.mu.Unlock()
-		ms.logf(true, "Close() called but I'm already closed")
+		ms.logf(true, "Shutdown() called but I'm already shutdowned")
 		return nil
 	}
 
+	var (
+		err error
+
+		// do we need to perform stop operation(s)?
+		requiresStop = ms.state == ManagedSessionStateRunning
+	)
+
 	// set state
-	ms.setState(ManagedSessionStateClosed)
+	ms.setState(ManagedSessionStateShutdowned)
 
 	ms.mu.Unlock()
 
-	// wait for stop to happen
-	err := ms.waitForStop()
+	if requiresStop {
+		err = ms.waitForStop()
+	}
 
 	// detach all notifiers
-	ms.DetachAllNotificationRecipients(false)
+	ms.DetachAllNotificationRecipients(true)
+
+	ms.mu.Lock()
+	close(ms.stop)
+	ms.mu.Unlock()
 
 	// return any resulting error
 	return err
@@ -444,8 +454,8 @@ func (ms *ManagedSession) setState(state ManagedSessionState) {
 		ev = NotificationEventManagedSessionRunning
 	case ManagedSessionStateStopped:
 		ev = NotificationEventManagedSessionStopped
-	case ManagedSessionStateClosed:
-		ev = NotificationEventManagedSessionClosed
+	case ManagedSessionStateShutdowned:
+		ev = NotificationEventManagedSessionShutdowned
 
 	default:
 		panic(fmt.Sprintf("unknown state %d (%[1]s) seen", state))
@@ -453,9 +463,7 @@ func (ms *ManagedSession) setState(state ManagedSessionState) {
 
 	ms.state = state
 
-	up := ms.buildUpdate(nil)
-
-	ms.pushNotification(ev, up)
+	ms.pushNotification(ev, ms.buildUpdate(nil))
 }
 
 // create will attempt to do just that.

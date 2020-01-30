@@ -45,6 +45,7 @@ func newCandidateWithServerAndClient(t *testing.T, cfg *consultant.CandidateConf
 	cfg.ManagedSessionConfig.Debug = true
 	cand, err := consultant.NewCandidate(cfg)
 	if err != nil {
+		_ = cand.Shutdown()
 		_ = server.Stop()
 		t.Fatalf("Error creating Candidate instance: %s", err)
 	}
@@ -78,7 +79,12 @@ func TestNewCandidate(t *testing.T) {
 	for name, setup := range tests {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			_, err := consultant.NewCandidate(setup.config)
+			cand, err := consultant.NewCandidate(setup.config)
+			defer func() {
+				if cand != nil {
+					cand.Shutdown()
+				}
+			}()
 			if setup.shouldErr {
 				if err == nil {
 					t.Log("Expected error, saw nil")
@@ -104,7 +110,7 @@ func TestCandidate_Run(t *testing.T) {
 		defer cancel()
 		if err := cand.WaitUntil(ctx); err != nil {
 			t.Logf("Candidate election cycle took longer than expected to complete: %s", err)
-			t.FailNow()
+			t.Fail()
 			return
 		}
 
@@ -113,31 +119,31 @@ func TestCandidate_Run(t *testing.T) {
 		kv, _, err := cand.LeaderKV(ctx)
 		if err != nil {
 			t.Logf("Error fetching leader key: %s", err)
-			t.FailNow()
+			t.Fail()
 			return
 		}
 		if kv.Value == nil {
 			t.Log("kv.Value is nil")
-			t.FailNow()
+			t.Fail()
 			return
 		}
 		kvValue := new(consultant.CandidateDefaultLeaderKVValue)
 		if err := json.Unmarshal(kv.Value, kvValue); err != nil {
 			t.Logf("Error unmarshalling kv.Value: %s", err)
-			t.FailNow()
+			t.Fail()
 			return
 		}
 
 		if testAsLeader {
 			if kvValue.LeaderID != cand.ID() {
 				t.Logf("Expected elected leader KV to have LeaderID of %q, saw %v", cand.ID(), kvValue)
-				t.FailNow()
+				t.Fail()
 				return
 			}
 		} else {
 			if kvValue.LeaderID == cand.ID() {
 				t.Logf("Expected leader KV to NOT have LeaderID of %q, saw (%v)", cand.ID(), kvValue)
-				t.FailNow()
+				t.Fail()
 				return
 			}
 		}
@@ -147,20 +153,20 @@ func TestCandidate_Run(t *testing.T) {
 		se, _, err := cand.LeaderSession(ctx)
 		if err != nil {
 			t.Logf("Error fetching candidate session: %s", err)
-			t.FailNow()
+			t.Fail()
 			return
 		}
 
 		if testAsLeader {
 			if se.ID != cand.Session().ID() {
 				t.Logf("Expected session returned from LeaderSession to be %q, saw %q", cand.Session().ID(), se.ID)
-				t.FailNow()
+				t.Fail()
 				return
 			}
 		} else {
 			if se.ID == cand.Session().ID() {
 				t.Logf("Expected sesesion returned from LeaderSession to NOT be %q", cand.Session().ID())
-				t.FailNow()
+				t.Fail()
 				return
 			}
 		}
@@ -173,15 +179,16 @@ func TestCandidate_Run(t *testing.T) {
 		server.WaitForLeader(t)
 
 		cand := newCandidateWithServerAndClient(t, nil, server, client)
-		defer cand.Resign()
 
 		if err := cand.Run(); err != nil {
 			t.Logf("Error calling candidate.Run: %s", err)
 			t.Fail()
+			_ = cand.Shutdown()
 			return
 		}
 
 		testRun(t, cand, true)
+		_ = cand.Shutdown()
 	})
 
 	t.Run("single-auto-start", func(t *testing.T) {
@@ -194,9 +201,9 @@ func TestCandidate_Run(t *testing.T) {
 		cfg.StartImmediately = true
 
 		cand := newCandidateWithServerAndClient(t, cfg, server, client)
-		defer cand.Resign()
 
 		testRun(t, cand, true)
+		_ = cand.Shutdown()
 	})
 
 	t.Run("typical", func(t *testing.T) {
@@ -211,9 +218,18 @@ func TestCandidate_Run(t *testing.T) {
 			wg    = new(sync.WaitGroup)
 		)
 
+		defer func() {
+			for _, cand := range cands {
+				if cand != nil && *cand != nil {
+					_ = (*cand).Shutdown()
+				}
+			}
+		}()
+
 		wg.Add(3)
 
 		server, client = makeTestServerAndClient(t, nil)
+		defer stopTestServer(server)
 		server.WaitForSerfCheck(t)
 		server.WaitForLeader(t)
 
@@ -222,32 +238,30 @@ func TestCandidate_Run(t *testing.T) {
 			return newCandidateWithServerAndClient(t, cfg, server, client)
 		}
 
-		t.Run("setup-candidates", func(t *testing.T) {
-			go func() {
-				defer wg.Done()
-				candidate1 = makeCandidate(t, &consultant.CandidateConfig{ID: "test-1"})
-				if err := candidate1.Wait(); err != nil {
-					t.Logf("error waiting on candidate 1: %s", err)
-					t.FailNow()
-				}
-			}()
-			go func() {
-				defer wg.Done()
-				candidate2 = makeCandidate(t, &consultant.CandidateConfig{ID: "test-2"})
-				if err := candidate2.Wait(); err != nil {
-					t.Logf("error waiting on candidate 2: %s", err)
-					t.FailNow()
-				}
-			}()
-			go func() {
-				defer wg.Done()
-				candidate3 = makeCandidate(t, &consultant.CandidateConfig{ID: "test-3"})
-				if err := candidate3.Wait(); err != nil {
-					t.Logf("error waiting on candidate 3: %s", err)
-					t.FailNow()
-				}
-			}()
-		})
+		go func() {
+			defer wg.Done()
+			candidate1 = makeCandidate(t, &consultant.CandidateConfig{ID: "test-1"})
+			if err := candidate1.Wait(); err != nil {
+				t.Logf("error waiting on candidate 1: %s", err)
+				t.Fail()
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			candidate2 = makeCandidate(t, &consultant.CandidateConfig{ID: "test-2"})
+			if err := candidate2.Wait(); err != nil {
+				t.Logf("error waiting on candidate 2: %s", err)
+				t.Fail()
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			candidate3 = makeCandidate(t, &consultant.CandidateConfig{ID: "test-3"})
+			if err := candidate3.Wait(); err != nil {
+				t.Logf("error waiting on candidate 3: %s", err)
+				t.Fail()
+			}
+		}()
 
 		wg.Wait()
 
@@ -263,7 +277,12 @@ func TestCandidate_Run(t *testing.T) {
 			leaderSession, _, err = candidate1.LeaderSession(ctx)
 			if err != nil {
 				t.Logf("Error fetching leader sesesion: %s", err)
-				t.FailNow()
+				t.Fail()
+				for _, cand := range cands {
+					if cand != nil && *cand != nil {
+						_ = (*cand).Shutdown()
+					}
+				}
 				return
 			}
 
@@ -282,7 +301,7 @@ func TestCandidate_Run(t *testing.T) {
 					[]string{candidate1.Session().ID(), candidate2.Session().ID(), candidate3.Session().ID()},
 					leaderSession,
 				)
-				t.FailNow()
+				t.Fail()
 			}
 		})
 
@@ -303,7 +322,7 @@ func TestCandidate_Run(t *testing.T) {
 
 		wg.Add(3)
 
-		t.Run("shutdown", func(t *testing.T) {
+		t.Run("resign", func(t *testing.T) {
 			for _, cand := range cands {
 				go func(cand *consultant.Candidate) {
 					defer wg.Done()
@@ -330,16 +349,16 @@ func TestCandidate_Run(t *testing.T) {
 
 		wg.Add(3)
 
-		t.Run("candidate-restart", func(t *testing.T) {
+		t.Run("candidate-re-run", func(t *testing.T) {
 			for _, cand := range cands {
 				go func(cand *consultant.Candidate) {
 					defer wg.Done()
 					if err := cand.Run(); err != nil {
 						t.Logf("Error re-entering candidate %q into election pool: %s", cand.ID(), err)
-						t.FailNow()
+						t.Fail()
 					} else if err := cand.Wait(); err != nil {
 						t.Logf("Error waiting for re-election on candidate %q: %s", cand.ID(), err)
-						t.FailNow()
+						t.Fail()
 					}
 				}(*cand)
 			}
@@ -363,7 +382,6 @@ func TestCandidate_Run(t *testing.T) {
 		cfg.StartImmediately = true
 
 		cand := newCandidateWithServerAndClient(t, cfg, server, client)
-		defer cand.Resign()
 
 		testRun(t, cand, true)
 
@@ -372,15 +390,18 @@ func TestCandidate_Run(t *testing.T) {
 		if _, err := client.Session().Destroy(sid, nil); err != nil {
 			t.Logf("Error destroying session: %s", err)
 			t.Fail()
+			cand.Shutdown()
 			return
 		}
 
 		if err := cand.Wait(); err != nil {
 			t.Logf("Error waiting for re-election: %s", err)
 			t.Fail()
+			cand.Shutdown()
 			return
 		}
 
 		testRun(t, cand, true)
+		cand.Shutdown()
 	})
 }

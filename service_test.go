@@ -24,7 +24,6 @@ const (
 
 func newManagedServiceWithServerAndClient(
 	t *testing.T,
-	ctx context.Context,
 	svcReg *consultant.ManagedAgentServiceRegistration,
 	cfg *consultant.ManagedServiceConfig,
 	server *cst.TestServer,
@@ -52,7 +51,7 @@ func newManagedServiceWithServerAndClient(
 
 	svcReg.EnableTagOverride = true
 
-	if ms, err = svcReg.Create(ctx, cfg); err != nil {
+	if ms, err = svcReg.Create(cfg); err != nil {
 		_ = server.Stop()
 		t.Fatalf("Error creating service: %s", err)
 	}
@@ -241,19 +240,18 @@ func TestManagedAgentServiceRegistration_Create(t *testing.T) {
 	cfg.Client = client.Client
 
 	b := consultant.NewBareManagedAgentServiceRegistration(managedServiceName, managedServicePort)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	ms, err := b.Create(ctx, cfg)
+	ms, err := b.Create(cfg)
 
 	if err != nil {
 		t.Logf("Error calling .Create(): %s", err)
-		t.FailNow()
+		t.Fail()
 	} else if ms == nil {
 		t.Log("No error, but ManagedService is nil")
-		t.FailNow()
+		t.Fail()
 	}
 
 	if t.Failed() {
+		_ = ms.Shutdown()
 		return
 	}
 
@@ -262,10 +260,11 @@ func TestManagedAgentServiceRegistration_Create(t *testing.T) {
 	svc, _, err := client.Agent().Service(b.ID, nil)
 	if err != nil {
 		t.Logf("Error fetching new service from consul: %s", err)
-		t.FailNow()
+		t.Fail()
 	}
 
 	if t.Failed() {
+		_ = ms.Shutdown()
 		return
 	}
 
@@ -281,6 +280,8 @@ func TestManagedAgentServiceRegistration_Create(t *testing.T) {
 		t.Logf("Expected address %q, saw %q", b.Address, svc.Address)
 		t.Fail()
 	}
+
+	_ = ms.Shutdown()
 }
 
 func TestManagedService(t *testing.T) {
@@ -288,11 +289,7 @@ func TestManagedService(t *testing.T) {
 	defer stopTestServer(server)
 	server.WaitForSerfCheck(t)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	ms := newManagedServiceWithServerAndClient(t, ctx, nil, nil, server, client)
-	defer ms.Deregister()
+	ms := newManagedServiceWithServerAndClient(t, nil, nil, server, client)
 
 	t.Run("add-tags", func(t *testing.T) {
 		if added, err := ms.AddTags("new1", "new2"); err != nil {
@@ -305,6 +302,7 @@ func TestManagedService(t *testing.T) {
 	})
 
 	if t.Failed() {
+		_ = ms.Shutdown()
 		return
 	}
 
@@ -319,21 +317,20 @@ func TestManagedService(t *testing.T) {
 	})
 
 	if t.Failed() {
+		_ = ms.Shutdown()
 		return
 	}
 
 	t.Run("re-register", func(t *testing.T) {
 		var (
-			notesID string
-			err     error
+			err error
 
 			done  = make(chan struct{})
 			notes = make(consultant.NotificationChannel, 100)
 		)
 
-		notesID, _ = ms.AttachNotificationChannel("", notes)
+		ms.AttachNotificationChannel("", notes)
 		defer func() {
-			ms.DetachNotificationRecipient(notesID)
 			close(notes)
 			if len(notes) > 0 {
 				for range notes {
@@ -390,20 +387,16 @@ func TestManagedService(t *testing.T) {
 		if err != nil {
 			t.Logf("Error calling .AgentService(): %s", err)
 			t.Fail()
-			return
 		}
 
 		if err := client.Agent().ServiceDeregister(svc.ID); err != nil {
 			t.Logf("Error deregistering service: %s", err)
 			t.Fail()
-			return
 		}
 
 		// wait around for done to happen...
 		<-done
 
-		if t.Failed() {
-			return
-		}
+		_ = ms.Shutdown()
 	})
 }

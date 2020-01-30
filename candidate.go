@@ -15,9 +15,10 @@ import (
 type CandidateState uint8
 
 const (
-	CandidateStateResigned CandidateState = iota
-	CandidateStateRunning
-	CandidateStateClosed
+	// 0x10 - 0x1f
+	CandidateStateResigned   CandidateState = 0x10
+	CandidateStateRunning    CandidateState = 0x11
+	CandidateStateShutdowned CandidateState = 0x12
 )
 
 func (s CandidateState) String() string {
@@ -26,8 +27,8 @@ func (s CandidateState) String() string {
 		return "resigned"
 	case CandidateStateRunning:
 		return "running"
-	case CandidateStateClosed:
-		return "closed"
+	case CandidateStateShutdowned:
+		return "shutdowned"
 
 	default:
 		return "UNKNOWN"
@@ -310,19 +311,19 @@ func (c *Candidate) State() CandidateState {
 	return s
 }
 
-// Running returns true if the current state of the Candidate is Running
+// Running returns true if the current state of the Candidate is running
 func (c *Candidate) Running() bool {
 	return c.State() == CandidateStateRunning
 }
 
-// Resigned returns true if the current state of the Candidate is Resigned
+// Resigned returns true if the current state of the Candidate is resigned
 func (c *Candidate) Resigned() bool {
 	return c.State() == CandidateStateResigned
 }
 
-// Closed returns true if the current state of the candidate is Closed
-func (c *Candidate) Closed() bool {
-	return c.State() == CandidateStateClosed
+// Shutdowned returns true if the current state of the candidate is shutdowned
+func (c *Candidate) Shutdowned() bool {
+	return c.State() == CandidateStateShutdowned
 }
 
 // Run will enter this candidate into the election pool.  If the candidate is already running this does nothing.
@@ -334,8 +335,8 @@ func (c *Candidate) Run() error {
 		return nil
 	}
 
-	if c.state == CandidateStateClosed {
-		return errors.New("candidate is closed")
+	if c.state == CandidateStateShutdowned {
+		return errors.New("candidate is shutdowned")
 	}
 
 	c.setState(CandidateStateRunning)
@@ -363,9 +364,9 @@ func (c *Candidate) Resign() error {
 		c.logf(true, "Resign() called but we're already resigned")
 		return nil
 	}
-	if c.state == CandidateStateClosed {
+	if c.state == CandidateStateShutdowned {
 		c.mu.Unlock()
-		c.logf(false, "Resign() called but we're closed")
+		c.logf(false, "Resign() called but we're shutdowned")
 		return nil
 	}
 
@@ -376,26 +377,40 @@ func (c *Candidate) Resign() error {
 	return c.waitForResign()
 }
 
-// Close will remove this candidate from the election pool and render it defunct
-func (c *Candidate) Close() error {
+// Shutdown will remove this candidate from the election pool and render it defunct
+func (c *Candidate) Shutdown() error {
 	c.mu.Lock()
-	if c.state == CandidateStateClosed {
+	if c.state == CandidateStateShutdowned {
 		c.mu.Unlock()
-		c.logf(true, "Closed() called but we're already closed")
+		c.logf(true, "Shutdown() called but we're already shutdowned")
 		return nil
 	}
 
-	// set state to closed
-	c.setState(CandidateStateClosed)
+	var (
+		err error
+
+		// do we need to perform stop actions?
+		requiresStop = c.state == CandidateStateRunning
+	)
+
+	// set state to shutdowned
+	c.setState(CandidateStateShutdowned)
 
 	// unlock
 	c.mu.Unlock()
 
-	// wait for resignation
-	err := c.waitForResign()
+	if requiresStop {
+		// wait for resignation
+		err = c.waitForResign()
+	}
 
 	// detach all notifiers
-	c.DetachAllNotificationRecipients(false)
+	c.DetachAllNotificationRecipients(true)
+
+	// close stop chan
+	c.mu.Lock()
+	close(c.stop)
+	c.mu.Unlock()
 
 	// return any error seen during resignation
 	return err
@@ -449,8 +464,8 @@ func (c *Candidate) setState(state CandidateState) {
 		ev = NotificationEventCandidateRunning
 	case CandidateStateResigned:
 		ev = NotificationEventCandidateResigned
-	case CandidateStateClosed:
-		ev = NotificationEventCandidateClosed
+	case CandidateStateShutdowned:
+		ev = NotificationEventCandidateShutdowned
 
 	default:
 		panic(fmt.Sprintf("unkonwn state %d (%[1]s) seen", state))
@@ -458,9 +473,7 @@ func (c *Candidate) setState(state CandidateState) {
 
 	c.state = state
 
-	up := c.buildUpdate(nil)
-
-	c.pushNotification(ev, up)
+	c.pushNotification(ev, c.buildUpdate(nil))
 }
 
 // acquire will attempt to do just that.  Caller must hold lock!

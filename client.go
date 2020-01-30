@@ -1,7 +1,6 @@
 package consultant
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -366,7 +365,7 @@ func (c *Client) SimpleServiceRegister(reg *SimpleServiceRegistration) (string, 
 // ManagedServiceRegister creates a new ManagedService instance from a SimpleServiceRegistration type
 //
 // You are not required to provide a *ManagedServiceConfig instance to this method, and you are
-func (c *Client) ManagedServiceRegister(ctx context.Context, reg *SimpleServiceRegistration, cfg *ManagedServiceConfig, fns ...ManagedAgentServiceRegistrationMutator) (*ManagedService, error) {
+func (c *Client) ManagedServiceRegister(reg *SimpleServiceRegistration, cfg *ManagedServiceConfig, fns ...ManagedAgentServiceRegistrationMutator) (*ManagedService, error) {
 	var (
 		asr      *api.AgentServiceRegistration
 		nodeName string
@@ -387,5 +386,5 @@ func (c *Client) ManagedServiceRegister(ctx context.Context, reg *SimpleServiceR
 
 	cfg.Client = c.Client
 
-	return msr.Create(ctx, cfg)
+	return msr.Create(cfg)
 }

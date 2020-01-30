@@ -606,7 +606,7 @@ func (c *Candidate) sessionUpdate(n Notification) {
 	}
 }
 
-func (c *Candidate) shutdown() error {
+func (c *Candidate) doStop() error {
 	var err error
 
 	// only update elected state if we were ever elected in the first place.
@@ -614,18 +614,18 @@ func (c *Candidate) shutdown() error {
 		*c.elected = false
 	}
 
-	c.logf(true, "shutdown() - Deleting key %q", c.kvKey)
+	c.logf(true, "doStop() - Deleting key %q", c.kvKey)
 	ctx, cancel := context.WithTimeout(context.Background(), c.ms.requestTTL)
 	defer cancel()
 	if _, err := c.ms.client.KV().Delete(c.kvKey, c.ms.wo.WithContext(ctx)); err != nil {
-		c.logf(false, "shutdown() - Error deleting key %q: %s", c.kvKey, err)
+		c.logf(false, "doStop() - Error deleting key %q: %s", c.kvKey, err)
 	}
 
-	c.logf(true, "shutdown() - Stopping managed session...")
+	c.logf(true, "doStop() - Stopping managed session...")
 	if err = c.ms.Stop(); err != nil {
-		c.logf(false, "shutdown() - Error stopping candidate managed session (%s): %s", c.ms.ID(), err)
+		c.logf(false, "doStop() - Error stopping candidate managed session (%s): %s", c.ms.ID(), err)
 	} else {
-		c.logf(true, "shutdown() - Managed session stopped")
+		c.logf(true, "doStop() - Managed session stopped")
 	}
 
 	return err
@@ -651,7 +651,7 @@ func (c *Candidate) maintainLock() {
 		case drop := <-c.stop:
 			c.logf(false, "maintainLock() - stop called")
 			c.mu.Lock()
-			err := c.shutdown()
+			err := c.doStop()
 			c.mu.Unlock()
 			drop <- err
 			if !renewTimer.Stop() {

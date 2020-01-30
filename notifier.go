@@ -207,31 +207,25 @@ func newNotifierWorker(id string, wg *sync.WaitGroup, fn NotificationHandler) *n
 
 func (nw *notifierWorker) close() {
 	nw.mu.Lock()
+	defer nw.mu.Unlock()
+
+	if nw.closed {
+		return
+	}
+
 	nw.closed = true
-	nw.mu.Unlock()
+	close(nw.in)
+	close(nw.out)
+	if len(nw.in) > 0 {
+		for range nw.in {
+		}
+	}
 }
 
 func (nw *notifierWorker) publish() {
 	timer := time.NewTimer(5 * time.Second)
 
-	// queue up func to close then drain ingest channel
-	defer func() {
-		close(nw.in)
-		close(nw.out)
-		if len(nw.in) > 0 {
-			for range nw.in {
-			}
-		}
-	}()
-
 	for {
-		nw.mu.RLock()
-		if nw.closed {
-			nw.mu.RUnlock()
-			return
-		}
-		nw.mu.RUnlock()
-
 		select {
 		case <-timer.C:
 			// test state, if closed exit and do not process any more messages
@@ -244,9 +238,15 @@ func (nw *notifierWorker) publish() {
 
 			timer.Reset(5 * time.Second)
 
-		case n := <-nw.in:
+		case n, ok := <-nw.in:
+			// stop timer, maybe draining
 			if !timer.Stop() {
 				<-timer.C
+			}
+
+			// if the ingest channel was closed, we're no longer going to be processing anything.
+			if !ok {
+				return
 			}
 
 			// todo: it is probably not necessary to test here as if the worker is closed between this notification
@@ -269,9 +269,9 @@ func (nw *notifierWorker) publish() {
 			case <-waitForConsumer.C:
 			}
 
-			timer.Reset(5 * time.Second)
-
 			nw.mu.RUnlock()
+
+			timer.Reset(5 * time.Second)
 		}
 	}
 }

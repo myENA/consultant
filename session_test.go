@@ -294,8 +294,8 @@ func TestManagedSession_Run(t *testing.T) {
 			if err := ms.Stop(); err != nil {
 				t.Logf("Error during stop: %s", err)
 				t.Fail()
-			} else if renewed != 5 {
-				t.Logf("Expected renewed to be 5, saw %d", renewed)
+			} else if r := atomic.LoadInt32(&renewed); r != 5 {
+				t.Logf("Expected renewed to be 5, saw %d", r)
 				t.Fail()
 			}
 		}
@@ -386,10 +386,11 @@ func TestManagedSession_Run(t *testing.T) {
 
 func TestManagedSession_PushStateNotification(t *testing.T) {
 	var (
-		running   int32
-		created   int32
-		destroyed int32
-		stopped   int32
+		running    int32
+		created    int32
+		destroyed  int32
+		stopped    int32
+		shutdowned int32
 	)
 
 	server, _, ms := buildManagedSessionServerAndClient(t, nil, nil)
@@ -406,6 +407,8 @@ func TestManagedSession_PushStateNotification(t *testing.T) {
 			atomic.AddInt32(&destroyed, 1)
 		case consultant.NotificationEventManagedSessionStopped:
 			atomic.AddInt32(&stopped, 1)
+		case consultant.NotificationEventManagedSessionShutdowned:
+			atomic.AddInt32(&shutdowned, 1)
 
 		default:
 			t.Logf("Unexpected notification %d (%[1]s) seen", n.Event)

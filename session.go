@@ -582,11 +582,11 @@ func (ms *ManagedSession) maintainTick() {
 	}
 }
 
-// shutdown will clean up the state of the managed session on shutdown.
+// doStop will clean up the state of the managed session on stop.
 //
 // caller must hold full lock
-func (ms *ManagedSession) shutdown() error {
-	ms.logf(false, "shutdown() - Stopping session...")
+func (ms *ManagedSession) doStop() error {
+	ms.logf(false, "doStop() - Stopping session...")
 
 	var err error
 
@@ -598,7 +598,7 @@ func (ms *ManagedSession) shutdown() error {
 	// set our state to stopped, preventing further interaction.
 	ms.setState(ManagedSessionStateStopped)
 
-	ms.logf(false, "shutdown() - ManagedSession stopped")
+	ms.logf(false, "doStop() - ManagedSession stopped")
 
 	return err
 }
@@ -616,7 +616,7 @@ func (ms *ManagedSession) maintain() {
 	defer func() {
 		ms.mu.Lock()
 		defer ms.mu.Unlock()
-		drop <- ms.shutdown()
+		drop <- ms.doStop()
 		if !intervalTimer.Stop() {
 			<-intervalTimer.C
 		}

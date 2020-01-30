@@ -758,7 +758,7 @@ func (ms *ManagedService) buildWatchPlan(up chan<- watch.WaitIndexVal) (*watch.P
 		select {
 		case up <- bp:
 		default:
-			// needed to ensure clean shutdown
+			// needed to ensure clean stop
 			ms.logf(false, "Watcher unable to push to update chan")
 		}
 	}

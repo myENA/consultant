@@ -1,31 +1,28 @@
 language: go
 
-dist: trusty
+dist: xenial
+sudo: true
 
 go:
-  - 1.11.x
   - 1.12.x
-
-sudo: false
+  - 1.13.x
 
 env:
   global:
-    - CONSUL_VERSION="1.5.0"
+    - CONSUL_VERSION="1.6.2"
     - GO111MODULE=on
+    - GOFLAGS="-mod=vendor"
 
 install:
+  - sudo apt-get install unzip
+  - unzip test_vendor.zip
   - wget "https://releases.hashicorp.com/consul/${CONSUL_VERSION}/consul_${CONSUL_VERSION}_linux_amd64.zip"
   - mkdir -p $HOME/bin
   - unzip -d $HOME/bin consul_${CONSUL_VERSION}_linux_amd64.zip
   - export PATH=$HOME/bin:$PATH
-  - go mod vendor
 
 before_script:
-  - go vet ./
-  - go vet ./candidate
+  - go vet ./...
 
 script:
-  - go test ./candidate/session -v -race
-  - go test ./candidate -v -race
-  - go test ./util -v -race
-  - go test -v
+  - go test -race -v

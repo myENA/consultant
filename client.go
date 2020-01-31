@@ -7,31 +7,11 @@ import (
 	"math/rand"
 	"net/url"
 	"os"
-	"sort"
-	"strings"
 	"sync"
+	"time"
 
 	"github.com/hashicorp/consul/api"
-	"github.com/myENA/consultant/log"
-	"github.com/myENA/consultant/util"
 )
-
-type Client struct {
-	*api.Client
-
-	log log.DebugLogger
-
-	config api.Config
-
-	myAddr string
-	myHost string
-
-	myNodeMu sync.Mutex
-	myNode   string
-
-	logSlug      string
-	logSlugSlice []interface{}
-}
 
 type TagsOption int
 
@@ -49,31 +29,68 @@ const (
 	TagsExclude
 )
 
+func (t TagsOption) String() string {
+	switch t {
+	case TagsAll:
+		return "all"
+	case TagsAny:
+		return "any"
+	case TagsExactly:
+		return "exactly"
+	case TagsExclude:
+		return "exclude"
+
+	default:
+		return "UNKNOWN"
+	}
+}
+
+// Client is a thin wrapper around the base Consul API client with some convenience methods added
+type Client struct {
+	*api.Client
+
+	localAddr     string
+	localHostname string
+
+	localNodeNameMu sync.Mutex
+	localNodeName   string
+	localNodeAddr   string
+
+	confToken      string
+	confDatacenter string
+}
+
 // NewClient constructs a new consultant client.
 func NewClient(conf *api.Config) (*Client, error) {
-	var err error
+	var (
+		err error
+
+		nodeAddrScheme   = "http"
+		nodeAddrHostPort = "127.0.0.1:8500"
+		c                = new(Client)
+	)
 
 	if nil == conf {
-		return nil, errors.New("config cannot be nil")
+		return nil, errors.New("conf is required")
 	}
 
-	c := &Client{
-		config: *conf,
-		log:    log.New("consultant-client"),
-	}
+	c.localHostname, _ = os.Hostname()
+	c.localAddr, _ = LocalAddress()
+	c.confToken = conf.Token
+	c.confDatacenter = conf.Datacenter
 
-	c.Client, err = api.NewClient(conf)
-	if err != nil {
+	if c.Client, err = api.NewClient(conf); err != nil {
 		return nil, fmt.Errorf("unable to create Consul API Client: %s", err)
 	}
 
-	if c.myHost, err = os.Hostname(); err != nil {
-		c.log.Printf("Unable to determine hostname: %s", err)
+	if v := os.Getenv(api.HTTPSSLEnvName); v != "" {
+		nodeAddrScheme = "https"
+	}
+	if v := os.Getenv(api.HTTPAddrEnvName); v != "" {
+		nodeAddrHostPort = v
 	}
 
-	if c.myAddr, err = util.MyAddress(); err != nil {
-		c.log.Printf("Unable to determine ip address: %s", err)
-	}
+	c.localNodeAddr = fmt.Sprintf("%s://%s", nodeAddrScheme, nodeAddrHostPort)
 
 	return c, nil
 }
@@ -83,49 +100,53 @@ func NewDefaultClient() (*Client, error) {
 	return NewClient(api.DefaultConfig())
 }
 
-// Config returns the API Client configuration struct as it was at time of construction
-func (c *Client) Config() api.Config {
-	return c.config
+// NewDefaultNonPooledClient creates a new client with default configuration values and a non-pooled http client
+func NewDefaultNonPooledClient() (*Client, error) {
+	return NewClient(api.DefaultNonPooledConfig())
 }
 
-// MyAddr returns either the self-determine or set IP address of our host
-func (c *Client) MyAddr() string {
-	return c.myAddr
+// LocalAddress returns either the self-determine or set IP address of our host
+func (c *Client) LocalAddress() string {
+	return c.localAddr
 }
 
-// SetMyAddr allows you to manually specify the IP address of our host
-func (c *Client) SetMyAddr(myAddr string) {
-	c.myAddr = myAddr
+// SetLocalAddress allows you to manually specify the IP address of our host
+func (c *Client) SetLocalAddress(myAddr string) {
+	c.localAddr = myAddr
 }
 
-// MyHost returns either the self-determined or set name of our host
-func (c *Client) MyHost() string {
-	return c.myHost
+// LocalHostname returns either the self-determined or set name of our host
+func (c *Client) LocalHostname() string {
+	return c.localHostname
 }
 
-// SetMyHost allows you to to manually specify the name of our host
-func (c *Client) SetMyHost(myHost string) {
-	c.myHost = myHost
+// SetLocalHostname allows you to to manually specify the name of our host. This does NOT update the host's name.
+func (c *Client) SetLocalHostname(myHost string) {
+	c.localHostname = myHost
 }
 
-// MyNode returns the name of the Consul Node this client is connected to
-func (c *Client) MyNode() string {
-	c.myNodeMu.Lock()
-	if c.myNode == "" {
+// LocalNodeName returns the name of the Consul Node this client is connected to
+func (c *Client) LocalNodeName() (string, error) {
+	c.localNodeNameMu.Lock()
+	if c.localNodeName == "" {
 		var err error
-		if c.myNode, err = c.Agent().NodeName(); err != nil {
-			c.log.Printf("unable to determine local Consul node name: %s", err)
+		if c.localNodeName, err = c.Agent().NodeName(); err != nil {
+			return "", fmt.Errorf("unable to determine local Consul node name: %s", err)
 		}
 	}
-	n := c.myNode
-	c.myNodeMu.Unlock()
-	return n
+	n := c.localNodeName
+	c.localNodeNameMu.Unlock()
+	return n, nil
 }
 
 // EnsureKey will fetch a key/value and ensure the key is present.  The value may still be empty.
 func (c *Client) EnsureKey(key string, options *api.QueryOptions) (*api.KVPair, *api.QueryMeta, error) {
-	kvp, qm, err := c.KV().Get(key, options)
-	if err != nil {
+	var (
+		kvp *api.KVPair
+		qm  *api.QueryMeta
+		err error
+	)
+	if kvp, qm, err = c.KV().Get(key, options); err != nil {
 		return nil, nil, err
 	}
 	if kvp != nil {
@@ -136,22 +157,31 @@ func (c *Client) EnsureKey(key string, options *api.QueryOptions) (*api.KVPair, 
 
 // EnsureKeyString is a convenience method that will typecast the kvp.Value byte slice to a string for you, if there were no errors.
 func (c *Client) EnsureKeyString(key string, options *api.QueryOptions) (string, *api.QueryMeta, error) {
-	if kvp, qm, err := c.EnsureKey(key, options); err != nil {
+	var (
+		kvp *api.KVPair
+		qm  *api.QueryMeta
+		err error
+	)
+	if kvp, qm, err = c.EnsureKey(key, options); err != nil {
 		return "", qm, err
-	} else {
-		return string(kvp.Value), qm, nil
 	}
+	return string(kvp.Value), qm, nil
 }
 
 // EnsureKeyJSON will attempt to unmarshal the kvp value into the provided type
 func (c *Client) EnsureKeyJSON(key string, options *api.QueryOptions, v interface{}) (*api.QueryMeta, error) {
-	if kvp, qm, err := c.EnsureKey(key, options); err != nil {
+	var (
+		kvp *api.KVPair
+		qm  *api.QueryMeta
+		err error
+	)
+	if kvp, qm, err = c.EnsureKey(key, options); err != nil {
 		return nil, err
-	} else if err = json.Unmarshal(kvp.Value, v); err != nil {
-		return nil, err
-	} else {
-		return qm, nil
 	}
+	if err = json.Unmarshal(kvp.Value, v); err != nil {
+		return nil, err
+	}
+	return qm, nil
 }
 
 // PickServiceMultipleTags will attempt to locate any registered service with a name + tags combination and return one
@@ -161,7 +191,6 @@ func (c *Client) PickServiceMultipleTags(service string, tags []string, passingO
 	if err != nil {
 		return nil, nil, err
 	}
-
 	svcLen := len(svcs)
 	switch svcLen {
 	case 0:
@@ -185,13 +214,18 @@ func (c *Client) PickService(service, tag string, passingOnly bool, options *api
 // EnsureServiceMultipleTags will return an error for an actual client error or if no service was found using the
 // provided criteria
 func (c *Client) EnsureServiceMultipleTags(service string, tags []string, passingOnly bool, options *api.QueryOptions) (*api.ServiceEntry, *api.QueryMeta, error) {
-	if svc, qm, err := c.PickServiceMultipleTags(service, tags, passingOnly, options); err != nil {
+	var (
+		svc *api.ServiceEntry
+		qm  *api.QueryMeta
+		err error
+	)
+	if svc, qm, err = c.PickServiceMultipleTags(service, tags, passingOnly, options); err != nil {
 		return nil, qm, err
-	} else if svc == nil {
-		return nil, qm, fmt.Errorf("service %q with tag %q not found", service, tags)
-	} else {
-		return svc, qm, nil
 	}
+	if svc == nil {
+		return nil, qm, fmt.Errorf("service %q with tag %q not found", service, tags)
+	}
+	return svc, qm, nil
 }
 
 // EnsureService will return an error for an actual client error or if no service was found using the provided criteria
@@ -272,25 +306,6 @@ OUTER:
 	return retv, qm, err
 }
 
-// determines if a and b contain the same elements (order doesn't matter)
-func strSlicesEqual(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	ac := make([]string, len(a))
-	bc := make([]string, len(b))
-	copy(ac, a)
-	copy(bc, b)
-	sort.Strings(ac)
-	sort.Strings(bc)
-	for i, v := range ac {
-		if bc[i] != v {
-			return false
-		}
-	}
-	return true
-}
-
 // BuildServiceURL will attempt to locate a healthy instance of the specified service name + tag combination, then
 // attempt to construct a *net.URL from the resulting service information
 func (c *Client) BuildServiceURL(protocol, serviceName, tag string, passingOnly bool, options *api.QueryOptions) (*url.URL, error) {
@@ -301,7 +316,6 @@ func (c *Client) BuildServiceURL(protocol, serviceName, tag string, passingOnly 
 	if nil == svc {
 		return nil, fmt.Errorf("no services registered as \"%s\" with tag \"%s\" found", serviceName, tag)
 	}
-
 	return url.Parse(fmt.Sprintf("%s://%s:%d", protocol, svc.Service.Address, svc.Service.Port))
 }
 
@@ -310,114 +324,33 @@ type SimpleServiceRegistration struct {
 	Name string // [required] name to register service under
 	Port int    // [required] external port to advertise for service consumers
 
-	ID                string   // [optional] specific id for service, will be generated if not set
-	RandomID          bool     // [optional] if ID is not set, use a random uuid if true, or hostname if false
-	Address           string   // [optional] determined automatically by Register() if not set
-	Tags              []string // [optional] desired tags: Register() adds serviceId
-	CheckTCP          bool     // [optional] if true register a TCP check
-	CheckPath         string   // [optional] register an http check with this path if set
-	CheckScheme       string   // [optional] override the http check scheme (default: http)
-	CheckPort         int      // [optional] if set, this is the port that the health check lives at
-	Interval          string   // [optional] check interval
-	EnableTagOverride bool     // [optional] whether we should allow tag overriding (new in 0.6+)
+	ID                string        // [optional] specific id for service, will be generated if not set
+	RandomID          bool          // [optional] if ID is not set, use a random uuid if true, or hostname if false
+	Address           string        // [optional] determined automatically by Create() if not set
+	Tags              []string      // [optional] desired tags: Create() adds serviceId
+	CheckTCP          bool          // [optional] if true, register a TCP check
+	CheckTTL          string        // [optional] if defined, registers a ttl check with the value as the starting status
+	CheckPath         string        // [optional] if defined, register a http check with this path
+	CheckScheme       string        // [optional] override the http check scheme (default: http)
+	CheckPort         int           // [optional] tcp or http check port, if defined
+	Interval          string        // [optional] check renewInterval
+	Timeout           time.Duration // [optional] tcp
+	EnableTagOverride bool          // [optional] whether we should allow tag overriding (new in 0.6+)
 }
 
 // SimpleServiceRegister is a helper method to ease consul service registration
 func (c *Client) SimpleServiceRegister(reg *SimpleServiceRegistration) (string, error) {
-	var err error                        // generic error holder
-	var serviceID string                 // local service identifier
-	var address string                   // service host address
-	var interval string                  // check interval
-	var checkHTTP *api.AgentServiceCheck // http type check
-	var serviceName string               // service registration name
+	var (
+		asr       *api.AgentServiceRegistration
+		serviceID string
+		nodeName  string
+		err       error
+	)
 
-	// Perform some basic service name cleanup and validation
-	serviceName = strings.TrimSpace(reg.Name)
-	if serviceName == "" {
-		return "", errors.New("\"Name\" cannot be blank")
-	}
-	if strings.Contains(serviceName, " ") {
-		return "", fmt.Errorf("name \"%s\" is invalid, service names cannot contain spaces", serviceName)
-	}
+	nodeName, _ = c.LocalNodeName()
 
-	// Come on, guys...valid ports plz...
-	if reg.Port <= 0 {
-		return "", fmt.Errorf("%d is not a valid port", reg.Port)
-	}
-
-	if address = reg.Address; address == "" {
-		address = c.myAddr
-	}
-
-	if serviceID = reg.ID; serviceID == "" {
-		// Form a unique service id
-		var tail string
-		if reg.RandomID {
-			tail = util.RandStr(12)
-		} else {
-			tail = strings.ToLower(c.myHost)
-		}
-		serviceID = fmt.Sprintf("%s-%s", serviceName, tail)
-	}
-
-	if interval = reg.Interval; interval == "" {
-		// set a default interval
-		interval = "30s"
-	}
-
-	// The serviceID is added in order to ensure detection in ServiceMonitor()
-	tags := append(reg.Tags, serviceID)
-
-	// Set up the service registration struct
-	asr := &api.AgentServiceRegistration{
-		ID:                serviceID,
-		Name:              serviceName,
-		Tags:              tags,
-		Port:              reg.Port,
-		Address:           address,
-		Checks:            api.AgentServiceChecks{},
-		EnableTagOverride: reg.EnableTagOverride,
-	}
-
-	// allow port override
-	checkPort := reg.CheckPort
-	if checkPort <= 0 {
-		checkPort = reg.Port
-	}
-
-	// build http check if specified
-	if reg.CheckPath != "" {
-
-		// allow scheme override
-		checkScheme := reg.CheckScheme
-		if checkScheme == "" {
-			checkScheme = "http"
-		}
-
-		// build check url
-		checkURL := &url.URL{
-			Scheme: checkScheme,
-			Host:   fmt.Sprintf("%s:%d", address, checkPort),
-			Path:   reg.CheckPath,
-		}
-
-		// build check
-		checkHTTP = &api.AgentServiceCheck{
-			HTTP:     checkURL.String(),
-			Interval: interval,
-		}
-
-		// add http check
-		asr.Checks = append(asr.Checks, checkHTTP)
-	}
-
-	// build tcp check if specified
-	if reg.CheckTCP {
-		// create tcp check definition
-		asr.Checks = append(asr.Checks, &api.AgentServiceCheck{
-			TCP:      fmt.Sprintf("%s:%d", address, checkPort),
-			Interval: interval,
-		})
+	if serviceID, asr, err = simpleToReg(c.LocalAddress(), nodeName, reg); err != nil {
+		return serviceID, err
 	}
 
 	// register and check error
@@ -427,4 +360,31 @@ func (c *Client) SimpleServiceRegister(reg *SimpleServiceRegistration) (string, 
 
 	// return registered service
 	return serviceID, nil
+}
+
+// ManagedServiceRegister creates a new ManagedService instance from a SimpleServiceRegistration type
+//
+// You are not required to provide a *ManagedServiceConfig instance to this method, and you are
+func (c *Client) ManagedServiceRegister(reg *SimpleServiceRegistration, cfg *ManagedServiceConfig, fns ...ManagedAgentServiceRegistrationMutator) (*ManagedService, error) {
+	var (
+		asr      *api.AgentServiceRegistration
+		nodeName string
+		err      error
+	)
+
+	nodeName, _ = c.LocalNodeName()
+
+	if _, asr, err = simpleToReg(c.LocalAddress(), nodeName, reg); err != nil {
+		return nil, err
+	}
+
+	msr := NewManagedAgentServiceRegistration(asr, fns...)
+
+	if cfg == nil {
+		cfg = new(ManagedServiceConfig)
+	}
+
+	cfg.Client = c.Client
+
+	return msr.Create(cfg)
 }

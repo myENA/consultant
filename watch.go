@@ -17,7 +17,7 @@ func WatchKey(key string, stale bool, token, datacenter string) (*watch.Plan, er
 
 // WatchKeyHandler wraps the creation of a "key" plan, additionally assigning an index handler func
 func WatchKeyHandler(key string, stale bool, token, datacenter string, handler watch.HandlerFunc) (wp *watch.Plan, err error) {
-	if wp, err = WatchKey(key, stale, token, datacenter); err == nil {
+	if wp, err = WatchKey(key, stale, token, datacenter); wp != nil {
 		wp.Handler = handler
 	}
 	return
@@ -25,7 +25,7 @@ func WatchKeyHandler(key string, stale bool, token, datacenter string, handler w
 
 // WatchKeyHybridHandler wraps the creation of a "key" plan, additionally assigning hybrid (hash) handler func
 func WatchKeyHybridHandler(key string, stale bool, token, datacenter string, hybridHandler watch.HybridHandlerFunc) (wp *watch.Plan, err error) {
-	if wp, err = WatchKey(key, stale, token, datacenter); err == nil {
+	if wp, err = WatchKey(key, stale, token, datacenter); wp != nil {
 		wp.HybridHandler = hybridHandler
 	}
 	return
@@ -44,7 +44,7 @@ func WatchKeyPrefix(prefix string, stale bool, token, datacenter string) (*watch
 
 // WatchKeyPrefixHandler wraps the creation of a "keyprefix" plan, additionally assigning  an index handler func
 func WatchKeyPrefixHandler(prefix string, stale bool, token, datacenter string, handler watch.HandlerFunc) (wp *watch.Plan, err error) {
-	if wp, err = WatchKeyPrefix(prefix, stale, token, datacenter); wp == nil {
+	if wp, err = WatchKeyPrefix(prefix, stale, token, datacenter); wp != nil {
 		wp.Handler = handler
 	}
 	return
@@ -52,7 +52,7 @@ func WatchKeyPrefixHandler(prefix string, stale bool, token, datacenter string, 
 
 // WatchKeyPrefixHybridHandler wraps the creation of a "keyprefix" plan, additionally assigning a hash handler func
 func WatchKeyPrefixHybridHandler(prefix string, stale bool, token, datacenter string, handler watch.HybridHandlerFunc) (wp *watch.Plan, err error) {
-	if wp, err = WatchKeyPrefix(prefix, stale, token, datacenter); wp == nil {
+	if wp, err = WatchKeyPrefix(prefix, stale, token, datacenter); wp != nil {
 		wp.HybridHandler = handler
 	}
 	return
@@ -70,7 +70,7 @@ func WatchServices(stale bool, token, datacenter string) (*watch.Plan, error) {
 
 // WatchServicesHandler wraps the creation of a "services" plan, additionally assigning an index handler
 func WatchServicesHandler(stale bool, token, datacenter string, handler watch.HandlerFunc) (wp *watch.Plan, err error) {
-	if wp, err = WatchServices(stale, token, datacenter); err == nil {
+	if wp, err = WatchServices(stale, token, datacenter); wp != nil {
 		wp.Handler = handler
 	}
 	return
@@ -78,7 +78,7 @@ func WatchServicesHandler(stale bool, token, datacenter string, handler watch.Ha
 
 // WatchServicesHybridHandler wraps the creation of a "services" plan, additionally assigning a hash handler
 func WatchServicesHybridHandler(stale bool, token, datacenter string, handler watch.HybridHandlerFunc) (wp *watch.Plan, err error) {
-	if wp, err = WatchServices(stale, token, datacenter); err == nil {
+	if wp, err = WatchServices(stale, token, datacenter); wp != nil {
 		wp.HybridHandler = handler
 	}
 	return
@@ -96,7 +96,7 @@ func WatchNodes(stale bool, token, datacenter string) (*watch.Plan, error) {
 
 // WatchNodesHandler wraps the creation of a "nodes" plan, additionally assigning an index handler
 func WatchNodesHandler(stale bool, token, datacenter string, handler watch.HandlerFunc) (wp *watch.Plan, err error) {
-	if wp, err = WatchNodes(stale, token, datacenter); err == nil {
+	if wp, err = WatchNodes(stale, token, datacenter); wp != nil {
 		wp.Handler = handler
 	}
 	return
@@ -104,18 +104,17 @@ func WatchNodesHandler(stale bool, token, datacenter string, handler watch.Handl
 
 // WatchNodesHybridHandler wraps the creation of a "nodes" plan, additionally assigning a hash handler
 func WatchNodesHybridHandler(stale bool, token, datacenter string, handler watch.HybridHandlerFunc) (wp *watch.Plan, err error) {
-	if wp, err = WatchNodes(stale, token, datacenter); err == nil {
+	if wp, err = WatchNodes(stale, token, datacenter); wp != nil {
 		wp.HybridHandler = handler
 	}
 	return
 }
 
-// WatchService wraps the creation of a "service" plan
-func WatchService(service, tag string, passingOnly, stale bool, token, datacenter string) (*watch.Plan, error) {
+func WatchServiceMultipleTags(service string, tags []string, passingOnly, stale bool, token, datacenter string) (*watch.Plan, error) {
 	return watch.Parse(map[string]interface{}{
 		"type":        "service",
 		"service":     service,
-		//"tag":         tag,
+		"tag":         tags,
 		"passingonly": passingOnly,
 		"stale":       stale,
 		"token":       token,
@@ -123,9 +122,14 @@ func WatchService(service, tag string, passingOnly, stale bool, token, datacente
 	})
 }
 
+// WatchService wraps the creation of a "service" plan
+func WatchService(service, tag string, passingOnly, stale bool, token, datacenter string) (*watch.Plan, error) {
+	return WatchServiceMultipleTags(service, []string{tag}, passingOnly, stale, token, datacenter)
+}
+
 // WatchServiceHandler wraps the creation of a "service" plan, additionally setting an index handler
 func WatchServiceHandler(service, tag string, passingOnly, stale bool, token, datacenter string, handler watch.HandlerFunc) (wp *watch.Plan, err error) {
-	if wp, err = WatchService(service, tag, passingOnly, stale, token, datacenter); err == nil {
+	if wp, err = WatchService(service, tag, passingOnly, stale, token, datacenter); wp != nil {
 		wp.Handler = handler
 	}
 	return
@@ -133,7 +137,7 @@ func WatchServiceHandler(service, tag string, passingOnly, stale bool, token, da
 
 // WatchServiceHybridHandler wraps the creation of a "service" plan, additionally setting a hash handler
 func WatchServiceHybridHandler(service, tag string, passingOnly, stale bool, token, datacenter string, handler watch.HybridHandlerFunc) (wp *watch.Plan, err error) {
-	if wp, err = WatchService(service, tag, passingOnly, stale, token, datacenter); err == nil {
+	if wp, err = WatchService(service, tag, passingOnly, stale, token, datacenter); wp != nil {
 		wp.HybridHandler = handler
 	}
 	return
@@ -153,7 +157,7 @@ func WatchChecks(service, state string, stale bool, token, datacenter string) (*
 
 // WatchChecksHandler wraps the creation of a "checks" plan, additionally setting an index handler
 func WatchChecksHandler(service, state string, stale bool, token, datacenter string, handler watch.HandlerFunc) (wp *watch.Plan, err error) {
-	if wp, err = WatchChecks(service, state, stale, token, datacenter); err == nil {
+	if wp, err = WatchChecks(service, state, stale, token, datacenter); wp != nil {
 		wp.Handler = handler
 	}
 	return
@@ -161,7 +165,7 @@ func WatchChecksHandler(service, state string, stale bool, token, datacenter str
 
 // WatchChecksHybridHandler wraps the creation of a "checks" plan, additionally setting a hash handler
 func WatchChecksHybridHandler(service, state string, stale bool, token, datacenter string, handler watch.HybridHandlerFunc) (wp *watch.Plan, err error) {
-	if wp, err = WatchChecks(service, state, stale, token, datacenter); err == nil {
+	if wp, err = WatchChecks(service, state, stale, token, datacenter); wp != nil {
 		wp.HybridHandler = handler
 	}
 	return
@@ -179,7 +183,7 @@ func WatchEvent(name, token, datacenter string) (*watch.Plan, error) {
 
 // WatchEventHandler wraps the creation of an "event" plan, additionally setting an index handler
 func WatchEventHandler(name, token, datacenter string, handler watch.HandlerFunc) (wp *watch.Plan, err error) {
-	if wp, err = WatchEvent(name, token, datacenter); err == nil {
+	if wp, err = WatchEvent(name, token, datacenter); wp != nil {
 		wp.Handler = handler
 	}
 	return
@@ -187,7 +191,7 @@ func WatchEventHandler(name, token, datacenter string, handler watch.HandlerFunc
 
 // WatchEventHybridHandler wraps the creation of an "event" plan, additionally setting a hash handler
 func WatchEventHybridHandler(name, token, datacenter string, handler watch.HybridHandlerFunc) (wp *watch.Plan, err error) {
-	if wp, err = WatchEvent(name, token, datacenter); err == nil {
+	if wp, err = WatchEvent(name, token, datacenter); wp != nil {
 		wp.HybridHandler = handler
 	}
 	return
@@ -204,7 +208,7 @@ func WatchConnectRoots(token, datacenter string) (*watch.Plan, error) {
 
 // WatchConnectRootsHandler wraps the creation of a "connect_roots" plan, additionally setting an index handler
 func WatchConnectRootsHandler(token, datacenter string, handler watch.HandlerFunc) (wp *watch.Plan, err error) {
-	if wp, err = WatchConnectRoots(token, datacenter); err == nil {
+	if wp, err = WatchConnectRoots(token, datacenter); wp != nil {
 		wp.Handler = handler
 	}
 	return
@@ -212,7 +216,7 @@ func WatchConnectRootsHandler(token, datacenter string, handler watch.HandlerFun
 
 // WatchConnectRootsHybridHandler wraps the creation of a "connect_roots" plan, additionally setting a hash handler
 func WatchConnectRootsHybridHandler(token, datacenter string, handler watch.HybridHandlerFunc) (wp *watch.Plan, err error) {
-	if wp, err = WatchConnectRoots(token, datacenter); err == nil {
+	if wp, err = WatchConnectRoots(token, datacenter); wp != nil {
 		wp.HybridHandler = handler
 	}
 	return
@@ -230,7 +234,7 @@ func WatchConnectLeaf(service, token, datacenter string) (*watch.Plan, error) {
 
 // WatchConnectLeafHandler wraps the creation of a "connect_leaf" plan, additionally setting an index handler
 func WatchConnectLeafHandler(service, token, datacenter string, handler watch.HandlerFunc) (wp *watch.Plan, err error) {
-	if wp, err = WatchConnectLeaf(service, token, datacenter); err == nil {
+	if wp, err = WatchConnectLeaf(service, token, datacenter); wp != nil {
 		wp.Handler = handler
 	}
 	return
@@ -238,34 +242,32 @@ func WatchConnectLeafHandler(service, token, datacenter string, handler watch.Ha
 
 // WatchConnectLeafHybridHandler wraps the creation of a "connect_leaf" plan, additionally setting a hash handler
 func WatchConnectLeafHybridHandler(service, token, datacenter string, handler watch.HybridHandlerFunc) (wp *watch.Plan, err error) {
-	if wp, err = WatchConnectLeaf(service, token, datacenter); err == nil {
+	if wp, err = WatchConnectLeaf(service, token, datacenter); wp != nil {
 		wp.HybridHandler = handler
 	}
 	return
 }
 
-// WatchProxyConfig wraps the creation of a "connect_proxy_config" plan
-func WatchProxyConfig(proxyServiceID, token, datacenter string) (*watch.Plan, error) {
+// WatchAgentService wraps the creation of a "agent_service" plan
+func WatchAgentService(serviceID string) (*watch.Plan, error) {
 	return watch.Parse(map[string]interface{}{
-		"type":             "connect_proxy_config",
-		"proxy_service_id": proxyServiceID,
-		"token":            token,
-		"datacenter":       datacenter,
+		"type":       "agent_service",
+		"service_id": serviceID,
 	})
 }
 
-// WatchProxyConfigHandler wraps the creation of a "connect_proxy_config" plan, additionally setting an index handler
-func WatchProxyConfigHandler(proxyServiceID, token, datacenter string, handler watch.HandlerFunc) (wp *watch.Plan, err error) {
-	if wp, err = WatchProxyConfig(proxyServiceID, token, datacenter); err == nil {
+// WatchAgentServiceHandler wraps the creation of a "connect_proxy_config" plan, additionally setting an index handler
+func WatchAgentServiceHandler(serviceID string, handler watch.HandlerFunc) (wp *watch.Plan, err error) {
+	if wp, err = WatchAgentService(serviceID); wp != nil {
 		wp.Handler = handler
 	}
 	return
 }
 
-// WatchProxyConfigHybridHandler wraps the creation of a "connect_proxy_config" plan, additionally setting a hash
+// WatchAgentServiceHybridHandler wraps the creation of a "connect_proxy_config" plan, additionally setting a hash
 // handler
-func WatchProxyConfigHybridHandler(proxyServiceID, token, datacenter string, handler watch.HybridHandlerFunc) (wp *watch.Plan, err error) {
-	if wp, err = WatchProxyConfig(proxyServiceID, token, datacenter); err == nil {
+func WatchAgentServiceHybridHandler(serviceID string, handler watch.HybridHandlerFunc) (wp *watch.Plan, err error) {
+	if wp, err = WatchAgentService(serviceID); wp != nil {
 		wp.HybridHandler = handler
 	}
 	return
@@ -273,50 +275,50 @@ func WatchProxyConfigHybridHandler(proxyServiceID, token, datacenter string, han
 
 // WatchKey will attempt to create a "key" watch plan based on existing client configuration
 func (c *Client) WatchKey(key string, stale bool, handler watch.HandlerFunc) (*watch.Plan, error) {
-	return WatchKeyHandler(key, stale, c.config.Token, c.config.Datacenter, handler)
+	return WatchKeyHandler(key, stale, c.confToken, c.confDatacenter, handler)
 }
 
 // WatchKeyPrefix will attempt to create a "keyprefix" watch plan based on existing client configuration
 func (c *Client) WatchKeyPrefix(prefix string, stale bool, handler watch.HandlerFunc) (*watch.Plan, error) {
-	return WatchKeyPrefixHandler(prefix, stale, c.config.Token, c.config.Datacenter, handler)
+	return WatchKeyPrefixHandler(prefix, stale, c.confToken, c.confDatacenter, handler)
 }
 
 // WatchServices will attempt to create a "services" watch plan based on existing client configuration
 func (c *Client) WatchServices(stale bool, handler watch.HandlerFunc) (*watch.Plan, error) {
-	return WatchServicesHandler(stale, c.config.Token, c.config.Datacenter, handler)
+	return WatchServicesHandler(stale, c.confToken, c.confDatacenter, handler)
 }
 
 // WatchNodes will attempt to create a "nodes" watch plan based on existing client configuration
 func (c *Client) WatchNodes(stale bool, handler watch.HandlerFunc) (*watch.Plan, error) {
-	return WatchNodesHandler(stale, c.config.Token, c.config.Datacenter, handler)
+	return WatchNodesHandler(stale, c.confToken, c.confDatacenter, handler)
 }
 
 // WatchService will attempt to create a "service" watch plan based on existing client configuration
 func (c *Client) WatchService(service, tag string, passingOnly, stale bool, handler watch.HandlerFunc) (*watch.Plan, error) {
-	return WatchServiceHandler(service, tag, passingOnly, stale, c.config.Token, c.config.Datacenter, handler)
+	return WatchServiceHandler(service, tag, passingOnly, stale, c.confToken, c.confDatacenter, handler)
 }
 
 // WatchChecks will attempt to create a "checks" watch plan based on existing client configuration
 func (c *Client) WatchChecks(service, state string, stale bool, handler watch.HandlerFunc) (*watch.Plan, error) {
-	return WatchChecksHandler(service, state, stale, c.config.Token, c.config.Datacenter, handler)
+	return WatchChecksHandler(service, state, stale, c.confToken, c.confDatacenter, handler)
 }
 
 // WatchEvent will attempt to create an "event" watch plan based on existing client configuration
 func (c *Client) WatchEvent(name string, handler watch.HandlerFunc) (*watch.Plan, error) {
-	return WatchEventHandler(name, c.config.Token, c.config.Datacenter, handler)
+	return WatchEventHandler(name, c.confToken, c.confDatacenter, handler)
 }
 
 // WatchConnectRoots will attempt to create a "connect_roots" watch plan based on existing client configuration
 func (c *Client) WatchConnectRoots(handler watch.HandlerFunc) (*watch.Plan, error) {
-	return WatchConnectRootsHandler(c.config.Token, c.config.Datacenter, handler)
+	return WatchConnectRootsHandler(c.confToken, c.confDatacenter, handler)
 }
 
 // WatchConnectLeaf will attempt to create a "connect_leaf" watch plan based on existing client configuration
 func (c *Client) WatchConnectLeaf(service string, handler watch.HandlerFunc) (*watch.Plan, error) {
-	return WatchConnectLeafHandler(service, c.config.Token, c.config.Datacenter, handler)
+	return WatchConnectLeafHandler(service, c.confToken, c.confDatacenter, handler)
 }
 
-// WatchProxyConfig will attempt to create a "connect_proxy_config" watch plan based on existing client configuration
-func (c *Client) WatchProxyConfig(proxyServiceID string, handler watch.HandlerFunc) (*watch.Plan, error) {
-	return WatchProxyConfigHandler(proxyServiceID, c.config.Token, c.config.Datacenter, handler)
+// WatchAgentService will attempt to create a "connect_proxy_config" watch plan based on existing client configuration
+func (c *Client) WatchAgentService(serviceID string, handler watch.HandlerFunc) (*watch.Plan, error) {
+	return WatchAgentServiceHandler(serviceID, handler)
 }

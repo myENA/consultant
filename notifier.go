@@ -223,56 +223,28 @@ func (nw *notifierWorker) close() {
 }
 
 func (nw *notifierWorker) publish() {
-	timer := time.NewTimer(5 * time.Second)
-
-	for {
-		select {
-		case <-timer.C:
-			// test state, if closed exit and do not process any more messages
-			nw.mu.RLock()
-			if nw.closed {
-				nw.mu.RUnlock()
-				return
-			}
+	for n := range nw.in {
+		// todo: it is probably not necessary to test here as if the worker is closed between this notification
+		// being processed and the next notification in, it is removed from the map of available workers to push
+		// to before close == true, meaning it cannot have new messages pushed to it.
+		nw.mu.RLock()
+		if nw.closed {
 			nw.mu.RUnlock()
-
-			timer.Reset(5 * time.Second)
-
-		case n, ok := <-nw.in:
-			// stop timer, maybe draining
-			if !timer.Stop() {
-				<-timer.C
-			}
-
-			// if the ingest channel was closed, we're no longer going to be processing anything.
-			if !ok {
-				return
-			}
-
-			// todo: it is probably not necessary to test here as if the worker is closed between this notification
-			// being processed and the next notification in, it is removed from the map of available workers to push
-			// to before close == true, meaning it cannot have new messages pushed to it.
-			nw.mu.RLock()
-			if nw.closed {
-				nw.mu.RUnlock()
-				return
-			}
-
-			// attempt to push message to consumer, allowing for up to 5 seconds of blocking
-			// if block window passes, drop on floor
-			waitForConsumer := time.NewTimer(5 * time.Second)
-			select {
-			case nw.out <- n:
-				if !waitForConsumer.Stop() {
-					<-waitForConsumer.C
-				}
-			case <-waitForConsumer.C:
-			}
-
-			nw.mu.RUnlock()
-
-			timer.Reset(5 * time.Second)
+			return
 		}
+
+		// attempt to push message to consumer, allowing for up to 5 seconds of blocking
+		// if block window passes, drop on floor
+		waitForConsumer := time.NewTimer(5 * time.Second)
+		select {
+		case nw.out <- n:
+			if !waitForConsumer.Stop() {
+				<-waitForConsumer.C
+			}
+		case <-waitForConsumer.C:
+		}
+
+		nw.mu.RUnlock()
 	}
 }
 

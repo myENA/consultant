@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/hashicorp/consul/api"
@@ -46,6 +47,9 @@ var (
 	localAddressBlock10  *net.IPNet
 	localAddressBlock172 *net.IPNet
 	localAddressBlock192 *net.IPNet
+
+	localRand   = rand.New(rand.NewSource(time.Now().UnixNano()))
+	localRandMu = sync.Mutex{}
 )
 
 func init() {
@@ -145,17 +149,22 @@ func LazyRandomString(n int) string {
 	if n <= 0 {
 		panic(fmt.Sprintf("n must be > 0, saw %d", n))
 	}
+
+	localRandMu.Lock()
+	defer localRandMu.Unlock()
+
 	buff := make([]byte, n)
 	for i := 0; i < n; i++ {
-		switch rand.Intn(3) {
+		switch localRand.Intn(3) {
 		case 0:
-			buff[i] = rnb[rand.Int63()%rnbl]
+			buff[i] = rnb[localRand.Int63()%rnbl]
 		case 1:
-			buff[i] = rlb[rand.Int63()%rlbl]
+			buff[i] = rlb[localRand.Int63()%rlbl]
 		case 2:
-			buff[i] = rLb[rand.Int63()%rLbl]
+			buff[i] = rLb[localRand.Int63()%rLbl]
 		}
 	}
+
 	return string(buff)
 }
 

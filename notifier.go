@@ -187,7 +187,6 @@ type notifierWorker struct {
 	mu     sync.RWMutex
 	closed bool
 	wg     *sync.WaitGroup
-	id     string
 	in     chan Notification
 	out    chan Notification
 	fn     NotificationHandler
@@ -197,7 +196,6 @@ func newNotifierWorker(id string, wg *sync.WaitGroup, fn NotificationHandler) *n
 	nw := new(notifierWorker)
 	nw.in = make(chan Notification, 100)
 	nw.out = make(chan Notification)
-	nw.id = id
 	nw.wg = wg
 	nw.fn = fn
 	go nw.publish()
@@ -223,6 +221,14 @@ func (nw *notifierWorker) close() {
 }
 
 func (nw *notifierWorker) publish() {
+	var wait *time.Timer
+
+	defer func() {
+		if wait != nil && !wait.Stop() {
+			<-wait.C
+		}
+	}()
+
 	for n := range nw.in {
 		// todo: it is probably not necessary to test here as if the worker is closed between this notification
 		// being processed and the next notification in, it is removed from the map of available workers to push
@@ -233,15 +239,21 @@ func (nw *notifierWorker) publish() {
 			return
 		}
 
+		// either create or reset timer
+		if wait == nil {
+			wait = time.NewTimer(5 * time.Second)
+		} else {
+			wait.Reset(5 * time.Second)
+		}
+
 		// attempt to push message to consumer, allowing for up to 5 seconds of blocking
 		// if block window passes, drop on floor
-		waitForConsumer := time.NewTimer(5 * time.Second)
 		select {
 		case nw.out <- n:
-			if !waitForConsumer.Stop() {
-				<-waitForConsumer.C
+			if !wait.Stop() {
+				<-wait.C
 			}
-		case <-waitForConsumer.C:
+		case <-wait.C:
 		}
 
 		nw.mu.RUnlock()
@@ -381,20 +393,16 @@ func (nb *notifierBase) AttachNotificationChannels(chs ...NotificationChannel) [
 // DetachNotificationRecipient immediately removes the provided recipient from receiving any new notifications,
 // returning true if a recipient was found with the provided id
 func (nb *notifierBase) DetachNotificationRecipient(id string) bool {
-	var (
-		w  *notifierWorker
-		ok bool
-	)
-
 	nb.mu.Lock()
 	defer nb.mu.Unlock()
 
-	if w, ok = nb.workers[id]; ok {
-		w.close()
+	if w, ok := nb.workers[id]; ok {
+		go w.close()
+		delete(nb.workers, id)
+		return true
 	}
-	delete(nb.workers, id)
 
-	return ok
+	return false
 }
 
 // DetachAllNotificationRecipients immediately clears all attached recipients, returning the count of those previously
@@ -402,20 +410,26 @@ func (nb *notifierBase) DetachNotificationRecipient(id string) bool {
 func (nb *notifierBase) DetachAllNotificationRecipients(wait bool) int {
 	nb.mu.Lock()
 
+	// get current count of workers
 	cnt := len(nb.workers)
-	current := nb.workers
+
+	// localize current wg
+	wg := nb.wg
+
+	// close each in separate goroutine
+	for _, w := range nb.workers {
+		go w.close()
+	}
+
+	// initialize
+	nb.wg = new(sync.WaitGroup)
 	nb.workers = make(map[string]*notifierWorker)
 
 	nb.mu.Unlock()
 
-	go func() {
-		for _, w := range current {
-			w.close()
-		}
-	}()
-
+	// if we were told to wait, wait for old wg
 	if wait {
-		nb.wg.Wait()
+		wg.Wait()
 	}
 
 	return cnt

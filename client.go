@@ -230,6 +230,9 @@ func (c *Client) EnsureServiceMultipleTags(service string, tags []string, passin
 
 // EnsureService will return an error for an actual client error or if no service was found using the provided criteria
 func (c *Client) EnsureService(service, tag string, passingOnly bool, options *api.QueryOptions) (*api.ServiceEntry, *api.QueryMeta, error) {
+	if tag == "" {
+		return c.EnsureServiceMultipleTags(service, nil, passingOnly, options)
+	}
 	return c.EnsureServiceMultipleTags(service, []string{tag}, passingOnly, options)
 }
 

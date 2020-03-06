@@ -23,7 +23,7 @@ install:
   - export PATH=$HOME/bin:$PATH
 
 before_script:
-  - go vet $(go list ./... | grep -v /demo/)
+  - go vet $(go list ./... | grep -v "/v2/demo")
 
 script:
   - go test -race -v

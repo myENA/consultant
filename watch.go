@@ -124,7 +124,11 @@ func WatchServiceMultipleTags(service string, tags []string, passingOnly, stale 
 
 // WatchService wraps the creation of a "service" plan
 func WatchService(service, tag string, passingOnly, stale bool, token, datacenter string) (*watch.Plan, error) {
-	return WatchServiceMultipleTags(service, []string{tag}, passingOnly, stale, token, datacenter)
+	var tags []string
+	if tag != "" {
+		tags = []string{tag}
+	}
+	return WatchServiceMultipleTags(service, tags, passingOnly, stale, token, datacenter)
 }
 
 // WatchServiceHandler wraps the creation of a "service" plan, additionally setting an index handler

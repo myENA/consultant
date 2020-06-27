@@ -192,14 +192,22 @@ func (c *Client) PickServiceMultipleTags(service string, tags []string, passingO
 		return nil, nil, err
 	}
 	svcLen := len(svcs)
+	var svc *api.ServiceEntry
 	switch svcLen {
 	case 0:
 		return nil, qm, nil
 	case 1:
-		return svcs[0], qm, nil
+		svc = svcs[0]
 	default:
-		return svcs[rand.Intn(svcLen)], qm, nil
+		svc = svcs[rand.Intn(svcLen)]
 	}
+
+	// Handle case where service address is blank, default to node address
+	if svc.Service.Address == "" {
+		svc.Service.Address = svc.Node.Address
+	}
+
+	return svc, qm, nil
 }
 
 // PickService will attempt to locate any registered service with a name + tag combination and return one at random from
@@ -302,6 +310,9 @@ OUTER:
 				continue OUTER
 			}
 
+		}
+		if se.Service.Address == "" {
+			se.Service.Address = se.Node.Address
 		}
 		retv = append(retv, se)
 	}

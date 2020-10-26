@@ -4,14 +4,13 @@ dist: xenial
 sudo: true
 
 go:
-  - 1.12.x
   - 1.13.x
   - 1.14.x
+  - 1.15.x
 
 env:
   global:
-    - CONSUL_VERSION="1.7.1"
-    - GO111MODULE=on
+    - CONSUL_VERSION="1.8.5"
     - GOFLAGS="-mod=vendor"
 
 install:

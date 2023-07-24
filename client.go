@@ -139,6 +139,11 @@ func (c *Client) LocalNodeName() (string, error) {
 	return n, nil
 }
 
+// LocalNodeAddr returns the address of the Consul Node this client is connected to
+func (c *Client) LocalNodeAddr() string {
+	return c.localNodeAddr
+}
+
 // EnsureKey will fetch a key/value and ensure the key is present.  The value may still be empty.
 func (c *Client) EnsureKey(key string, options *api.QueryOptions) (*api.KVPair, *api.QueryMeta, error) {
 	var (
@@ -247,10 +252,10 @@ func (c *Client) EnsureService(service, tag string, passingOnly bool, options *a
 // ServiceByTags - this wraps the consul Health().Service() call, adding the tagsOption parameter and accepting a
 // slice of tags.  tagsOption should be one of the following:
 //
-//     TagsAll - this will return only services that have all the specified tags present.
-//     TagsExactly - like TagsAll, but will return only services that match exactly the tags specified, no more.
-//     TagsAny - this will return services that match any of the tags specified.
-//     TagsExclude - this will return services don't have any of the tags specified.
+//	TagsAll - this will return only services that have all the specified tags present.
+//	TagsExactly - like TagsAll, but will return only services that match exactly the tags specified, no more.
+//	TagsAny - this will return services that match any of the tags specified.
+//	TagsExclude - this will return services don't have any of the tags specified.
 func (c *Client) ServiceByTags(service string, tags []string, tagsOption TagsOption, passingOnly bool, options *api.QueryOptions) ([]*api.ServiceEntry, *api.QueryMeta, error) {
 	if tagsOption == TagsAll {
 		return c.Client.Health().ServiceMultipleTags(service, tags, passingOnly, options)
